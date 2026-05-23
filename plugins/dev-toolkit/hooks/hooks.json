@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.command // \"\"' | grep -qiE 'secret|password|token' && { echo 'Заблокировано: команда содержит чувствительное ключевое слово (secret/password/token)' >&2; exit 2; } || exit 0"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-bash-check.sh\""
           }
         ]
       }
