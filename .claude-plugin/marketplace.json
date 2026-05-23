@@ -25,6 +25,19 @@
       },
       "category": "productivity",
       "keywords": ["php", "go", "javascript", "code-review", "pull-request", "security"]
+    },
+    {
+      "name": "andrej-karpathy-skills",
+      "source": {
+        "source": "github",
+        "repo": "multica-ai/andrej-karpathy-skills"
+      },
+      "description": "Принципы поведения для уменьшения типичных ошибок LLM при написании кода, основанные на наблюдениях Андрея Карпатого",
+      "author": {
+        "name": "forrestchang"
+      },
+      "category": "workflow",
+      "keywords": ["guidelines", "best-practices", "coding", "karpathy"]
     }
   ]
 }
