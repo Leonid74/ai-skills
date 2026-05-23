@@ -1,7 +1,7 @@
 {
   "name": "dev-toolkit",
   "description": "Слэш-команды code review / подготовки PR и защитный хук для повседневной разработки на PHP, Go и JS",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": {
     "name": "Leonid74"
   },
