@@ -77,11 +77,11 @@ claude plugin validate ./ai-skills/plugins/dev-toolkit  # plugin.json + кома
 
 ### Синхронизация vendor-копии chat-handoff
 
-Скилл `chat-handoff` включён как vendor-копия из [Leonid74/ai-skill-chat-handoff](https://github.com/Leonid74/ai-skill-chat-handoff). При выходе новой версии синхронизируй вручную:
+Скилл `chat-handoff` включён как vendor-копия из [Leonid74/ai-skill-chat-handoff](https://github.com/Leonid74/ai-skill-chat-handoff). При выходе новой версии синхронизируй вручную — скачай свежий `SKILL.md` напрямую из upstream:
 
 ```bash
-cp ~/.claude/skills/chat-handoff/SKILL.md \
-   plugins/chat-handoff/skills/chat-handoff/SKILL.md
+curl -fsSL https://raw.githubusercontent.com/Leonid74/ai-skill-chat-handoff/main/SKILL.md \
+  -o plugins/chat-handoff/skills/chat-handoff/SKILL.md
 ```
 
 Если в upstream поднялась версия (frontmatter `version:` в `SKILL.md`), синхронно подними `version` в `plugins/chat-handoff/.claude-plugin/plugin.json` — иначе пользователи не получат обновление. После — закоммить и запушь.
