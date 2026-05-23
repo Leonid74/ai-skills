@@ -29,8 +29,8 @@
     {
       "name": "andrej-karpathy-skills",
       "source": {
-        "source": "github",
-        "repo": "multica-ai/andrej-karpathy-skills"
+        "source": "url",
+        "url": "https://github.com/multica-ai/andrej-karpathy-skills"
       },
       "description": "Принципы поведения для уменьшения типичных ошибок LLM при написании кода, основанные на наблюдениях Андрея Карпатого",
       "author": {
