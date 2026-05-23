@@ -13,6 +13,7 @@
 /plugin marketplace add https://github.com/Leonid74/ai-skills
 /plugin install chat-handoff@leonid74-ai-skills
 /plugin install dev-toolkit@leonid74-ai-skills
+/plugin install andrej-karpathy-skills@leonid74-ai-skills
 ```
 
 Или, после подключения маркетплейса, выбери плагины интерактивно:
@@ -34,6 +35,10 @@
 | `/dev-toolkit:review` | Code review изменённых файлов (git diff) |
 | `/dev-toolkit:review-last` | Code review последнего коммита |
 | `/dev-toolkit:pr` | Подготовка Pull Request |
+
+### andrej-karpathy-skills
+
+Срабатывает по описанию — направляет работу Claude согласно принципам Андрея Карпатого: думать перед кодированием, минимальные изменения, простота, чёткие критерии успеха.
 
 ## Обновление
 
