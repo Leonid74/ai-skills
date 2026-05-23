@@ -1,0 +1,10 @@
+{
+  "name": "chat-handoff",
+  "description": "Скилл для переноса контекста текущего диалога в новый чат одним готовым к вставке markdown-блоком",
+  "version": "1.2.1",
+  "author": {
+    "name": "Leonid74"
+  },
+  "homepage": "https://github.com/Leonid74/ai-skill-chat-handoff",
+  "license": "MIT"
+}

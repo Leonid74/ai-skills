@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "leonid74-ai-skills",
+  "description": "Личный маркетплейс плагинов Leonid74: миграция контекста между чатами и инструменты code review для PHP/Go/JS",
+  "owner": {
+    "name": "Leonid74"
+  },
+  "plugins": [
+    {
+      "name": "chat-handoff",
+      "source": "./plugins/chat-handoff",
+      "description": "Скилл для переноса контекста текущего диалога в новый чат одним готовым к вставке markdown-блоком",
+      "author": {
+        "name": "Leonid74"
+      },
+      "category": "productivity",
+      "keywords": ["handoff", "context", "session", "summary", "выжимка"]
+    },
+    {
+      "name": "dev-toolkit",
+      "source": "./plugins/dev-toolkit",
+      "description": "Слэш-команды code review / подготовки PR и защитный хук для повседневной разработки на PHP, Go и JS",
+      "author": {
+        "name": "Leonid74"
+      },
+      "category": "productivity",
+      "keywords": ["php", "go", "javascript", "code-review", "pull-request", "security"]
+    }
+  ]
+}
