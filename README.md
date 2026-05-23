@@ -4,6 +4,7 @@
 
 - **chat-handoff** — переносит контекст текущего диалога в новый чат одним готовым markdown-блоком (миграция сессии, не суммаризация).
 - **dev-toolkit** — слэш-команды `/dev-toolkit:pr`, `/dev-toolkit:review`, `/dev-toolkit:review-last` для code review и подготовки PR (PHP/Go/JS) + защитный хук, блокирующий случайную передачу секретов и токенов в Bash-команды.
+- **andrej-karpathy-skills** — поведенческие принципы Андрея Карпатого для уменьшения типичных ошибок LLM при написании кода (внешний плагин, автор: forrestchang).
 
 ## Установка
 
@@ -24,11 +25,11 @@
 
 ## Использование
 
-### chat-handoff
+### • chat-handoff
 
 Срабатывает по описанию — достаточно написать в чате: «сделай хэндоф», «перенос в новый чат», «мигрируй сессию».
 
-### dev-toolkit
+### • dev-toolkit
 
 | Команда | Что делает |
 |---|---|
@@ -36,7 +37,7 @@
 | `/dev-toolkit:review-last` | Code review последнего коммита |
 | `/dev-toolkit:pr` | Подготовка Pull Request |
 
-### andrej-karpathy-skills
+### • andrej-karpathy-skills
 
 Срабатывает по описанию — направляет работу Claude согласно принципам Андрея Карпатого: думать перед кодированием, минимальные изменения, простота, чёткие критерии успеха.
 
@@ -71,6 +72,8 @@ ai-skills/
         │   └── review-last.md
         └── hooks/hooks.json          ← PreToolUse: блок secret/password/token
 ```
+
+> Плагин `andrej-karpathy-skills` подключён как внешний GitHub source ([multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills)) и не хранится локально в репозитории.
 
 ### Валидация
 
