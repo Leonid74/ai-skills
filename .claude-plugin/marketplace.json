@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "leonid74-ai-skills",
-  "description": "Личный маркетплейс плагинов Leonid74: миграция контекста между чатами и инструменты code review для PHP/Go/JS",
+  "description": "Маркетплейс плагинов: миграция контекста между чатами и инструменты code review для PHP/Go/JS",
   "owner": {
     "name": "Leonid74"
   },
