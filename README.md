@@ -3,7 +3,7 @@
 Каталог плагинов для Claude Code. Доступные плагины:
 
 - **chat-handoff** — переносит контекст текущего диалога в новый чат одним готовым markdown-блоком (миграция сессии, не суммаризация).
-- **dev-toolkit** — слэш-команды `/dev-toolkit:pr`, `/dev-toolkit:review`, `/dev-toolkit:review-last` для code review и подготовки PR (PHP/Go/JS) + защитный хук, блокирующий деструктивные Bash-команды (`rm -rf`, `git reset --hard`, `git push --force`, `git branch -D`, чтение `.env`) и случайную передачу секретов/токенов.
+- **dev-toolkit** — слэш-команды `/dev-toolkit:pr`, `/dev-toolkit:review`, `/dev-toolkit:review-last` для code review и подготовки PR (PHP/Go/JS), skill `statusline-setup` для настройки строки статуса Claude Code + защитный хук, блокирующий деструктивные Bash-команды (`rm -rf`, `git reset --hard`, `git push --force`, `git branch -D`, чтение `.env`) и случайную передачу секретов/токенов.
 - **andrej-karpathy-skills** — поведенческие принципы Андрея Карпатого для уменьшения типичных ошибок LLM при написании кода (внешний плагин, автор: forrestchang).
 
 ## Установка
@@ -36,6 +36,14 @@
 | `/dev-toolkit:review` | Code review изменённых файлов (git diff) |
 | `/dev-toolkit:review-last` | Code review последнего коммита |
 | `/dev-toolkit:pr` | Подготовка Pull Request |
+
+**Skill**
+
+| Skill | Что делает |
+|---|---|
+| `statusline-setup` | Настройка строки статуса Claude Code (модель, git-ветка, папка) |
+
+Срабатывает автоматически по описанию — достаточно написать в чате: «настрой statusline», «setup statusline», «установи statusline». Skill проверяет текущий `~/.claude/settings.json` и, если `statusLine` не настроен, создаёт `~/.claude/statusline.sh` и прописывает конфигурацию.
 
 **Защитный хук** (`PreToolUse` на `Bash`) — срабатывает автоматически на каждой Bash-команде, блокирует с кодом 2 и возвращает модели понятное сообщение, *почему* отказано:
 
@@ -87,6 +95,8 @@ ai-skills/
         │   ├── pr.md
         │   ├── review.md
         │   └── review-last.md
+        ├── skills/                   ← statusline-setup
+        │   └── statusline-setup/SKILL.md
         └── hooks/guard-bash.sh       ← PreToolUse: деструктивные команды + секреты
 ```
 
