@@ -3,7 +3,7 @@
 Каталог плагинов для Claude Code. Доступные плагины:
 
 - **chat-handoff** — переносит контекст текущего диалога в новый чат одним готовым markdown-блоком (миграция сессии, не суммаризация).
-- **dev-toolkit** — слэш-команды `/dev-toolkit:pr`, `/dev-toolkit:review`, `/dev-toolkit:review-last` для code review и подготовки PR (PHP/Go/JS) + защитный хук, блокирующий случайную передачу секретов и токенов в Bash-команды.
+- **dev-toolkit** — слэш-команды `/dev-toolkit:pr`, `/dev-toolkit:review`, `/dev-toolkit:review-last` для code review и подготовки PR (PHP/Go/JS) + защитный хук, блокирующий деструктивные Bash-команды (`rm -rf`, `git reset --hard`, `git push --force`, `git branch -D`, чтение `.env`) и случайную передачу секретов/токенов.
 - **andrej-karpathy-skills** — поведенческие принципы Андрея Карпатого для уменьшения типичных ошибок LLM при написании кода (внешний плагин, автор: forrestchang).
 
 ## Установка
@@ -70,7 +70,7 @@ ai-skills/
         │   ├── pr.md
         │   ├── review.md
         │   └── review-last.md
-        └── hooks/hooks.json          ← PreToolUse: блок secret/password/token
+        └── hooks/guard-bash.sh       ← PreToolUse: деструктивные команды + секреты
 ```
 
 > Плагин `andrej-karpathy-skills` подключён как внешний GitHub source ([multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills)) и не хранится локально в репозитории.
