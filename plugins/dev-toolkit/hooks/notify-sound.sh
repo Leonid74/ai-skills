@@ -83,7 +83,7 @@ bell() {
       { printf '\a' >/dev/tty; } 2>/dev/null || printf '\a' >&2
     fi
     i=$((i + 1))
-    [ "$i" -lt "$n" ] && sleep 0.25
+    [ "$i" -lt "$n" ] && sleep 0.5
   done
 }
 
