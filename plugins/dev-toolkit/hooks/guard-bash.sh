@@ -45,8 +45,10 @@ if printf '%s' "$cmd" | grep -Eiq '\bgit\b.*\bpush\b.*(--force\b|--force-with-le
   block "git push --force (перезапись истории на remote)"
 fi
 
-# git branch -D (принудительное удаление ветки)
-if printf '%s' "$cmd" | grep -Eiq '\bgit\b.*\bbranch\b.*\s-D\b'; then
+# git branch -D (принудительное удаление ветки). Проверка регистрозависимая
+# (без -i): блокируем только -D, а безопасный -d (git удалит ветку лишь
+# если она полностью влита) пропускаем.
+if printf '%s' "$cmd" | grep -Eq '\bgit\b.*\bbranch\b.*\s-D\b'; then
   block "git branch -D (принудительное удаление ветки)"
 fi
 
