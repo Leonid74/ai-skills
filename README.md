@@ -131,8 +131,15 @@ paplay /usr/share/sounds/freedesktop/stereo/complete.oga
 
 ## Обновление
 
+> Если в настройках маркетплейса (меню `/plugin`) **не включено автообновление** этих плагинов, обновляй их вручную командами ниже. При включённом автообновлении свежие версии подтягиваются сами, и эти шаги не нужны.
+
+Сначала обнови каталог маркетплейса, затем нужные плагины. Скиллы (`statusline-setup`, `chat-handoff`) обновляются вместе со своим плагином — отдельной команды для них нет.
+
 ```bash
 /plugin marketplace update leonid74-ai-skills
+/plugin update chat-handoff@leonid74-ai-skills
+/plugin update dev-toolkit@leonid74-ai-skills
+/plugin update andrej-karpathy-skills@leonid74-ai-skills
 ```
 
 Обновление плагинов происходит только при изменении поля `version` в `plugin.json`.
