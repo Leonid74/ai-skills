@@ -68,11 +68,20 @@ play_canberra() {
 bell() {
   local n=1
   [ "$event" != "notification" ] && n=2
+
+  # Хук запускается без tty (Claude Code перехватывает stdout/stderr),
+  # поэтому пишем BEL напрямую в tty tmux-панели — туда байт доходит
+  # даже через SSH. Если tmux недоступен — пробуем /dev/tty, затем stderr.
+  local tty_target
+  tty_target=$(tmux display-message -p '#{pane_tty}' 2>/dev/null)
+
   local i=0
   while [ "$i" -lt "$n" ]; do
-    # Группа с 2>/dev/null глушит и саму ошибку открытия /dev/tty (когда
-    # управляющего терминала нет); тогда шлём BEL в stderr.
-    { printf '\a' >/dev/tty; } 2>/dev/null || printf '\a' >&2
+    if [ -n "$tty_target" ] && [ -c "$tty_target" ]; then
+      printf '\a' > "$tty_target" 2>/dev/null
+    else
+      { printf '\a' >/dev/tty; } 2>/dev/null || printf '\a' >&2
+    fi
     i=$((i + 1))
     [ "$i" -lt "$n" ] && sleep 0.25
   done
