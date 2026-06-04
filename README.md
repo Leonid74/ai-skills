@@ -11,7 +11,7 @@
 
 - **dev-toolkit** — инструменты повседневной разработки на PHP/Go/JS:
   - *Slash-команды:* `/dev-toolkit:review`, `/dev-toolkit:review-last`,
-    `/dev-toolkit:pr` — code review и подготовка PR
+    `/dev-toolkit:pr`, `/dev-toolkit:cppr` — code review и подготовка PR
   - *Skill:* `statusline-setup` — настройка строки статуса Claude Code
   - *Хук защиты:* блокирует деструктивные Bash-команды (`rm -rf`,
     `git reset --hard`, `git push --force`, `git branch -D`, чтение `.env`)
@@ -62,6 +62,7 @@
 | `/dev-toolkit:review`      | Code review изменённых файлов (git diff) |
 | `/dev-toolkit:review-last` | Code review последнего коммита           |
 | `/dev-toolkit:pr`          | Подготовка Pull Request                  |
+| `/dev-toolkit:cppr`        | Коммит, пуш и создание PR одной командой |
 
 #### Skill: statusline-setup
 
@@ -228,8 +229,9 @@ ai-skills/
     │   └── skills/chat-handoff/SKILL.md
     └── dev-toolkit/
         ├── .claude-plugin/plugin.json
-        ├── commands/                 ← /dev-toolkit:pr, /dev-toolkit:review, /dev-toolkit:review-last
+        ├── commands/                 ← /dev-toolkit:pr, /dev-toolkit:cppr, /dev-toolkit:review, /dev-toolkit:review-last
         │   ├── pr.md
+        │   ├── cppr.md
         │   ├── review.md
         │   └── review-last.md
         ├── skills/                   ← statusline-setup
