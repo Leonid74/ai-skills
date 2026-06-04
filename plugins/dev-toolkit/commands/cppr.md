@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(git checkout --branch:*), Bash(git add:*), Bash(git status:*), Bash(git status:*), Bash(git log:*), Bash(git commit:*), Bash(gh pr create:*)
+allowed-tools: Bash(git status:*), Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git checkout:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(gh pr create:*)
 description: Commit, push, PR (коммит, пуш, PR)
 ---
 
@@ -28,5 +28,4 @@ description: Commit, push, PR (коммит, пуш, PR)
 7. Подготовь Pull Request для текущей ветки и сгенерируй описание PR: что изменено и почему, предложи title в формате Conventional Commits.
 8. Перечисли файлы, измененные относительно main/master.
 9. Создай PR, используя `gh pr create`.
-10. У тебя есть возможность вызывать несколько инструментов в одном ответе. Ты ДОЛЖЕН сделать все вышеперечисленное в одном сообщении. Не используй какие-либо другие инструменты и не делай ничего 
-    другого.
+10. У тебя есть возможность вызывать несколько инструментов в одном ответе. Ты ДОЛЖЕН сделать все вышеперечисленное в одном сообщении. Не используй какие-либо другие инструменты и не делай ничего другого.
