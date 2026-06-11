@@ -32,7 +32,15 @@ fi
 
 # rm -rf / rm -r (рекурсивное удаление)
 if printf '%s' "$cmd" | grep -Eiq '\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-r[a-z]*\s+-f|-rf|-fr)\b'; then
-  block "рекурсивное/принудительное удаление (rm -rf)"
+  # Исключение: /tmp и его содержимое разрешены.
+  # Убираем rm с флагами и все /tmp-пути; если остаётся непробельный токен —
+  # есть цели вне /tmp → блокируем.
+  _leftover="$(printf '%s' "$cmd" \
+    | sed -E 's#\brm(\s+-[a-zA-Z]+)+\s*##i' \
+    | sed -E 's#/tmp(/\S*)?(\s|$)# #g')"
+  if printf '%s' "$_leftover" | grep -qE '\S'; then
+    block "рекурсивное/принудительное удаление (rm -rf)"
+  fi
 fi
 
 # git reset --hard
