@@ -19,12 +19,12 @@
     {
       "name": "dev-toolkit",
       "source": "./plugins/dev-toolkit",
-      "description": "Слэш-команды code review / подготовки PR, защитный хук и звуковые уведомления для повседневной разработки на PHP, Go и JS",
+      "description": "Слэш-команды code review / подготовки PR, скилл оптимизации и реконсиляции проектной документации (CLAUDE.md/README/память), защитный хук и звуковые уведомления для повседневной разработки на PHP, Go и JS",
       "author": {
         "name": "Leonid74"
       },
       "category": "productivity",
-      "keywords": ["php", "go", "javascript", "code-review", "pull-request", "security", "notification", "sound"]
+      "keywords": ["php", "go", "javascript", "code-review", "pull-request", "security", "notification", "sound", "docs", "claude-md", "documentation"]
     },
     {
       "name": "andrej-karpathy-skills",
