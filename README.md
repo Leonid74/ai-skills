@@ -12,7 +12,8 @@
 - **dev-toolkit** — инструменты повседневной разработки на PHP/Go/JS:
   - *Slash-команды:* `/dev-toolkit:review`, `/dev-toolkit:review-last`,
     `/dev-toolkit:pr`, `/dev-toolkit:cppr` — code review и подготовка PR
-  - *Skill:* `statusline-setup` — настройка строки статуса Claude Code
+  - *Skills:* `statusline-setup` — настройка строки статуса Claude Code;
+    `optimize-project-docs` — оптимизация и реконсиляция `CLAUDE.md` / `README` / памяти проекта
   - *Хук защиты:* блокирует деструктивные Bash-команды (`rm -rf`,
     `git reset --hard`, `git push --force`, `git branch -D`, чтение `.env`)
     и случайную передачу секретов/токенов
@@ -72,6 +73,19 @@
 «настрой statusline», «setup statusline», «установи statusline». Skill
 проверяет текущий `~/.claude/settings.json` и, если `statusLine` не настроен,
 создаёт `~/.claude/statusline.sh` и прописывает конфигурацию.
+
+#### Skill: optimize-project-docs
+
+Оптимизация и реконсиляция проектной документации: сжать раздутый `CLAUDE.md`,
+почистить память проекта Claude Code (`MEMORY.md` + каталог `memory/`) и
+синхронизировать факты между `CLAUDE.md`, `README` и памятью — **без потери
+обоснований «почему»**. Это оптимизация существующих доков, не написание новых.
+
+Срабатывает автоматически по описанию — достаточно написать в чате: «оптимизируй
+CLAUDE.md», «почисти память проекта», «полная реконсиляция документации»,
+«optimize project docs». Skill режет только устаревшее / дубли / противоречия /
+воду, сохраняя иерархию детализации (память подробнее `CLAUDE.md` подробнее
+`README`), измеряет объём ДО/ПОСЛЕ и передаёт коммит в `/dev-toolkit:cppr`.
 
 #### Хук: защита от деструктивных команд
 
@@ -201,7 +215,7 @@ paplay /usr/share/sounds/freedesktop/stereo/complete.oga
 
 > Если в настройках маркетплейса (меню `/plugin`) **не включено автообновление** этих плагинов, обновляй их вручную командами ниже. При включённом автообновлении свежие версии подтягиваются сами, и эти шаги не нужны.
 
-Сначала обнови каталог маркетплейса, затем нужные плагины. Скиллы (`statusline-setup`, `chat-handoff`) обновляются вместе со своим плагином — отдельной команды для них нет.
+Сначала обнови каталог маркетплейса, затем нужные плагины. Скиллы (`statusline-setup`, `optimize-project-docs`, `chat-handoff`) обновляются вместе со своим плагином — отдельной команды для них нет.
 
 ```bash
 /plugin marketplace update leonid74-ai-skills
@@ -234,8 +248,9 @@ ai-skills/
         │   ├── cppr.md
         │   ├── review.md
         │   └── review-last.md
-        ├── skills/                   ← statusline-setup
-        │   └── statusline-setup/SKILL.md
+        ├── skills/                   ← statusline-setup, optimize-project-docs
+        │   ├── statusline-setup/SKILL.md
+        │   └── optimize-project-docs/SKILL.md
         └── hooks/
             ├── hooks.json            ← регистрация хуков (PreToolUse, Notification, Stop)
             ├── guard-bash.sh         ← PreToolUse: деструктивные команды + секреты
