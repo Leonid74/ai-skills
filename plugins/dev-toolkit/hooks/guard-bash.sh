@@ -30,18 +30,27 @@ if printf '%s' "$cmd" | grep -qiE 'secret|password|token'; then
   block_secret "команда содержит чувствительное ключевое слово (secret/password/token)"
 fi
 
-# rm -rf / rm -r (рекурсивное удаление)
-if printf '%s' "$cmd" | grep -Eiq '\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-r[a-z]*\s+-f|-rf|-fr)\b'; then
-  # Исключение: /tmp и его содержимое разрешены.
-  # Убираем rm с флагами и все /tmp-пути; если остаётся непробельный токен —
-  # есть цели вне /tmp → блокируем.
-  _leftover="$(printf '%s' "$cmd" \
-    | sed -E 's#\brm(\s+-[a-zA-Z]+)+\s*##i' \
-    | sed -E 's#/tmp(/\S*)?(\s|$)# #g')"
-  if printf '%s' "$_leftover" | grep -qE '\S'; then
-    block "рекурсивное/принудительное удаление (rm -rf)"
+# rm -r / rm -rf (рекурсивное удаление). Флаг -f не делает удаление более
+# опасным здесь — без интерактивного stdin (как у агента) -r без -f удаляет
+# write-protected файлы точно так же безвозвратно, без подтверждения, поэтому
+# ловим сам факт рекурсии (-r), а не обязательную пару -r+-f.
+# Разбираем составную команду на под-сегменты по &&, ||, ; и | — иначе
+# /tmp-исключение ниже ломается на цепочках вида
+# "mkdir -p /tmp/x && rm -rf /tmp/x": leftover для всей строки целиком
+# включал бы соседние команды и блокировал бы безопасный /tmp-кейс.
+while IFS= read -r _seg; do
+  if printf '%s' "$_seg" | grep -Eiq '\brm\s+-[a-z]*r[a-z]*\b'; then
+    # Исключение: /tmp и его содержимое разрешены.
+    # Убираем rm с флагами и все /tmp-пути; если остаётся непробельный токен —
+    # есть цели вне /tmp → блокируем.
+    _leftover="$(printf '%s' "$_seg" \
+      | sed -E 's#\brm(\s+-[a-zA-Z]+)+\s*##i' \
+      | sed -E 's#/tmp(/\S*)?(\s|$)# #g')"
+    if printf '%s' "$_leftover" | grep -qE '\S'; then
+      block "рекурсивное удаление (rm -r/-rf)"
+    fi
   fi
-fi
+done < <(printf '%s\n' "$cmd" | sed -E 's/(&&|\|\||;|\|)/\n/g')
 
 # git reset --hard
 if printf '%s' "$cmd" | grep -Eiq '\bgit\b.*\breset\b.*--hard\b'; then
