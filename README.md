@@ -10,9 +10,11 @@
   готовым markdown-блоком *(миграция сессии, не суммаризация)*.
 
 - **dev-toolkit** — инструменты повседневной разработки на PHP/Go/JS:
-  - *Slash-команды:* `/dev-toolkit:review`, `/dev-toolkit:review-last`,
+  - *Slash-команды:* `/dev-toolkit:review-quick`, `/dev-toolkit:review-last`,
     `/dev-toolkit:pr`, `/dev-toolkit:cppr` — code review и подготовка PR
-  - *Skills:* `statusline-setup` — настройка строки статуса Claude Code;
+  - *Skills:* `review-code` — многоуровневое ревью диффа (`low`…`max`) с
+    параллельным поиском и adversarial-верификацией находок;
+    `statusline-setup` — настройка строки статуса Claude Code;
     `optimize-project-docs` — оптимизация и реконсиляция `CLAUDE.md` / `README` / памяти проекта
   - *Хук защиты:* блокирует деструктивные Bash-команды (`rm -rf`,
     `git reset --hard`, `git push --force`, `git branch -D`, чтение `.env`)
@@ -58,12 +60,39 @@
 
 #### Slash-команды
 
-| Команда                    | Что делает                               |
-|----------------------------|------------------------------------------|
-| `/dev-toolkit:review`      | Code review изменённых файлов (git diff) |
-| `/dev-toolkit:review-last` | Code review последнего коммита           |
-| `/dev-toolkit:pr`          | Подготовка Pull Request                  |
-| `/dev-toolkit:cppr`        | Коммит, пуш и создание PR одной командой |
+| Команда                     | Что делает                                        |
+|-----------------------------|---------------------------------------------------|
+| `/dev-toolkit:review-quick` | Быстрое code review изменённых файлов (git diff)  |
+| `/dev-toolkit:review-last`  | Code review последнего коммита                    |
+| `/dev-toolkit:pr`           | Подготовка Pull Request                           |
+| `/dev-toolkit:cppr`         | Коммит, пуш и создание PR одной командой          |
+
+> ⚠️ С версии `1.11.0` команда `/dev-toolkit:review` переименована в
+> `/dev-toolkit:review-quick` — старое имя не работает. Глубокое ревью с уровнями
+> живёт в скилле `review-code` (ниже).
+
+#### Skill: review-code
+
+Многоуровневое code review диффа: калибровка глубины по уровню (`low`, `medium`,
+`high`, `xhigh`, `max`), параллельный поиск находок с 2–10 независимых углов,
+adversarial-верификация каждой находки (1–3 голоса «на опровержение») и
+типизированный вывод находок в UI.
+
+Вызов вручную: `/dev-toolkit:review-code <уровень> [target]`, где `target` — пусто
+(рабочий дифф), `<base>...<head>` (напр. `master...HEAD`) или номер PR. Skill
+также вызывается самой моделью — этим он отличается от встроенного
+`/code-review`, который с версии CLI 2.1.215 запускает только пользователь (зато
+у встроенного есть облачный режим `ultra`, которого здесь нет и который
+воспроизводить не нужно).
+
+Отличие от `/dev-toolkit:review-quick` и `/dev-toolkit:review-last`: те — быстрый
+однопроходный обзор без уровней и верификации. Правила ревью (security-поверхность,
+контракты, конвенции) skill вычитывает из `CLAUDE.md` целевого проекта, а при их
+отсутствии применяет дефолтную эвристику и явно об этом сообщает. Это
+самостоятельный инструмент, а не эмуляция встроенного `/code-review`.
+
+> ⚠️ Плагинные артефакты всегда неймспейснуты — «голого» `/review-code` не будет,
+> только `/dev-toolkit:review-code`.
 
 #### Skill: statusline-setup
 
@@ -252,12 +281,13 @@ ai-skills/
     │   └── skills/chat-handoff/SKILL.md
     └── dev-toolkit/
         ├── .claude-plugin/plugin.json
-        ├── commands/                 ← /dev-toolkit:pr, /dev-toolkit:cppr, /dev-toolkit:review, /dev-toolkit:review-last
+        ├── commands/                 ← /dev-toolkit:pr, /dev-toolkit:cppr, /dev-toolkit:review-quick, /dev-toolkit:review-last
         │   ├── pr.md
         │   ├── cppr.md
-        │   ├── review.md
+        │   ├── review-quick.md
         │   └── review-last.md
-        ├── skills/                   ← statusline-setup, optimize-project-docs
+        ├── skills/                   ← review-code, statusline-setup, optimize-project-docs
+        │   ├── review-code/SKILL.md
         │   ├── statusline-setup/SKILL.md
         │   └── optimize-project-docs/SKILL.md
         └── hooks/

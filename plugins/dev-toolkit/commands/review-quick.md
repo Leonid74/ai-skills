@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash(git status:*), Bash(git diff:*), Bash(git branch:*), Read, Grep, Glob
-description: Code review изменённых файлов (git diff) — архитектура, типизация, производительность, doc-комментарии, тесты
+description: Быстрое однопроходное code review изменённых файлов (git diff) — архитектура, типизация, производительность, doc-комментарии, тесты
 ---
 
 ## Контекст

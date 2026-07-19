@@ -20,8 +20,8 @@ ai-skills/
     │   └── skills/chat-handoff/SKILL.md
     └── dev-toolkit/
         ├── .claude-plugin/plugin.json
-        ├── commands/      ← /dev-toolkit:pr, /dev-toolkit:cppr, /dev-toolkit:review, /dev-toolkit:review-last
-        ├── skills/        ← statusline-setup, optimize-project-docs
+        ├── commands/      ← /dev-toolkit:pr, /dev-toolkit:cppr, /dev-toolkit:review-quick, /dev-toolkit:review-last
+        ├── skills/        ← review-code, statusline-setup, optimize-project-docs
         └── hooks/
             ├── hooks.json       ← регистрация PreToolUse/Notification/Stop
             ├── guard-bash.sh    ← PreToolUse: блокирует деструктивные Bash-команды + секреты
