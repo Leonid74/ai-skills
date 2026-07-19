@@ -1,6 +1,6 @@
 ---
-name: kod-review
-description: "Многоуровневое code review диффа (рабочий дифф, диапазон коммитов или PR): калибровка глубины по уровню low…max, параллельный поиск находок с разных углов, adversarial-верификация каждой находки и типизированный вывод через ReportFindings. Самостоятельный инструмент, вызываемый в том числе моделью, а не эмуляция встроенного /code-review.\n\nInvoke for: «сделай ревью», «отревьюь дифф / изменения / ветку / PR», «проверь код перед PR», «глубокое ревью», «ревью на уровне high/max» (review the diff / deep code review / review this PR / review before merge); шаг «ревью диффа» внутри проектного флоу, который сессия должна выполнить сама, без участия пользователя.\n\nSkip for: быстрый однопроходный обзор без уровней и верификации (`/dev-toolkit:review`, `/dev-toolkit:review-last`), подготовка и создание PR (`/dev-toolkit:pr`, `/dev-toolkit:cppr`), написание кода и починка находок без отдельной просьбы, аудит безопасности всего репозитория вне диффа, перенос контекста в новый чат (chat-handoff)."
+name: review-code
+description: "Многоуровневое code review диффа (рабочий дифф, диапазон коммитов или PR): калибровка глубины по уровню low…max, параллельный поиск находок с разных углов, adversarial-верификация каждой находки и типизированный вывод через ReportFindings. Самостоятельный инструмент, вызываемый в том числе моделью, а не эмуляция встроенного /code-review.\n\nInvoke for: «сделай ревью», «отревьюь дифф / изменения / ветку / PR», «проверь код перед PR», «глубокое ревью», «ревью на уровне high/max» (review the diff / deep code review / review this PR / review before merge); шаг «ревью диффа» внутри проектного флоу, который сессия должна выполнить сама, без участия пользователя.\n\nSkip for: быстрый однопроходный обзор без уровней и верификации (`/dev-toolkit:review-quick`, `/dev-toolkit:review-last`), подготовка и создание PR (`/dev-toolkit:pr`, `/dev-toolkit:cppr`), написание кода и починка находок без отдельной просьбы, аудит безопасности всего репозитория вне диффа, перенос контекста в новый чат (chat-handoff)."
 allowed-tools: Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git blame:*), Bash(git branch:*), Bash(git merge-base:*), Bash(gh pr diff:*), Bash(gh pr view:*), Read, Grep, Glob, Agent, ReportFindings
 ---
 
@@ -17,7 +17,7 @@ allowed-tools: Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git b
 
 **Границы с соседними артефактами `dev-toolkit`:**
 
-- `/dev-toolkit:review` и `/dev-toolkit:review-last` — быстрый однопроходный обзор диффа: без
+- `/dev-toolkit:review-quick` и `/dev-toolkit:review-last` — быстрый однопроходный обзор диффа: без
   уровней, без параллельных углов, без верификации. Если нужен беглый взгляд — они дешевле;
 - `/dev-toolkit:pr` и `/dev-toolkit:cppr` — подготовка/создание PR, ревью они не делают;
 - этот скилл — многоугловой поиск + adversarial-верификация + типизированный вывод в UI.
