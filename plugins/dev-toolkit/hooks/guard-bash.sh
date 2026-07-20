@@ -96,6 +96,99 @@ while IFS= read -r _seg; do
       block "рекурсивное удаление (rm -r/-rf/--recursive)"
     fi
   fi
+
+  # Опасные подфлаги у read-only git/gh-команд — механический барьер для
+  # инварианта 3 скилла review-code: префикс allowed-tools вида
+  # "Bash(git diff:*)" авто-одобряет команду целиком и НЕ запрещает подфлаги,
+  # а --output/--no-index/--ext-diff превращают формально read-only команду
+  # в запись файла, чтение вне репозитория или запуск внешней программы.
+  # Флаг-сеты у git и gh РАЗДЕЛЬНЫЕ: -w у "git diff" — легитимный
+  # ignore-all-space, а у gh — открытие браузера (--web); общий набор давал
+  # бы ложную блокировку повседневного "git diff -w".
+  if printf '%s' "${_seg}" | grep -qiE '\b(git|gh)\b'; then
+    _g_cmd=""       # какая команда найдена в сегменте: git | gh
+    _g_sub=false    # git: read-only подкоманда (diff/log/blame/show); gh: "pr"
+    _g_leaf=false   # gh: после "pr" найден leaf diff|view (git не использует)
+    _g_hit=""       # первый найденный опасный подфлаг (для текста блокировки)
+    for _tok in ${_seg}; do
+      _tok_lc="${_tok,,}"
+      if [[ -z "${_g_cmd}" ]]; then
+        case "${_tok_lc}" in
+          git|*/git) _g_cmd="git" ;;
+          gh|*/gh)   _g_cmd="gh" ;;
+          *) ;;
+        esac
+        continue
+      fi
+      if ! ${_g_sub}; then
+        if [[ "${_g_cmd}" = "git" ]]; then
+          case "${_tok_lc}" in diff|log|blame|show) _g_sub=true ;; *) ;; esac
+        else
+          case "${_tok_lc}" in pr) _g_sub=true ;; *) ;; esac
+        fi
+        continue
+      fi
+      # Токены после охраняемой подкоманды. "--" завершает опции: всё дальше
+      # git/gh трактуют как пути/аргументы, флаги там не ищем — иначе файл
+      # с именем "--output" ("git diff -- --output") давал бы ложную
+      # блокировку.
+      if [[ "${_tok}" = "--" ]]; then
+        break
+      fi
+      if [[ "${_g_cmd}" = "gh" ]] && ! ${_g_leaf}; then
+        case "${_tok_lc}" in
+          diff|view) _g_leaf=true; continue ;;
+          *) ;;
+        esac
+      fi
+      # Флаги матчим по ИСХОДНОМУ регистру (не ${_tok_lc}): git/gh принимают
+      # опции только в точном регистре, поэтому обход через регистр
+      # невозможен, а лоуэркейс дал бы ложную блокировку -O (orderfile ≠ -o).
+      _flag="${_tok%%=*}"
+      if [[ "${_g_cmd}" = "git" ]]; then
+        case "${_flag}" in
+          --?*)
+            # git принимает однозначные СОКРАЩЕНИЯ long-опций (--outp= ==
+            # --output=), поэтому матчим «токен — префикс опасного флага»,
+            # а не только точную форму. Неоднозначное сокращение (--o, --e)
+            # git отвергает сам, так что лишняя блокировка тут безвредна.
+            for _dflag in --output --ext-diff --no-index --exec; do
+              if [[ "${_dflag}" == "${_flag}"* ]]; then
+                _g_hit="${_tok}"
+                break
+              fi
+            done
+            ;;
+          -o*) _g_hit="${_tok}" ;;  # -o / -o<file>: запись вывода в файл
+          *) ;;
+        esac
+      else
+        case "${_flag}" in
+          --web|--repo|--exec) _g_hit="${_tok}" ;;
+          --*) ;;  # прочие long-опции: gh (cobra) сокращений НЕ принимает,
+                   # поэтому точного совпадения достаточно
+          -R*|-w*) _g_hit="${_tok}" ;;  # -R / -R<owner/repo> / -w
+          -*)
+            # Кластер коротких флагов (-cw == --comments --web): буквенный
+            # токен, содержащий w или R. Может дать ложное срабатывание на
+            # прицепленном буквенном значении (-Sfew) — осознанно: ложная
+            # блокировка безопаснее открытия браузера/чужого репозитория.
+            if [[ "${_tok}" =~ ^-[A-Za-z]+$ && "${_tok}" == *[wR]* ]]; then
+              _g_hit="${_tok}"
+            fi
+            ;;
+          *) ;;
+        esac
+      fi
+    done
+    if [[ -n "${_g_hit}" ]] && ${_g_sub}; then
+      if [[ "${_g_cmd}" = "git" ]]; then
+        block "опасный подфлаг ${_g_hit} у read-only git-команды (запись файла / чтение вне репозитория / запуск внешней программы)"
+      elif ${_g_leaf}; then
+        block "опасный подфлаг ${_g_hit} у gh pr diff/view (открытие браузера / доступ к чужому репозиторию)"
+      fi
+    fi
+  fi
 done <<< "${_segments}"
 set +f
 
