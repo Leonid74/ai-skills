@@ -40,10 +40,12 @@ claude plugin validate ./plugins/chat-handoff             # plugin.json + SKILL.
 claude plugin validate ./plugins/dev-toolkit              # plugin.json + команды + hooks.json
 ```
 
-Для bash-хуков (`plugins/dev-toolkit/hooks/*.sh`) дополнительно гонять `shellcheck`:
+Для bash-хуков (`plugins/dev-toolkit/hooks/*.sh`) дополнительно гонять `shellcheck` и
+тест-векторы guard-bash:
 
 ```bash
 shellcheck -S style -o all plugins/dev-toolkit/hooks/guard-bash.sh
+bash plugins/dev-toolkit/hooks/tests/test-guard-bash.sh
 ```
 
 ## Архитектура: guard-bash.sh (самый сложный артефакт в репозитории)
@@ -68,8 +70,17 @@ getopt-permutation: recursive-флаг может стоять и после о�
 pathname expansion — без него `rm -rf /tmp/*` раскрылся бы в реальные файлы `/tmp` на машине, где
 запущен хук, а не остался текстовым паттерном.
 
+Правило read-only git/gh — механический барьер для инварианта 3 скилла review-code (префикс
+`allowed-tools` вида `Bash(git diff:*)` авто-одобряет команду целиком и не запрещает подфлаги):
+у `git diff/log/blame/show` блокируются `--output`/`-o`/`--ext-diff`/`--no-index`/`--exec`, у
+`gh pr diff/view` — `--web`/`-w`/`-R`/`--repo`/`--exec`. Флаг-сеты раздельные (`-w` у git —
+легитимный ignore-all-space, а у gh — браузер); long-опции git матчатся по **префиксу** (git
+принимает однозначные сокращения вида `--outp=`), gh — точным совпадением (cobra сокращений не
+принимает); скан флагов останавливается на `--` (дальше — пути). Тест-векторы:
+`plugins/dev-toolkit/hooks/tests/test-guard-bash.sh`.
+
 Известные принятые ограничения — см. `TODO.md` (сокращённые long-опции вида `--recu`, пробел внутри
-пути при word-splitting, `echo rm -rf` как false positive).
+пути при word-splitting, `echo rm -rf` как false positive, scope git/gh-барьера).
 
 ## Синхронизация vendor-копии chat-handoff
 
