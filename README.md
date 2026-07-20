@@ -12,8 +12,8 @@
 - **dev-toolkit** — инструменты повседневной разработки на PHP/Go/JS:
   - *Slash-команды:* `/dev-toolkit:review-quick`, `/dev-toolkit:review-last`,
     `/dev-toolkit:pr`, `/dev-toolkit:cppr` — code review и подготовка PR
-  - *Skills:* `review-code` — многоуровневое ревью диффа (`low`…`max`) с
-    параллельным поиском и adversarial-верификацией находок;
+  - *Skills:* `review-code` — многоуровневое ревью диффа (`low`…`max`; `low` —
+    безагентный проход, `medium`+ — параллельный поиск с adversarial-верификацией);
     `statusline-setup` — настройка строки статуса Claude Code;
     `optimize-project-docs` — оптимизация и реконсиляция `CLAUDE.md` / `README` / памяти проекта
   - *Хук защиты:* блокирует деструктивные Bash-команды (`rm -rf`,
@@ -74,7 +74,7 @@
 #### Skill: review-code
 
 Многоуровневое code review диффа: калибровка глубины по уровню (`low` —
-безагентный однопроходный режим; `medium`…`max` — 3–10 независимых углов
+безагентный однопроходный режим; `medium`…`max` — 3–9 независимых углов
 поиска с каталогами классов багов), adversarial-верификация выживших кандидатов
 (precision-скептик на `medium`, recall-протокол `CONFIRMED`/`PLAUSIBLE`/`REFUTED`
 на `high`+, три разные линзы на `max`), sweep-фаза поиска пропусков на
