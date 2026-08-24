@@ -21,7 +21,7 @@ ai-skills/
     └── dev-toolkit/
         ├── .claude-plugin/plugin.json
         ├── commands/      ← /dev-toolkit:pr, /dev-toolkit:cppr, /dev-toolkit:review-quick, /dev-toolkit:review-last
-        ├── skills/        ← review-code, statusline-setup, optimize-project-docs
+        ├── skills/        ← review-code, todo-ship, statusline-setup, optimize-project-docs
         └── hooks/
             ├── hooks.json       ← регистрация PreToolUse/Notification/Stop
             ├── guard-bash.sh    ← PreToolUse: блокирует деструктивные Bash-команды + секреты
