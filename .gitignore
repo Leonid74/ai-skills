@@ -1,6 +1,27 @@
-.claude/settings.local.json
-.DS_Store
-__pycache__/
+# IDE и редакторы
+.idea/
+.vscode/
+.history/
 
 # Рабочие и временные каталоги
 .dev/
+.dev_files/
+logs/
+
+# Зависимости
+node_modules/
+vendor/
+
+# Локальные настройки и секреты
+.claude/settings.local.json
+.env
+CLAUDE.local.md
+
+# Кэши инструментов
+.php-cs-fixer.cache
+.phpunit.result.cache
+.phpunit.cache/
+__pycache__/
+
+# Системное
+.DS_Store
