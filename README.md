@@ -130,12 +130,19 @@
 workflow-скрипт плагина `workflows/review-code.js` (`dev-toolkit:review-code-pipeline`): результаты
 агентов остаются в переменных скрипта, в сессию возвращается один итоговый объект, прерванный
 прогон возобновляется с кэшем завершившихся агентов. Режим включается, только когда skill вызвал
-сам пользователь и оценка числа агентов укладывается в ориентир «Dynamic workflow size» (`/config`):
-`medium` — 6, `high` — 10, `xhigh` — 19, `max` — 37. Оценка выше ориентира — skill останавливается и
-предлагает поднять ориентир, идти прежним режимом или запустить `Workflow` как есть. При автономном
-вызове моделью (`todo-ship`, проектные флоу), в headless-запуске и при недоступном или отклонённом
-`Workflow` работает прежний режим — параллельные вызовы `Agent`; причина называется в заголовке и в
-поле «оркестрация» сводки. Разрешение на запуск `Workflow` skill сам себе не выдаёт
+сам пользователь **slash-командой** (или прямо попросил workflow) и оценка числа агентов
+укладывается в ориентир «Dynamic workflow size» (`/config`); формула и числа оценки — в разделе
+«Оркестрация фаз 1–2.5» `SKILL.md` (здесь не дублируются). Оценка выше ориентира — skill
+останавливается и предлагает поднять ориентир, идти прежним режимом или запустить `Workflow` как
+есть. При просьбе о ревью обычными словами, автономном вызове моделью (`todo-ship`, проектные флоу),
+в headless-запуске и при недоступном или отклонённом `Workflow` работает прежний режим — вызовы
+`Agent`; причина называется в заголовке и в поле «оркестрация» сводки.
+
+**Темп запуска — волны по 5** (оба режима): агенты не запускаются залпом — волна из пяти, ответы
+в журнал, затем следующая; первыми идут security и корректность. Ошибка лимита использования
+(HTTP 429) — не «отказ агента»: перезапуск на неё не тратится, запуск останавливается, после сброса
+лимита прогон продолжается с недостающих агентов. На `xhigh`/`max` skill заранее называет оценку
+числа агентов и расхода. Разрешение на запуск `Workflow` skill сам себе не выдаёт
 (`allowed-tools` его не содержит) — диалог разрешения остаётся гейтом.
 
 После `ReportFindings` skill печатает сводку прогона (уровень, target, размер диффа, проход и
@@ -371,6 +378,10 @@ ai-skills/
         │   ├── todo-ship/SKILL.md
         │   ├── statusline-setup/SKILL.md
         │   └── optimize-project-docs/SKILL.md
+        ├── workflows/
+        │   └── review-code.js        ← конвейер review-code (dev-toolkit:review-code-pipeline)
+        ├── tests/workflows/
+        │   └── test-review-code.mjs  ← стенд-заглушка для workflow-скрипта
         └── hooks/
             ├── hooks.json            ← регистрация хуков (PreToolUse, Notification, Stop)
             ├── guard-bash.sh         ← PreToolUse: деструктивные команды + секреты
@@ -385,7 +396,10 @@ ai-skills/
 claude plugin validate ./ai-skills                      # marketplace.json
 claude plugin validate ./ai-skills/plugins/chat-handoff # plugin.json + SKILL.md
 claude plugin validate ./ai-skills/plugins/dev-toolkit  # plugin.json + команды + hooks.json
+node ./ai-skills/plugins/dev-toolkit/tests/workflows/test-review-code.mjs   # стенд workflow-скрипта
 ```
+
+Полный перечень проверок (включая `shellcheck` и тест-векторы `guard-bash`) — в `CLAUDE.md`.
 
 ### Синхронизация vendor-копии chat-handoff
 
