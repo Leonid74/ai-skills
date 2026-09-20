@@ -22,6 +22,8 @@ ai-skills/
         ├── .claude-plugin/plugin.json
         ├── commands/      ← /dev-toolkit:pr, /dev-toolkit:cppr, /dev-toolkit:review-quick, /dev-toolkit:review-last
         ├── skills/        ← review-code, todo-ship, statusline-setup, optimize-project-docs
+        ├── workflows/     ← review-code.js — конвейер review-code (dev-toolkit:review-code-pipeline)
+        ├── tests/workflows/ ← стенд-заглушка для workflow-скрипта (моки agent/parallel/pipeline)
         └── hooks/
             ├── hooks.json       ← регистрация PreToolUse/Notification/Stop
             ├── guard-bash.sh    ← PreToolUse: блокирует деструктивные Bash-команды + секреты
@@ -47,6 +49,25 @@ claude plugin validate ./plugins/dev-toolkit              # plugin.json + ком
 shellcheck -S style -o all plugins/dev-toolkit/hooks/guard-bash.sh
 bash plugins/dev-toolkit/hooks/tests/test-guard-bash.sh
 ```
+
+Для workflow-скрипта (`plugins/dev-toolkit/workflows/review-code.js`) — стенд-заглушка; `node --check`
+к нему неприменим (top-level `return` — штатная форма workflow-скрипта):
+
+```bash
+node plugins/dev-toolkit/tests/workflows/test-review-code.mjs
+```
+
+## Workflow-скрипт review-code (ловушки)
+
+- Тексты правил (ракурсы углов, skip-list, инварианты, протоколы) в скрипте **не дублировать** — их
+  передаёт скилл через `args` из своего `SKILL.md`. В скрипте только механика; его константа
+  `LEVELS` — зеркало «Таблицы уровней» `SKILL.md`: менять обе стороны синхронно.
+- `Date.now()`, `Math.random()`, `new Date()` без аргументов в скрипте запрещены средой (ломают
+  resume); промпты агентов должны быть детерминированы — иначе кэш `resumeFromRunId` не сработает.
+- `meta` — чистый литерал; `meta.name` не должен совпадать с именем скилла (`review-code` занят:
+  плагинные workflow и скиллы делят неймспейс `dev-toolkit:<имя>`).
+- Режим `Agent` из `SKILL.md` не удалять — это фолбэк для автономных вызовов (у `Workflow`
+  обязательный opt-in пользователя) и для сессий с малым ориентиром размера workflow.
 
 ## Архитектура: guard-bash.sh (самый сложный артефакт в репозитории)
 
