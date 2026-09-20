@@ -46,7 +46,10 @@ const SWEEP_CAP = 8;
 const MERGE_THRESHOLD = 8;
 const MERGE_MAX = 4;
 const DEFAULT_WAVE = 5;
+// Волна меньше двух отключила бы детект «в волне не ответил ни один» — тихий лимит ушёл бы в отказы.
+const MIN_WAVE = 2;
 const MAX_WAVE = 16;
+const MAX_PATH_LENGTH = 300;
 
 const CANDIDATES_SCHEMA = {
   type: "object",
@@ -75,7 +78,7 @@ const CANDIDATES_SCHEMA = {
           skip_note: {
             type: "string",
             description:
-              "пометка «под skip-list: <цитата правила>», иначе пусто",
+              "только на max: пометка «под skip-list: <цитата правила>», иначе пусто",
           },
         },
         required: [
@@ -159,9 +162,9 @@ if (!Number.isInteger(pass) || pass < 1) {
   throw new Error(`args.pass: ожидается целое ≥ 1, получено «${input.pass}»`);
 }
 const wave = input.wave === undefined ? DEFAULT_WAVE : input.wave;
-if (!Number.isInteger(wave) || wave < 1 || wave > MAX_WAVE) {
+if (!Number.isInteger(wave) || wave < MIN_WAVE || wave > MAX_WAVE) {
   throw new Error(
-    `args.wave: ожидается целое 1…${MAX_WAVE}, получено «${input.wave}»`,
+    `args.wave: ожидается целое ${MIN_WAVE}…${MAX_WAVE}, получено «${input.wave}» (волна из одного агента отключает распознавание лимита использования)`,
   );
 }
 const maxAgents = input.maxAgents === undefined ? null : input.maxAgents;
@@ -227,12 +230,15 @@ const stats = {
   byRole: { angles: 0, verifiers: 0, sweep: 0 },
   restarts: { angles: 0, verifiers: 0, sweep: 0 },
   byModel: { opus: {}, sonnet: {}, default: {} },
+  // Запуски, сгоревшие об лимит использования: в число агентов прогона они не входят.
+  limitHits: 0,
 };
 const notes = [];
 const degraded = [];
 // Причина остановки запуска новых агентов (лимит использования, бюджет хода) либо null.
 let halted = null;
-let pendingAgents = 0;
+// Что осталось несделанным при остановке по лимиту — чтобы сессия знала, что продолжать через resume.
+const pending = { angles: [], unverifiedCandidates: 0, sweep: false };
 
 /**
  * Общее число запущенных агентов — производное счётчиков, а не отдельное состояние.
@@ -262,18 +268,39 @@ function modelFor(cheapRole) {
  */
 function looksLikeLimit(e) {
   const text = String(e && e.message ? e.message : e);
-  return /budget|limit|429|quota|rate/i.test(text);
+  // Только целые слова и устойчивые обороты: подстроки вроде gene-rate, de-limit-er, unlimited —
+  // это обычные ошибки агента, и остановка прогона по ним позволяла бы сорвать ревью текстом ошибки.
+  return /\b(budget|quota|429|too many requests|rate[ _-]?limit(ed|s)?|(usage|session|spend(ing)?) limit|limit (reached|exceeded|hit))\b/i.test(
+    text,
+  );
 }
 
 /**
- * Запускает одного агента и учитывает его в разбивках сводки (по ролям и по корзинам моделей).
+ * Учитывает состоявшийся запуск агента в разбивках сводки (по ролям и по корзинам моделей).
+ *
+ * @param {{model: (string|undefined), role: string, roleName: string}} task задание.
+ * @param {boolean} restart true — это перезапуск отказавшего агента.
+ */
+function countLaunch(task, restart) {
+  if (restart) stats.restarts[task.role] += 1;
+  else stats.byRole[task.role] += 1;
+  const bucket = stats.byModel[task.model || "default"];
+  const name = restart ? `${task.roleName} (перезапуск)` : task.roleName;
+  bucket[name] = (bucket[name] || 0) + 1;
+}
+
+/**
+ * Запускает одного агента. Запуск здесь не учитывается: считать его агентом прогона или запуском,
+ * сгоревшим об лимит, решает runWaves по итогу всей волны — иначе одна и та же ситуация «лимит»
+ * давала бы разное число агентов в зависимости от того, пришла она исключением или молчанием.
  *
  * @param {{prompt: string, label: string, phase: string, schema: object, model: (string|undefined), role: string, roleName: string}} task задание.
  * @param {boolean} restart true — это перезапуск отказавшего агента.
- * @returns {Promise<object|null>} структурированный результат либо null при отказе агента.
+ * @returns {Promise<{reply: (object|null), limit: boolean, skipped: boolean}>} ответ агента; limit — запуск
+ *   сгорел об лимит; skipped — агент не запускался, потому что прогон уже остановлен.
  */
 async function run(task, restart) {
-  if (halted) return null;
+  if (halted) return { reply: null, limit: false, skipped: true };
   const agentOpts = {
     label: restart ? `${task.label} · перезапуск` : task.label,
     phase: task.phase,
@@ -288,17 +315,12 @@ async function run(task, restart) {
     if (looksLikeLimit(e)) {
       halted = `запуск агентов остановлен: ${e && e.message ? e.message : e}`;
       log(halted);
-      return null;
+      return { reply: null, limit: true, skipped: false };
     }
     log(`агент «${agentOpts.label}» упал: ${e && e.message ? e.message : e}`);
     reply = null;
   }
-  if (restart) stats.restarts[task.role] += 1;
-  else stats.byRole[task.role] += 1;
-  const bucket = stats.byModel[task.model || "default"];
-  const name = restart ? `${task.roleName} (перезапуск)` : task.roleName;
-  bucket[name] = (bucket[name] || 0) + 1;
-  return reply || null;
+  return { reply: reply || null, limit: false, skipped: false };
 }
 
 /**
@@ -314,18 +336,29 @@ async function runWaves(tasks) {
   for (let i = 0; i < tasks.length; i += wave) {
     if (halted) break;
     const chunk = tasks.slice(i, i + wave);
-    const replies = await parallel(chunk.map((t) => () => run(t, false)));
+    const results = await parallel(chunk.map((t) => () => run(t, false)));
+    const launched = results.map(
+      (r) => r || { reply: null, limit: false, skipped: false },
+    );
     const failed = [];
-    chunk.forEach((t, j) => {
-      out[i + j] = replies[j] || null;
-      if (!out[i + j]) failed.push(i + j);
+    launched.forEach((r, j) => {
+      out[i + j] = r.reply;
+      if (!r.reply) failed.push(i + j);
     });
-    if (halted) break;
-    if (chunk.length >= 2 && failed.length === chunk.length) {
+    // Волна из двух и более агентов без единого ответа — лимит, а не отказ агентов (SKILL.md,
+    // «Темп запуска», пункт 4). Размер волны не меньше двух гарантирует проверка args.wave.
+    const silentLimit =
+      !halted && chunk.length >= 2 && failed.length === chunk.length;
+    if (silentLimit) {
       halted = `запуск агентов остановлен: в волне из ${chunk.length} агентов не ответил ни один — похоже на лимит использования`;
       log(halted);
-      break;
     }
+    launched.forEach((r, j) => {
+      if (r.skipped) return;
+      if (r.limit || silentLimit) stats.limitHits += 1;
+      else countLaunch(chunk[j], false);
+    });
+    if (halted) break;
     if (failed.length) {
       log(
         `не дали структурного результата: ${failed.map((k) => tasks[k].label).join("; ")} — перезапуск`,
@@ -334,7 +367,11 @@ async function runWaves(tasks) {
         failed.map((k) => () => run(tasks[k], true)),
       );
       failed.forEach((k, j) => {
-        out[k] = again[j] || null;
+        const r = again[j] || { reply: null, limit: false, skipped: false };
+        out[k] = r.reply;
+        if (r.skipped) return;
+        if (r.limit) stats.limitHits += 1;
+        else countLaunch(tasks[k], true);
       });
     }
   }
@@ -353,14 +390,25 @@ async function runWaves(tasks) {
 function normalizePath(raw) {
   const p = String(raw).replace(/\\/g, "/").replace(/^\.\//, "");
   if (files.includes(p)) return { path: p, status: "diff" };
+  // Строка пришла от агента, читавшего недоверенный дифф, и дальше попадёт в метки и находки:
+  // сначала отсекается всё, что не похоже на путь (пусто, управляющие символы и переводы строк,
+  // чрезмерная длина, пробел по краям, схема URL, ~ и переменные окружения, выход за корень).
+  const malformed =
+    !p ||
+    p.length > MAX_PATH_LENGTH ||
+    p !== p.trim() ||
+    /[\u0000-\u001f\u007f]/.test(p) ||
+    /^[~$%]/.test(p) ||
+    p.includes("://") ||
+    p.split("/").includes("..");
+  if (malformed) return { path: p, status: "unsafe" };
   // Самый длинный суффикс: при files = [src/x.php, pkg/src/x.php] путь …/pkg/src/x.php — это второй.
   const bySuffix = files
     .filter((f) => p.endsWith(`/${f}`))
     .sort((a, b) => b.length - a.length);
   if (bySuffix.length) return { path: bySuffix[0], status: "diff" };
-  const unsafe =
-    p.startsWith("/") || /^[A-Za-z]:/.test(p) || p.split("/").includes("..");
-  return { path: p, status: unsafe ? "unsafe" : "repo" };
+  const absolute = p.startsWith("/") || /^[A-Za-z]:/.test(p);
+  return { path: p, status: absolute ? "unsafe" : "repo" };
 }
 
 /**
@@ -374,14 +422,22 @@ function locKey(c) {
 }
 
 /**
- * Считается ли кандидат security-находкой: по флагу либо по категории (пункт 4 skip-list говорит о
- * «находках категории security» — рассогласованная пара category/security не должна снимать защиту).
+ * Считается ли кандидат security-находкой для пункта 4 skip-list: по флагу либо по категории.
+ * Признак влияет ТОЛЬКО на то, может ли skip-list снять кандидата, — ошибка в широкую сторону
+ * безопасна (находка остаётся в выводе), поэтому перечень корней намеренно щедрый. На порядок и
+ * срез кандидатов признак не влияет: иначе содержимое диффа управляло бы тем, что дойдёт до
+ * верификации.
  *
  * @param {{security?: boolean, category?: string}} c кандидат.
  * @returns {boolean} true — skip-list такого кандидата не подавляет.
  */
 function isSecurity(c) {
-  return Boolean(c.security) || /secur|secret/i.test(String(c.category || ""));
+  return (
+    Boolean(c.security) ||
+    /secur|secret|inject|auth|xss|csrf|ssrf|travers|leak|crypt|privil|permission|credential/i.test(
+      String(c.category || ""),
+    )
+  );
 }
 
 /**
@@ -426,6 +482,8 @@ function groupByLocation(candidates, lensCount) {
     groups = merged;
   }
   if (maxAgents !== null) {
+    // Верификация обязательна (кандидат без голоса — деградация), поэтому хотя бы одна группа
+    // запускается всегда; превышение потолка называется в итоге прогона, а не замалчивается.
     const allowed = Math.max(
       1,
       Math.floor((maxAgents - totalAgents()) / lensCount),
@@ -513,7 +571,9 @@ function finderPrompt(angle) {
  */
 function verifierPrompt(group, lens) {
   return [
-    `Ты — независимый верификатор кандидатов code review по локации ${group.key}. Уровень: ${level}, проход: ${pass}.` +
+    // Ключ группы в текст задания не подставляется: путь кандидата — строка от агента, читавшего
+    // недоверенный дифф; локации верификатор берёт из JSON-блока ниже.
+    `Ты — независимый верификатор кандидатов code review. Уровень: ${level}, проход: ${pass}. Кандидатов в задании: ${group.candidates.length}.` +
       (lens
         ? ` Твоя линза: **${lens}** — суди кандидатов именно с этой стороны.`
         : ""),
@@ -550,10 +610,41 @@ function sweepPrompt(survivors, removed) {
 // Ключ «локация|summary» → источник первого принятого кандидата (общий для фазы 1 и sweep).
 const seen = new Map();
 const rejected = [];
+const overflow = [];
 let suppressedRaw = [];
 
 /**
- * Принимает ответ finder'а: security первыми, потолок, нормализация путей, id, отсев точных дублей.
+ * Путь для показа в нотах и итоге: строка от агента может быть любой, поэтому она обрезается и
+ * экранируется как JSON-строка.
+ *
+ * @param {unknown} raw путь, как его вернул агент.
+ * @returns {string} безопасное для вывода представление.
+ */
+function showPath(raw) {
+  return JSON.stringify(String(raw).slice(0, 120));
+}
+
+/**
+ * Отклоняет запись finder'а с путём вне репозитория: без верификации, но с видимым следом.
+ *
+ * @param {{file: string, line: number, summary: string}} item кандидат или запись suppressed.
+ * @param {string} source метка источника.
+ */
+function reject(item, source) {
+  rejected.push({
+    file: showPath(item.file),
+    line: item.line,
+    summary: item.summary,
+    source,
+    reason: "путь вне репозитория или не похож на путь",
+  });
+  notes.push(
+    `${source}: запись с путём вне репозитория отклонена без верификации (${showPath(item.file)})`,
+  );
+}
+
+/**
+ * Принимает ответ finder'а: потолок (в порядке возврата), нормализация путей, id, отсев точных дублей.
  * Подавление finder'ом не принимается на веру: на max (пункт 1 skip-list) и для security-записей
  * (пункт 4) запись suppressed превращается в обычного кандидата с пометкой — снять его могут
  * только верификаторы.
@@ -567,8 +658,9 @@ function accept(reply, source, cap) {
   const promoted = [];
   for (const s of reply.suppressed || []) {
     const norm = normalizePath(s.file);
-    const entry = { ...s, file: norm.path, by: source };
-    if (level === "max" || isSecurity(s)) {
+    if (norm.status === "unsafe") {
+      reject(s, source);
+    } else if (level === "max" || isSecurity(s)) {
       promoted.push({
         file: s.file,
         line: s.line,
@@ -578,44 +670,49 @@ function accept(reply, source, cap) {
         category: s.security ? "security" : "suppressed-by-finder",
         security: Boolean(s.security),
         skip_note: `под skip-list: ${s.rule}`,
+        promoted: true,
       });
-      notes.push(
-        `${source}: подавление ${locKey(entry)} finder'ом не принято (${level === "max" ? "уровень max" : "security"}) — кандидат отправлен на верификацию`,
-      );
     } else {
-      suppressedRaw.push(entry);
+      suppressedRaw.push({ ...s, file: norm.path, by: source });
     }
   }
-  // Security первыми: срез по потолку не должен выбрасывать их порядком возврата.
-  const raw = [...(reply.candidates || []), ...promoted];
-  const ordered = [
-    ...raw.filter(isSecurity),
-    ...raw.filter((c) => !isSecurity(c)),
-  ];
-  if (ordered.length > cap) {
+  // Порядок возврата сохраняется: никакой признак от самого finder'а (security, категория) не
+  // даёт приоритета при срезе — иначе содержимое диффа управляло бы тем, что дойдёт до
+  // верификации. Записи, поднятые из suppressed, потолок кандидатов не делят (у них свой, того же
+  // размера): заполнив candidates до потолка, finder не может вытеснить ими подавленное.
+  // Всё срезанное сохраняется в overflow и делает прогон деградированным.
+  const own = reply.candidates || [];
+  const kept = [...own.slice(0, cap), ...promoted.slice(0, cap)];
+  const cut = [...own.slice(cap), ...promoted.slice(cap)];
+  if (cut.length) {
     degraded.push(
-      `${source}: возвращено ${ordered.length} кандидатов, сверх потолка ${cap} срезано ${ordered.length - cap}`,
+      `${source}: возвращено ${own.length + promoted.length} кандидатов, сверх потолка ${cap} срезано ${cut.length} — см. overflow`,
     );
-  }
-  const out = [];
-  ordered.slice(0, cap).forEach((c, i) => {
-    const norm = normalizePath(c.file);
-    if (norm.status === "unsafe") {
-      rejected.push({
-        file: String(c.file),
+    for (const c of cut) {
+      const norm = normalizePath(c.file);
+      overflow.push({
+        file: norm.status === "unsafe" ? showPath(c.file) : norm.path,
         line: c.line,
         summary: c.summary,
+        security: isSecurity(c),
         source,
-        reason: "путь вне репозитория",
       });
-      notes.push(
-        `${source}: кандидат с путём вне репозитория отклонён без верификации (${String(c.file)})`,
-      );
+    }
+  }
+  const out = [];
+  kept.forEach((c, i) => {
+    const norm = normalizePath(c.file);
+    if (norm.status === "unsafe") {
+      reject(c, source);
       return;
     }
     if (norm.status === "repo")
       notes.push(
         `${source}: путь ${norm.path} не входит в список изменённых файлов`,
+      );
+    if (c.promoted)
+      notes.push(
+        `${source}: подавление ${norm.path}:${c.line} finder'ом не принято (${level === "max" ? "уровень max" : "security"}) — кандидат отправлен на верификацию`,
       );
     const cand = { ...c, file: norm.path, source, id: `${source}#${i + 1}` };
     const k = `${locKey(cand)}|${cand.summary.trim().toLowerCase()}`;
@@ -779,8 +876,15 @@ async function verifyAll(candidates, phaseTitle) {
 
 phase("Поиск");
 const orderedAngles = [...angles].sort((a, b) => a.n - b.n);
-// Порядок запуска — по ценности: security, затем корректность, затем остальные по номеру.
-const launchRank = (a) => (a.n === SECURITY_ANGLE ? 0 : a.n === 1 ? 1 : 2);
+/**
+ * Очерёдность запуска угла по ценности: security, затем корректность, затем остальные по номеру.
+ *
+ * @param {{n: number}} a угол.
+ * @returns {number} ранг: меньше — раньше.
+ */
+function launchRank(a) {
+  return a.n === SECURITY_ANGLE ? 0 : a.n === 1 ? 1 : 2;
+}
 const finderTasks = orderedAngles
   .map((angle, idx) => {
     const half =
@@ -817,7 +921,7 @@ const byNumber = finderTasks
 for (const { t, reply } of byNumber) {
   if (!reply) {
     if (halted) {
-      pendingAgents += 1;
+      pending.angles.push(`угол ${t.angle.n} «${t.angle.title}»`);
       continue;
     }
     failedAngles.push({
@@ -864,7 +968,11 @@ if (cfg.sweep && !halted) {
       roleName: "sweep-finder",
     },
   ]);
-  if (!reply && !halted) {
+  if (!reply && halted) {
+    // Лимит настиг сам sweep: уровень его предусматривает, он просто не состоялся.
+    sweep = "прерван по лимиту";
+    pending.sweep = true;
+  } else if (!reply) {
     sweep = "не отработал";
     degraded.push(
       "sweep не отработал дважды — страховки от пропусков фазы 1 не было",
@@ -881,23 +989,32 @@ if (cfg.sweep && !halted) {
   }
 } else if (cfg.sweep) {
   sweep = "не запускался: прогон прерван";
+  pending.sweep = true;
 }
 
 // ---------- фаза 3: сводка ----------
 
 phase("Сводка");
 if (halted) {
-  pendingAgents += judged.filter((c) => c.unverified).length;
+  pending.unverifiedCandidates = judged.filter((c) => c.unverified).length;
+}
+if (maxAgents !== null && totalAgents() > maxAgents) {
+  notes.push(
+    `потолок агентов ${maxAgents} превышен: запущено ${totalAgents()} (углы и sweep уровня запускаются всегда, верификация — не меньше одной группы)`,
+  );
 }
 const survivors = judged
   .filter((c) => c.outcome === "survived")
   .map(({ id, outcome, rule, duplicateOf, ...rest }) => rest);
-const short = (c) => ({
-  file: c.file,
-  line: c.line,
-  summary: c.summary,
-  source: c.source,
-});
+/**
+ * Краткая форма кандидата для списков снятого.
+ *
+ * @param {object} c кандидат.
+ * @returns {{file: string, line: number, summary: string, source: string}} поля для сводки.
+ */
+function short(c) {
+  return { file: c.file, line: c.line, summary: c.summary, source: c.source };
+}
 const refuted = judged.filter((c) => c.outcome === "refuted").map(short);
 const duplicates = judged
   .filter((c) => c.outcome === "duplicate")
@@ -955,17 +1072,23 @@ return {
   wave,
   mode: halted ? "прерван" : degraded.length ? "деградированный" : "полный",
   halted,
-  pendingAgents,
+  pending,
   degraded,
   survivors,
   refuted,
   duplicates,
   suppressed: [...suppressedMap.values()],
   rejected,
+  overflow,
   failedAngles,
   sweep,
   agents: {
     total: totalAgents(),
+    limitHits: stats.limitHits,
+    overMax:
+      maxAgents !== null && totalAgents() > maxAgents
+        ? totalAgents() - maxAgents
+        : 0,
     byRole: stats.byRole,
     restarts: stats.restarts,
     byModel: {
