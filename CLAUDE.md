@@ -22,6 +22,8 @@ ai-skills/
         ├── .claude-plugin/plugin.json
         ├── commands/      ← /dev-toolkit:pr, /dev-toolkit:cppr, /dev-toolkit:review-quick, /dev-toolkit:review-last
         ├── skills/        ← review-code, todo-ship, statusline-setup, optimize-project-docs
+        ├── workflows/     ← review-code.js — конвейер review-code (dev-toolkit:review-code-pipeline)
+        ├── tests/workflows/ ← стенд-заглушка для workflow-скрипта (моки agent/parallel/pipeline)
         └── hooks/
             ├── hooks.json       ← регистрация PreToolUse/Notification/Stop
             ├── guard-bash.sh    ← PreToolUse: блокирует деструктивные Bash-команды + секреты
@@ -47,6 +49,34 @@ claude plugin validate ./plugins/dev-toolkit              # plugin.json + ком
 shellcheck -S style -o all plugins/dev-toolkit/hooks/guard-bash.sh
 bash plugins/dev-toolkit/hooks/tests/test-guard-bash.sh
 ```
+
+Для workflow-скрипта (`plugins/dev-toolkit/workflows/review-code.js`) — стенд-заглушка; `node --check`
+к нему неприменим (top-level `return` — штатная форма workflow-скрипта):
+
+```bash
+node plugins/dev-toolkit/tests/workflows/test-review-code.mjs
+```
+
+## Workflow-скрипт review-code (ловушки)
+
+- Тексты правил (ракурсы углов, skip-list, инварианты, протоколы, формат кандидата) в скрипте **не
+  дублировать** — их передаёт скилл через `args` из своего `SKILL.md`. В скрипте только механика.
+  Величины-зеркала `SKILL.md` — менять обе стороны синхронно: `LEVELS` («Таблица уровней»),
+  `LENSES` (линзы `max`), `SECURITY_ANGLE`, `SWEEP_CAP` (фаза 2.5), `MERGE_THRESHOLD`/`MERGE_MAX`,
+  `DEFAULT_WAVE`/`MIN_WAVE`/`MAX_WAVE`, `MAX_PATH_LENGTH` и перечень корней security-категорий в
+  `isSecurity` («Оркестрация фаз 1–2.5»).
+- Всё, что пришло от агента (путь, текст кандидата), — недоверенные данные: в текст заданий другим
+  агентам только JSON-блоком, в ноты — через `showPath`; признаки от самого finder'а (security,
+  категория) не должны влиять на то, какие кандидаты дойдут до верификации.
+- Запуск агентов — только волнами (`runWaves`), не общим `parallel` по всему списку: волна из двух
+  и более агентов без единого ответа трактуется как лимит использования, а не отказ агентов.
+- Оба JS-файла — в формате Prettier с дефолтами: `npx --yes prettier@3 --check <файлы>`.
+- `Date.now()`, `Math.random()`, `new Date()` без аргументов в скрипте запрещены средой (ломают
+  resume); промпты агентов должны быть детерминированы — иначе кэш `resumeFromRunId` не сработает.
+- `meta` — чистый литерал; `meta.name` не должен совпадать с именем скилла (`review-code` занят:
+  плагинные workflow и скиллы делят неймспейс `dev-toolkit:<имя>`).
+- Режим `Agent` из `SKILL.md` не удалять — это фолбэк для автономных вызовов (у `Workflow`
+  обязательный opt-in пользователя) и для сессий с малым ориентиром размера workflow.
 
 ## Архитектура: guard-bash.sh (самый сложный артефакт в репозитории)
 
