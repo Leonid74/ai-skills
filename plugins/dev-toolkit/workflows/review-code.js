@@ -385,7 +385,9 @@ async function runWaves(tasks) {
  *
  * @param {string} raw путь, как его вернул агент (может быть абсолютным или с обратными слэшами).
  * @returns {{path: string, status: string}} status: 'diff' — файл из диффа; 'repo' — repo-relative путь
- *   вне диффа (например, call-site); 'unsafe' — абсолютный или выходящий за корень путь.
+ *   вне диффа (например, call-site); 'unsafe' — всё, что не похоже на путь внутри репозитория:
+ *   пустая строка, управляющие символы, чрезмерная длина, пробел по краям, схема URL, начало с
+ *   ~/$/%, сегмент «..», абсолютный путь, не опознанный как файл диффа.
  */
 function normalizePath(raw) {
   const p = String(raw).replace(/\\/g, "/").replace(/^\.\//, "");
