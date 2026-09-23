@@ -137,6 +137,10 @@ expect 0 "mysql --${_pw}=short"                     # литерал короч�
 expect 0 "curl -d max_${_tok}s=4096 https://example.com"
 expect 0 "git commit -m \"fix: ${_tok}: обновление логики\""
 expect 0 "./app --${_tok}-file ./x"
+expect 0 "grep -rn \"${_pw^}::sendResetLink\" app/"  # оператор области видимости ::
+expect 0 "grep -rn \"${_pw^}::defaults\" app/"
+expect 0 "php artisan test --filter=PersistRenewed${_tok^}Test::test_it_persists"
+expect 2 "php -r \"\\\$c = ['${_pw}' => 'hunter2hunter2'];\""  # PHP-массив =>
 
 # --- вывод окружения ---
 expect 2 'printenv | grep FOO'
@@ -164,6 +168,10 @@ expect 0 'declare -a arr'
 expect 0 'printenv HOME'                             # одна переменная — вне правила
 expect 0 'docker compose up -d'
 expect 0 'docker compose exec app php artisan migrate'
+expect 0 'grep -n redis docker-compose.yml config/database.php'  # имя файла, не команда
+expect 0 'grep -rn QUEUE deploy/ docker-compose.yml config/queue.php'
+expect 0 'docker config ls'                          # swarm configs, не compose
+expect 0 'echo run docker compose exec app env later >> notes.md'  # текст, не команда
 expect 2 'env -u FOO'                                # -u берёт значение, команды нет
 
 # --- .env-файлы: fail-closed ---

@@ -58,9 +58,12 @@ fi
 # чтобы русский текст после "token:" в сообщении коммита не считался
 # литералом. Имя с суффиксом (TokenTest, max_tokens) без "="/":" следом не
 # ловится — это и убирает ложные срабатывания прежнего правила. Кавычка
-# между именем и "=/:" — JSON-форма ("token": "…").
-_secret_assign_re='(password|passwd|secret|token|api[_-]?key)[A-Za-z0-9_]*["'\'']?[[:space:]]*[=:][[:space:]]*["'\'']?'
-_secret_assign_re+='[A-Za-z0-9!#%&*+,:;<=>?@^_|-][A-Za-z0-9!#%&*+,./:;<=>?@^_|~-]{7,}'
+# между именем и "=/:" — JSON-форма ("token": "…"), "=>" — PHP-массив.
+# Первый символ литерала — не ":": иначе оператор области видимости
+# (Password::defaults, --filter=…TokenTest::test_x) читался бы как
+# "двоеточие + литерал". В хвосте ":" разрешён (URL, base64-подобные значения).
+_secret_assign_re='(password|passwd|secret|token|api[_-]?key)[A-Za-z0-9_]*["'\'']?[[:space:]]*(=>?|:)[[:space:]]*["'\'']?'
+_secret_assign_re+='[A-Za-z0-9!#%&*+,;<=>?@^_|-][A-Za-z0-9!#%&*+,./:;<=>?@^_|~-]{7,}'
 if printf '%s' "${cmd}" | LC_ALL=C grep -qiE -e "${_secret_assign_re}"; then
   block_secret "в команде литерал, присвоенный чувствительному имени (password/secret/token/api_key); ${_secret_hint}"
 fi
@@ -303,12 +306,38 @@ while IFS= read -r _seg; do
       ;;
     *) ;;
   esac
-  if printf '%s' "${_seg}" | grep -Eiq '(\bdocker[[:space:]]+compose|\bdocker-compose)\b.*[[:space:]]config\b'; then
-    block "docker compose config выводит конфигурацию с подставленными секретами"
-  fi
-  if printf '%s' "${_seg}" | grep -Eiq '\b(docker|podman|kubectl)\b.*[[:space:]]exec[[:space:]].*[[:space:]](env|printenv)([[:space:]]|$)'; then
-    block "вывод окружения контейнера (exec … env/printenv) может раскрыть секреты"
-  fi
+  # docker compose config / … exec … env — сверка по ТОКЕНАМ от команды
+  # сегмента, а не регексом по строке: \b считает "." и "/" границей слова,
+  # и "grep x docker-compose.yml config/app.php" ложно совпадал с
+  # "docker-compose … config".
+  case "${_c0}" in
+    docker|docker-compose|podman|podman-compose|kubectl)
+      _d_compose=false
+      _d_exec=false
+      if [[ "${_c0}" == *-compose ]]; then _d_compose=true; fi
+      for _t in "${_args[@]}"; do
+        _t="${_t,,}"
+        if ${_d_exec}; then
+          case "${_t##*/}" in
+            env|printenv) block "вывод окружения контейнера (exec … env/printenv) может раскрыть секреты" ;;
+            *) ;;
+          esac
+          continue
+        fi
+        case "${_t}" in
+          compose) _d_compose=true ;;
+          config)
+            if ${_d_compose}; then
+              block "docker compose config выводит конфигурацию с подставленными секретами"
+            fi
+            ;;
+          exec) _d_exec=true ;;
+          *) ;;
+        esac
+      done
+      ;;
+    *) ;;
+  esac
 
   _env_hit=false
   for _t in "${_w[@]}"; do
