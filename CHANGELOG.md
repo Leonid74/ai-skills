@@ -24,7 +24,7 @@
   пропускаются; оператор `::` (`Password::defaults`, `--filter=…TokenTest::test_x`) и русский текст
   после `token:` в сообщении коммита литералом не считаются. Сообщение блокировки подсказывает обход:
   секрет — через переменную окружения или файл.
-- **Новое: вывод окружения** — голые `printenv`/`env`/`export`/`set`/`declare -p`,
+- **Новое: вывод окружения** — голые `printenv`/`env`/`export`/`set`/`declare`/`typeset` (допустимы только флаги),
   `docker compose config`/`docker-compose config`, `docker`/`podman`/`kubectl … exec … env`,
   `/proc/*/environ`. `env FOO=1 cmd`, `set -euo pipefail`, `printenv HOME` пропускаются. Docker-
   правила сверяются по токенам от команды сегмента, поэтому `grep … docker-compose.yml config/…` не
