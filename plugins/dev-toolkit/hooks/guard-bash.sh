@@ -24,10 +24,48 @@ block_secret() {
   exit 2
 }
 
-# Секреты — проверяем ПЕРВОЙ, чтобы команда с секретом не попала под
-# эхо-правило ниже.
-if printf '%s' "${cmd}" | grep -qiE 'secret|password|token'; then
-  block_secret "команда содержит чувствительное ключевое слово (secret/password/token)"
+# Секреты — проверяем ПЕРВЫМИ, чтобы команда с секретом не попала под
+# эхо-правила ниже. Ловим ЗНАЧЕНИЯ секретов, а не слова: прежнее правило
+# «слово secret/password/token в любом месте команды» блокировало имена
+# классов, путей и тестов (--filter=…TokenTest) и не ловило ни одного
+# реального ключа. Защита — от СЛУЧАЙНОЙ утечки значения в текст команды
+# (транскрипт, логи), не от целенаправленного обхода: разбор кавычек и
+# экранирования здесь осознанно не делается.
+_secret_hint="секрет — через переменную окружения или файл, не литералом в команде"
+
+# Значения известных форматов. Регистрозависимо (префиксы у провайдеров
+# фиксированы) и под LC_ALL=C (диапазоны [A-Z] — строго ASCII). Граница
+# слева не даёт хвосту слова совпасть с префиксом: "task-…"/"disk-…" не "sk-…".
+# Для generic "sk-" требуется сплошной буквенно-цифровой прогон ≥ 20 —
+# kebab-case имена ("sk-learn-…") такого прогона не содержат.
+_secret_value_re='(^|[^A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{36}'
+_secret_value_re+='|(^|[^A-Za-z0-9_])github_pat_[A-Za-z0-9_]{22,}'
+_secret_value_re+='|(^|[^A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}'
+_secret_value_re+='|(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]*[A-Za-z0-9]{20}'
+_secret_value_re+='|(^|[^A-Za-z0-9_])xox[abprs]-[A-Za-z0-9-]{10,}'
+_secret_value_re+='|(^|[^A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}([^0-9A-Za-z]|$)'
+_secret_value_re+='|(^|[^0-9])[0-9]{8,10}:[A-Za-z0-9_-]{35}'
+_secret_value_re+='|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.'
+_secret_value_re+='|-----BEGIN ([A-Z]+ )*PRIVATE KEY-----'
+if printf '%s' "${cmd}" | LC_ALL=C grep -qE -e "${_secret_value_re}"; then
+  block_secret "в команде значение секрета известного формата (токен/ключ/JWT/приватный ключ); ${_secret_hint}"
+fi
+
+# Присваивание литерала чувствительному имени: password=…, API_KEY: …,
+# --token=… Литерал — ≥ 8 ASCII-символов подряд и не начинается с "$"
+# (ссылка на переменную — норма) и с "/", "~", "." (путь к файлу с
+# секретом — тоже норма: TOKEN_FILE=/run/…). ASCII-класс, а не "не пробел",
+# чтобы русский текст после "token:" в сообщении коммита не считался
+# литералом. Имя с суффиксом (TokenTest, max_tokens) без "="/":" следом не
+# ловится — это и убирает ложные срабатывания прежнего правила. Кавычка
+# между именем и "=/:" — JSON-форма ("token": "…"), "=>" — PHP-массив.
+# Первый символ литерала — не ":": иначе оператор области видимости
+# (Password::defaults, --filter=…TokenTest::test_x) читался бы как
+# "двоеточие + литерал". В хвосте ":" разрешён (URL, base64-подобные значения).
+_secret_assign_re='(password|passwd|secret|token|api[_-]?key)[A-Za-z0-9_]*["'\'']?[[:space:]]*(=>?|:)[[:space:]]*["'\'']?'
+_secret_assign_re+='[A-Za-z0-9!#%&*+,;<=>?@^_|-][A-Za-z0-9!#%&*+,./:;<=>?@^_|~-]{7,}'
+if printf '%s' "${cmd}" | LC_ALL=C grep -qiE -e "${_secret_assign_re}"; then
+  block_secret "в команде литерал, присвоенный чувствительному имени (password/secret/token/api_key); ${_secret_hint}"
 fi
 
 # rm -r / rm -rf / rm --recursive (рекурсивное удаление). Флаг -f не делает
@@ -209,9 +247,121 @@ if printf '%s' "${cmd}" | grep -Eq '\bgit\b.*\bbranch\b.*\s-D\b'; then
   block "git branch -D (принудительное удаление ветки)"
 fi
 
-# Чтение .env-файлов
-if printf '%s' "${cmd}" | grep -Eiq '\b(cat|less|more|head|tail|bat|nl|xxd|od|strings)\b[^|]*\.env'; then
-  block "чтение .env-файла (секреты)"
+# Вывод окружения процесса/контейнера — секреты в env попадают в транскрипт.
+if printf '%s' "${cmd}" | grep -Eq '/proc/[^[:space:]]*/environ'; then
+  block "чтение /proc/*/environ (окружение процесса с секретами)"
 fi
+
+# .env-файлы — fail-closed: сегмент, в котором есть путь-токен .env или
+# .env.<суффикс>, блокируется при ЛЮБОЙ команде, кроме allowlist безвредных
+# (ls, stat, test/[/[[, git status, git check-ignore). Прежний список
+# «читающих» утилит (cat/less/head…) пропускал grep/sed/awk/source/
+# интерпретаторы/cp — перечислить всех читателей невозможно. Шаблоны
+# (.env.example/.env.dist/.env.sample) секретов не содержат и разрешены.
+# Вхождение .env ищется внутри токена с ограничителями по краям: слева
+# начало слова или / = : кавычка < > ( ` (пути, --file=.env, редиректы,
+# $(…), open('.env') в коде интерпретатора), справа конец слова или
+# кавычка ; ) ` > , — поэтому process.env.FOO и .envrc под правило не
+# попадают. Шаблоны вырезаются из токена до проверки (_env_tpl_re).
+_env_path_re='(^|[/=:"'\''<>(`])\.env(\.[[:alnum:]_-]+)*(["'\'';)`>,]|$)'
+_env_tpl_re='^(.*)\.env\.(example|dist|sample)((["'\'';)`>,]|$).*)$'
+_env_msg="обращение к .env-файлу (секреты): разрешены только ls/stat/test/git status/git check-ignore; шаблоны .env.example/.env.dist/.env.sample — свободно"
+set -f
+while IFS= read -r _seg; do
+  read -ra _w <<< "${_seg}"
+  # Ведущие присваивания (FOO=1 cmd) — не команда сегмента.
+  _i=0
+  while [[ ${_i} -lt ${#_w[@]} && "${_w[${_i}]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
+    _i=$((_i + 1))
+  done
+  [[ ${_i} -lt ${#_w[@]} ]] || continue
+  _c0="${_w[${_i}],,}"
+  _c0="${_c0##*/}"
+  _args=("${_w[@]:$((_i + 1))}")
+
+  # Голые printenv/env/export/set/declare печатают всё окружение. У env
+  # аргумент-команда (env FOO=1 cmd) — запуск, а не вывод; -u/-C берут
+  # значение следующим токеном.
+  _only_flags=true
+  _skip=false
+  for _t in "${_args[@]}"; do
+    if ${_skip}; then _skip=false; continue; fi
+    case "${_c0}:${_t}" in
+      env:-u|env:--unset|env:-C|env:--chdir) _skip=true ;;
+      env:*=*) ;;
+      *:-*) ;;
+      *) _only_flags=false; break ;;
+    esac
+  done
+  case "${_c0}" in
+    printenv|env|export|declare|typeset)
+      if ${_only_flags}; then
+        block "вывод переменных окружения (${_c0} без аргументов) может раскрыть секреты"
+      fi
+      ;;
+    set)
+      if [[ ${#_args[@]} -eq 0 ]]; then
+        block "вывод переменных окружения (set без аргументов) может раскрыть секреты"
+      fi
+      ;;
+    *) ;;
+  esac
+  # docker compose config / … exec … env — сверка по ТОКЕНАМ от команды
+  # сегмента, а не регексом по строке: \b считает "." и "/" границей слова,
+  # и "grep x docker-compose.yml config/app.php" ложно совпадал с
+  # "docker-compose … config".
+  case "${_c0}" in
+    docker|docker-compose|podman|podman-compose|kubectl)
+      _d_compose=false
+      _d_exec=false
+      if [[ "${_c0}" == *-compose ]]; then _d_compose=true; fi
+      for _t in "${_args[@]}"; do
+        _t="${_t,,}"
+        if ${_d_exec}; then
+          case "${_t##*/}" in
+            env|printenv) block "вывод окружения контейнера (exec … env/printenv) может раскрыть секреты" ;;
+            *) ;;
+          esac
+          continue
+        fi
+        case "${_t}" in
+          compose) _d_compose=true ;;
+          config)
+            if ${_d_compose}; then
+              block "docker compose config выводит конфигурацию с подставленными секретами"
+            fi
+            ;;
+          exec) _d_exec=true ;;
+          *) ;;
+        esac
+      done
+      ;;
+    *) ;;
+  esac
+
+  _env_hit=false
+  for _t in "${_w[@]}"; do
+    while [[ "${_t}" =~ ${_env_tpl_re} ]]; do
+      _t="${BASH_REMATCH[1]}${BASH_REMATCH[3]}"
+    done
+    if [[ "${_t}" =~ ${_env_path_re} ]]; then
+      _env_hit=true
+      break
+    fi
+  done
+  if ${_env_hit}; then
+    case "${_c0}" in
+      ls|stat|test|\[|\[\[) ;;
+      git)
+        case "${_args[0]:-}" in
+          status|check-ignore) ;;
+          *) block "${_env_msg}" ;;
+        esac
+        ;;
+      *) block "${_env_msg}" ;;
+    esac
+  fi
+done <<< "${_segments}"
+set +f
 
 exit 0
