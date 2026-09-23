@@ -223,7 +223,7 @@ CLAUDE.md», «почисти память проекта», «полная ре
 | Правило            | Что ловит                                                             |
 |--------------------|-----------------------------------------------------------------------|
 | Значения секретов  | литерал известного формата (GitHub `ghp_…`/`github_pat_…`, Anthropic/OpenAI `sk-…`, Slack `xox?-…`, AWS `AKIA…`, Telegram-бот, JWT, PEM `PRIVATE KEY`) или литерал ≥ 8 символов, присвоенный имени `password`/`secret`/`token`/`api_key` (`--password=…`, `API_KEY: …`); ссылка `$VAR` и путь к файлу пропускаются. Имена классов/тестов/путей со словом `Token` больше не блокируются |
-| Вывод окружения    | голые `printenv`/`env`/`export -p`/`set`/`declare -p`, `docker compose config`, `docker`/`podman`/`kubectl … exec … env`, `/proc/*/environ` |
+| Вывод окружения    | голые `printenv`/`env`/`export`/`set`/`declare`/`typeset` (допустимы только флаги, например `export -p`), `docker compose config`, `docker`/`podman`/`kubectl … exec … env`, `/proc/*/environ` |
 | `rm -r`/`rm -rf`/`rm --recursive` | рекурсивное удаление — флаг ловится в любой позиции аргументов (`rm -v -r x`, `rm x -r`) и в короткой, и в длинной форме, в т.ч. в составных командах (`a && b`, `;`, `\|`, `\|\|`); **исключение: `/tmp` и его содержимое разрешены** |
 | `git reset --hard` | потеря незакоммиченных изменений                                      |
 | `git push --force` | перезапись истории на remote (`--force`, `-f`, `--force-with-lease`)  |
