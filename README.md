@@ -228,10 +228,11 @@ CLAUDE.md», «убери устаревшее из памяти проекта�
 **Просьба «почисти» — не согласие на удаление:** она запускает только анализ. Таблица делится на
 группу А (без риска) и группу Б (нужно решение) со **сквозной нумерацией**; удаляются только пункты,
 номера которых пользователь назвал в ответе на прямой вопрос. Перед каждым пунктом — повторная
-проверка (размер, процессы, ID образа, `realpath`); изменившийся пункт пропускается до нового
-согласия. Только адресные команды: `docker rmi`/`volume rm` по списку, без `prune -a` и
-`volume prune`; кеши — командами их менеджеров; рекурсивное удаление вне `/tmp` — готовой командой
-пользователю через `! …`. Справочник по dnf/snap/podman/npm/pip/composer/go/cargo и список
+проверка (размер, процессы, ID образа, `realpath`); изменившийся пункт или проверка, которая не
+выполнилась, — пункт пропускается до нового согласия. Только адресные команды: `docker rmi`/`volume rm`
+по списку, без `prune -a` и `volume prune`; кеши — командами их менеджеров; рекурсивное удаление вне
+`/tmp` — готовой командой пользователю (через `! …`, а с `sudo` при пароле — в отдельном терминале:
+в режиме `!` sudo пароль не спросит). Справочник по dnf/snap/podman/npm/pip/composer/go/cargo и список
 «установлено, не кеш» — `skills/server-disk-cleanup/references/caches.md`.
 
 #### Хук: защита от деструктивных команд
@@ -365,7 +366,7 @@ paplay /usr/share/sounds/freedesktop/stereo/complete.oga
 
 > Если в настройках маркетплейса (меню `/plugin`) **не включено автообновление** этих плагинов, обновляй их вручную командами ниже. При включённом автообновлении свежие версии подтягиваются сами, и эти шаги не нужны.
 
-Сначала обнови каталог маркетплейса, затем нужные плагины. Скиллы (`review-code`, `todo-ship`, `statusline-setup`, `optimize-project-docs`, `chat-handoff`) обновляются вместе со своим плагином — отдельной команды для них нет.
+Сначала обнови каталог маркетплейса, затем нужные плагины. Скиллы (`review-code`, `todo-ship`, `statusline-setup`, `optimize-project-docs`, `server-disk-cleanup`, `chat-handoff`) обновляются вместе со своим плагином — отдельной команды для них нет.
 
 ```bash
 /plugin marketplace update leonid74-ai-skills
@@ -401,11 +402,14 @@ ai-skills/
         │   ├── cppr.md
         │   ├── review-quick.md
         │   └── review-last.md
-        ├── skills/                   ← review-code, todo-ship, statusline-setup, optimize-project-docs
+        ├── skills/                   ← review-code, todo-ship, statusline-setup, optimize-project-docs, server-disk-cleanup
         │   ├── review-code/SKILL.md
         │   ├── todo-ship/SKILL.md
         │   ├── statusline-setup/SKILL.md
-        │   └── optimize-project-docs/SKILL.md
+        │   ├── optimize-project-docs/SKILL.md
+        │   └── server-disk-cleanup/
+        │       ├── SKILL.md
+        │       └── references/caches.md  ← справочник кешей и пакетов вне ядра скилла
         ├── workflows/
         │   └── review-code.js        ← конвейер review-code (dev-toolkit:review-code-pipeline)
         ├── tests/workflows/
