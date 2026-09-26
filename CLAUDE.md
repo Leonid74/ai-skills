@@ -21,7 +21,8 @@ ai-skills/
     └── dev-toolkit/
         ├── .claude-plugin/plugin.json
         ├── commands/      ← /dev-toolkit:pr, /dev-toolkit:cppr, /dev-toolkit:review-quick, /dev-toolkit:review-last
-        ├── skills/        ← review-code, todo-ship, statusline-setup, optimize-project-docs
+        ├── skills/        ← review-code, todo-ship, statusline-setup, optimize-project-docs,
+        │                     server-disk-cleanup
         ├── workflows/     ← review-code.js — конвейер review-code (dev-toolkit:review-code-pipeline)
         ├── tests/workflows/ ← стенд-заглушка для workflow-скрипта (моки agent/parallel/pipeline)
         └── hooks/
