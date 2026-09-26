@@ -10,8 +10,8 @@
 
 | Экосистема | Где смотреть размер | Команда очистки | Группа | Заметки |
 |---|---|---|---|---|
-| apt | `du -sh /var/cache/apt` | `sudo apt-get clean` | А | `apt autoremove --purge` — Б: сначала `apt-get -s autoremove`, в списке не должно быть работающего ядра |
-| dnf / yum | `du -sh /var/cache/dnf /var/cache/yum` | `sudo dnf clean packages` | А | ядра — `rpm -q kernel` против `uname -r`; старые — `sudo dnf remove --oldinstallonly` (Б, только если новое уже загружено) |
+| apt | `sudo -n du -sh /var/cache/apt` | `sudo apt-get clean` | А | `sudo apt-get -y autoremove --purge` — Б: список в таблице — из `sudo -n apt-get -s autoremove`, в нём не должно быть работающего ядра |
+| dnf / yum | `du -sh /var/cache/dnf /var/cache/yum` | `sudo dnf clean packages` | А | ядра — `rpm -q kernel` против `uname -r`; старые — `sudo dnf -y remove --oldinstallonly` (Б, только если новое уже загружено; список в таблице — из `sudo -n dnf remove --oldinstallonly --assumeno`) |
 | snap | `snap list --all \| awk '/disabled/'`, `du -sh /var/lib/snapd` | `sudo snap remove <имя> --revision=<ревизия>` — по одной отключённой ревизии | Б | много отключённых ревизий — «найденная проблема»: `snap set system refresh.retain=2` |
 | flatpak | `flatpak list --columns=application,size` | `flatpak uninstall --unused` — **выполняет пользователь в отдельном терминале** | Б | список неиспользуемого команда покажет сама и спросит подтверждение; в неинтерактивном запуске без `-y` она ничего не делает, а с `-y` удалила бы список, которого пользователь не видел |
 | journald | `sudo -n journalctl --disk-usage` | `sudo journalctl --vacuum-time=<срок>` или `--vacuum-size=<размер>` | Б | удаляет историю логов необратимо; нет `SystemMaxUse` в `/etc/systemd/journald.conf` — «найденная проблема» |
@@ -21,7 +21,7 @@
 | Экосистема | Где смотреть размер | Команда очистки | Группа | Заметки |
 |---|---|---|---|---|
 | podman | `podman system df -v`, `podman images`, `podman ps -a` | `podman rmi <ID…>`, `podman volume rm <имя>` | как Docker | правила Docker из `SKILL.md` — те же; `podman system prune` запрещён так же |
-| логи контейнеров Docker | драйвер — `docker info --format '{{.LoggingDriver}}'`; для `json-file` — `sudo -n find /var/lib/docker/containers -name '*-json.log' -size +100M -exec du -sh {} +` (маска в пути раскрылась бы до `sudo`, без прав на каталог) | `sudo truncate -s 0 <файл-лога>` | Б | не `rm` (контейнер пишет в открытый файл); причина — нет `log-opts.max-size` в `/etc/docker/daemon.json` или в compose — «найденная проблема» |
+| логи контейнеров Docker | драйвер — `docker info --format '{{.LoggingDriver}}'`; для `json-file` — `sudo -n find /var/lib/docker/containers -name '*-json.log' -size +100M -exec du -sh {} +` (маска в пути раскрылась бы до `sudo`, без прав на каталог) | `sudo truncate -s 0 -- <файл-лога>` (каталог — root) | Б | не `rm` (контейнер пишет в открытый файл); причина — нет `log-opts.max-size` в `/etc/docker/daemon.json` или в compose — «найденная проблема» |
 
 ## Кеши разработчика
 
@@ -29,7 +29,7 @@
 |---|---|---|---|---|
 | npm | `du -sh ~/.npm/_cacache ~/.npm/_npx` | `npm cache clean --force` | А | не чистит `~/.npm/_npx` — отдельный пункт (рекурсивное удаление вне `/tmp` → пользователю) |
 | yarn | `yarn cache dir` | `yarn cache clean` | А | |
-| pnpm | `pnpm store path` | `pnpm store prune` | А | удаляет только пакеты, на которые не ссылается ни один проект; набор вычисляется при запуске — в таблице так и написать |
+| pnpm | `pnpm store path` | `pnpm store prune` | А | удаляет только пакеты, на которые не ссылается ни один проект; симуляции нет — в таблице так и написать (исключение из правила симуляции в `SKILL.md`) |
 | pip | `pip cache dir` | `pip cache purge` | А | |
 | uv | `uv cache dir` | `uv cache clean` (или `uv cache prune`) | А | `~/.local/share/uv/{tools,python}` — установленное, не кеш |
 | composer | `composer config --global cache-dir` | `composer clear-cache` | А | |
@@ -38,7 +38,7 @@
 | cargo (реестр) | `du -sh ~/.cargo/registry ~/.cargo/git` | — (нет штатной команды) | Б | рекурсивное удаление вне `/tmp` → пользователю |
 | cargo `target/` | `du -sh <проект>/target` | `cargo clean` в каталоге проекта | Б | только если рядом `Cargo.toml` и дерево холодное; иначе «неопознанное»; восстановление — пересборка |
 | `node_modules` | `du -sh <проект>/node_modules` | пользователю `rm -rf -- <путь>` (через `!`) | Б | только если рядом `package.json` и проект холодный; восстановление — `npm ci` |
-| gh CLI | `du -sh ~/.cache/gh` | `rm -- <путь>` для каждого `run-log-*.zip` | А | файлы, не каталоги |
+| gh CLI | `du -sh ~/.cache/gh` | пользователю `rm -rf -- <домашний каталог>/.cache/gh` (через `!`) | А | HTTP-кеш `gh` (хеш-подкаталоги), восстанавливается сам; каталог вне `/tmp` — удаляет пользователь |
 | Claude Code | `ls -la ~/.local/share/claude/versions` | `rm -- <путь>` для каждой версии, кроме текущей | А | текущая — `claude --version` и цель `readlink -f "$(command -v claude)"` |
 
 ## Установлено, не кеш (удалять только менеджером)
