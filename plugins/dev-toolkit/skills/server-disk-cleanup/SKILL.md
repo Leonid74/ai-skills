@@ -177,9 +177,13 @@ sudo -n timeout 120 du -xh -d 2 /var /home /tmp /opt 2>/dev/null > W/du-2.txt; e
 
 - **Образ Docker:** не нужен, если одновременно:
   - нет контейнеров от него, **включая остановленные**: `docker ps -a --filter ancestor=<образ>`;
-  - имя (с тегом и **без тега**) не встречается в коде и документации: `grep -rlF -- <имя>` по
-    каталогам проектов, включая `*.md`, `doc/`, `.dev/`, Makefile, compose-файлы, CI-конфиги,
-    `~/bin`, `~/.claude/{skills,plugins,hooks}` — не только `*.sh`/`*.yml`/`Dockerfile`;
+  - не встречается в коде и документации ни одна из трёх форм имени: с тегом, без тега и **короткое
+    имя** — последний компонент репозитория без тега (`rhysd/actionlint:latest` → `actionlint`):
+    `grep -rlwF -e <репозиторий:тег> -e <репозиторий> -e <короткое> --` по каталогам проектов,
+    включая `*.md`, `doc/`, `.dev/`, Makefile, compose-файлы, CI-конфиги, `~/bin`,
+    `~/.claude/{skills,plugins,hooks}` — не только `*.sh`/`*.yml`/`Dockerfile`. Инструмент в скриптах
+    зовут по короткому имени (`actionlint`, `shellcheck`, `gitleaks`); лишнее совпадение лишь уведёт
+    образ в группу Б, пропущенное — в группу «без риска»;
   - он не базовый для деплоя: `FROM` и `COPY --from=` во всех Dockerfile;
   - он **появился на машине** больше 168 часов назад — `docker image inspect --format
     '{{.Metadata.LastTagTime}}' <образ>` (время pull/build/tag; `CreatedSince` — время сборки в
