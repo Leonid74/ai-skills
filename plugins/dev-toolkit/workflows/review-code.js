@@ -33,7 +33,8 @@ export const meta = {
 
 // Зеркала величин SKILL.md — менять обе стороны синхронно (перечень — в CLAUDE.md репозитория):
 // LEVELS — «Таблица уровней»; LENSES — линзы max (фаза 2); SECURITY_ANGLE — номер security-угла;
-// SWEEP_CAP — потолок кандидатов sweep (фаза 2.5); MERGE_* и DEFAULT_WAVE — «Оркестрация фаз 1–2.5».
+// SWEEP_CAP — потолок кандидатов sweep (фаза 2.5); MERGE_* и DEFAULT_WAVE — «Оркестрация фаз 1–2.5»;
+// NO_SELF_SUPPRESS — уровни, где finder не подавляет сам (пункт 1 skip-list).
 const LEVELS = {
   medium: { angles: 3, cap: 6, protocol: "skeptic", sweep: false },
   high: { angles: 5, cap: 6, protocol: "recall", sweep: false },
@@ -43,6 +44,7 @@ const LEVELS = {
 const LENSES = ["корректность", "безопасность", "воспроизводимость"];
 const SECURITY_ANGLE = 5;
 const SWEEP_CAP = 8;
+const NO_SELF_SUPPRESS = ["xhigh", "max"];
 const MERGE_THRESHOLD = 8;
 const MERGE_MAX = 4;
 const DEFAULT_WAVE = 5;
@@ -78,7 +80,7 @@ const CANDIDATES_SCHEMA = {
           skip_note: {
             type: "string",
             description:
-              "только на max: пометка «под skip-list: <цитата правила>», иначе пусто",
+              "только на xhigh и max: пометка «под skip-list: <цитата правила>», иначе пусто",
           },
         },
         required: [
@@ -647,9 +649,9 @@ function reject(item, source) {
 
 /**
  * Принимает ответ finder'а: потолок (в порядке возврата), нормализация путей, id, отсев точных дублей.
- * Подавление finder'ом не принимается на веру: на max (пункт 1 skip-list) и для security-записей
- * (пункт 4) запись suppressed превращается в обычного кандидата с пометкой — снять его могут
- * только верификаторы.
+ * Подавление finder'ом не принимается на веру: на xhigh и max (пункт 1 skip-list) и для
+ * security-записей (пункт 4) запись suppressed превращается в обычного кандидата с пометкой — снять
+ * его могут только верификаторы.
  *
  * @param {object} reply ответ по CANDIDATES_SCHEMA.
  * @param {string} source метка источника (угол/sweep) — попадает в находку и в id.
@@ -662,7 +664,7 @@ function accept(reply, source, cap) {
     const norm = normalizePath(s.file);
     if (norm.status === "unsafe") {
       reject(s, source);
-    } else if (level === "max" || isSecurity(s)) {
+    } else if (NO_SELF_SUPPRESS.includes(level) || isSecurity(s)) {
       promoted.push({
         file: s.file,
         line: s.line,
@@ -714,7 +716,7 @@ function accept(reply, source, cap) {
       );
     if (c.promoted)
       notes.push(
-        `${source}: подавление ${norm.path}:${c.line} finder'ом не принято (${level === "max" ? "уровень max" : "security"}) — кандидат отправлен на верификацию`,
+        `${source}: подавление ${norm.path}:${c.line} finder'ом не принято (${NO_SELF_SUPPRESS.includes(level) ? `уровень ${level}` : "security"}) — кандидат отправлен на верификацию`,
       );
     const cand = { ...c, file: norm.path, source, id: `${source}#${i + 1}` };
     const k = `${locKey(cand)}|${cand.summary.trim().toLowerCase()}`;

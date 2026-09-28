@@ -63,9 +63,9 @@ node plugins/dev-toolkit/tests/workflows/test-review-code.mjs
 - Тексты правил (ракурсы углов, skip-list, инварианты, протоколы, формат кандидата) в скрипте **не
   дублировать** — их передаёт скилл через `args` из своего `SKILL.md`. В скрипте только механика.
   Величины-зеркала `SKILL.md` — менять обе стороны синхронно: `LEVELS` («Таблица уровней»),
-  `LENSES` (линзы `max`), `SECURITY_ANGLE`, `SWEEP_CAP` (фаза 2.5), `MERGE_THRESHOLD`/`MERGE_MAX`,
-  `DEFAULT_WAVE`/`MIN_WAVE`/`MAX_WAVE`, `MAX_PATH_LENGTH` и перечень корней security-категорий в
-  `isSecurity` («Оркестрация фаз 1–2.5»).
+  `LENSES` (линзы `max`), `SECURITY_ANGLE`, `SWEEP_CAP` (фаза 2.5), `NO_SELF_SUPPRESS` (пункт 1
+  skip-list), `MERGE_THRESHOLD`/`MERGE_MAX`, `DEFAULT_WAVE`/`MIN_WAVE`/`MAX_WAVE`, `MAX_PATH_LENGTH`
+  и перечень корней security-категорий в `isSecurity` («Оркестрация фаз 1–2.5»).
 - Всё, что пришло от агента (путь, текст кандидата), — недоверенные данные: в текст заданий другим
   агентам только JSON-блоком, в ноты — через `showPath`; признаки от самого finder'а (security,
   категория) не должны влиять на то, какие кандидаты дойдут до верификации.
