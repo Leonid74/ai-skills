@@ -647,9 +647,9 @@ function reject(item, source) {
 
 /**
  * Принимает ответ finder'а: потолок (в порядке возврата), нормализация путей, id, отсев точных дублей.
- * Подавление finder'ом не принимается на веру: на max (пункт 1 skip-list) и для security-записей
- * (пункт 4) запись suppressed превращается в обычного кандидата с пометкой — снять его могут
- * только верификаторы.
+ * Подавление finder'ом не принимается на веру: на xhigh и max (пункт 1 skip-list) и для
+ * security-записей (пункт 4) запись suppressed превращается в обычного кандидата с пометкой — снять
+ * его могут только верификаторы.
  *
  * @param {object} reply ответ по CANDIDATES_SCHEMA.
  * @param {string} source метка источника (угол/sweep) — попадает в находку и в id.
@@ -662,7 +662,7 @@ function accept(reply, source, cap) {
     const norm = normalizePath(s.file);
     if (norm.status === "unsafe") {
       reject(s, source);
-    } else if (level === "max" || isSecurity(s)) {
+    } else if (level === "max" || level === "xhigh" || isSecurity(s)) {
       promoted.push({
         file: s.file,
         line: s.line,
@@ -714,7 +714,7 @@ function accept(reply, source, cap) {
       );
     if (c.promoted)
       notes.push(
-        `${source}: подавление ${norm.path}:${c.line} finder'ом не принято (${level === "max" ? "уровень max" : "security"}) — кандидат отправлен на верификацию`,
+        `${source}: подавление ${norm.path}:${c.line} finder'ом не принято (${level === "max" || level === "xhigh" ? `уровень ${level}` : "security"}) — кандидат отправлен на верификацию`,
       );
     const cand = { ...c, file: norm.path, source, id: `${source}#${i + 1}` };
     const k = `${locKey(cand)}|${cand.summary.trim().toLowerCase()}`;

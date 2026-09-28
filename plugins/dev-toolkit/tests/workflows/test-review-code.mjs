@@ -1008,3 +1008,36 @@ console.log("ok 6 проверка args");
   );
   console.log("ok 14 ловушки артефакта");
 }
+
+// 15. xhigh: подавление finder'ом не принимается на веру и без security-признака — запись suppressed
+//     уходит на верификацию; снять её может только голос SUPPRESSED верификатора.
+{
+  const { result, calls } = await runScript(base("xhigh", 1), (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [], suppressed: [sup("src/a.php", 40)] }
+        : EMPTY;
+    return verdicts(p, () => "SUPPRESSED");
+  });
+  const verifiers = calls.filter((c) => !isFinder(c.opts) && !isSweep(c.opts));
+  assert.equal(verifiers.length, 1, "поднятое из suppressed проверено");
+  assert.match(
+    candidatesOf(verifiers[0].prompt)[0].skip_note || "",
+    /^под skip-list: R/,
+  );
+  assert.ok(
+    result.notes.some((n) =>
+      n.includes(
+        "подавление src/a.php:40 finder'ом не принято (уровень xhigh)",
+      ),
+    ),
+    "нота называет уровень",
+  );
+  assert.deepEqual(
+    result.suppressed.map((s) => `${s.file}:${s.line}`),
+    ["src/a.php:40"],
+    "снято голосом верификатора",
+  );
+  console.log("ok 15 xhigh: самоподавление finder'а не принято");
+}
