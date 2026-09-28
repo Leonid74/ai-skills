@@ -18,7 +18,8 @@
     проверка результата);
     `statusline-setup` — настройка строки статуса Claude Code;
     `optimize-project-docs` — оптимизация и реконсиляция `CLAUDE.md` / `README` / памяти проекта;
-    `server-disk-cleanup` — анализ места на диске Linux-сервера и очистка только выбранных пунктов
+    `server-disk-cleanup` — анализ места на диске Linux-сервера и очистка только выбранных пунктов;
+    `debug` — систематическая отладка: сначала корневая причина, потом одна проверенная правка
   - *Хук защиты:* блокирует деструктивные Bash-команды (`rm -rf`,
     `git reset --hard`, `git push --force`, `git branch -D`, чтение `.env`,
     вывод окружения) и случайную передачу значений секретов/токенов
@@ -237,6 +238,24 @@ CLAUDE.md», «убери устаревшее из памяти проекта�
 не спросит). Справочник по dnf/snap/podman/npm/pip/composer/go/cargo и список
 «установлено, не кеш» — `skills/server-disk-cleanup/references/caches.md`.
 
+#### Skill: debug
+
+Систематическая отладка бага, красного теста, упавшего CI или сборки: **никаких исправлений до
+найденной причины**. Четыре фазы: причина (прочитать ошибку и стек целиком, воспроизвести, `git log`/
+`git diff` от рабочего состояния, в системе из нескольких звеньев — временное логирование на каждой
+границе без значений секретов, трассировка значения к источнику) → сравнение с работающим аналогом →
+одна явная гипотеза и минимальная проверка → исправление: тест, воспроизводящий дефект, увиден
+красным до правки (или мутацией после), одна правка в источнике, прогон **всего** набора тестов с
+падениями по именам. После трёх неудачных правок — стоп и доклад с вариантами вместо четвёртой
+заплатки. Нормы проекта из его `CLAUDE.md` (например, отдельный коммит с падающим тестом) главнее.
+
+Срабатывает по описанию: «найди причину бага», «почему падает тест / CI», «продебажь», «работало, а
+теперь сломалось», вставленный стек-трейс с вопросом «что это»; вызов вручную — `/dev-toolkit:debug`.
+Не срабатывает на ошибки с очевидной причиной (опечатка, отсутствующий импорт) и замечания линтера.
+Приёмы (трассировка к источнику, ожидание по условию для флаки-тестов, проверки на нескольких слоях) —
+`skills/debug/references/techniques.md`. Основано на `systematic-debugging` из
+[obra/superpowers](https://github.com/obra/superpowers) (MIT) — см. `skills/debug/THIRD_PARTY_NOTICES.md`.
+
 #### Хук: защита от деструктивных команд
 
 `PreToolUse` на `Bash` — срабатывает автоматически на каждой Bash-команде,
@@ -382,7 +401,7 @@ paplay /usr/share/sounds/freedesktop/stereo/complete.oga
 
 > Если в настройках маркетплейса (меню `/plugin`) **не включено автообновление** этих плагинов, обновляй их вручную командами ниже. При включённом автообновлении свежие версии подтягиваются сами, и эти шаги не нужны.
 
-Сначала обнови каталог маркетплейса, затем нужные плагины. Скиллы (`review-code`, `todo-ship`, `statusline-setup`, `optimize-project-docs`, `server-disk-cleanup`, `chat-handoff`) обновляются вместе со своим плагином — отдельной команды для них нет.
+Сначала обнови каталог маркетплейса, затем нужные плагины. Скиллы (`review-code`, `todo-ship`, `statusline-setup`, `optimize-project-docs`, `server-disk-cleanup`, `debug`, `chat-handoff`) обновляются вместе со своим плагином — отдельной команды для них нет.
 
 ```bash
 /plugin marketplace update leonid74-ai-skills
@@ -418,14 +437,18 @@ ai-skills/
         │   ├── cppr.md
         │   ├── review-quick.md
         │   └── review-last.md
-        ├── skills/                   ← review-code, todo-ship, statusline-setup, optimize-project-docs, server-disk-cleanup
+        ├── skills/                   ← review-code, todo-ship, statusline-setup, optimize-project-docs, server-disk-cleanup, debug
         │   ├── review-code/SKILL.md
         │   ├── todo-ship/SKILL.md
         │   ├── statusline-setup/SKILL.md
         │   ├── optimize-project-docs/SKILL.md
-        │   └── server-disk-cleanup/
+        │   ├── server-disk-cleanup/
+        │   │   ├── SKILL.md
+        │   │   └── references/caches.md  ← справочник кешей и пакетов вне ядра скилла
+        │   └── debug/
         │       ├── SKILL.md
-        │       └── references/caches.md  ← справочник кешей и пакетов вне ядра скилла
+        │       ├── references/techniques.md  ← приёмы: трассировка, ожидание по условию, слои проверок
+        │       └── THIRD_PARTY_NOTICES.md    ← лицензия MIT оригинала (obra/superpowers)
         ├── workflows/
         │   └── review-code.js        ← конвейер review-code (dev-toolkit:review-code-pipeline)
         ├── tests/workflows/
