@@ -1028,7 +1028,9 @@ console.log("ok 6 проверка args");
   );
   assert.ok(
     result.notes.some(
-      (n) => n.includes("подавление src/a.php:40") && n.includes("xhigh"),
+      (n) =>
+        n.includes("подавление src/a.php:40") &&
+        n.includes("не принято (уровень xhigh)"),
     ),
     "нота называет уровень",
   );
@@ -1124,4 +1126,22 @@ console.log("ok 6 проверка args");
     ["src/a.php:80"],
   );
   console.log("ok 19 medium: самоподавление принято");
+}
+
+// 20. max: security-голос одной линзы (не первой по порядку) не даёт двум SUPPRESSED снять кандидата.
+{
+  const { result } = await runScript(base("max", 1), (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [cand("src/a.php", 90, "z")], suppressed: [] }
+        : EMPTY;
+    const v = verdicts(p, () => "SUPPRESSED");
+    if (o.label.includes("воспроизводимость"))
+      v.verdicts.forEach((x) => (x.security = true));
+    return v;
+  });
+  assert.deepEqual(result.suppressed, [], "security-голос линзы учтён");
+  assert.equal(result.survivors.length, 1);
+  console.log("ok 20 max: security-голос одной линзы");
 }
