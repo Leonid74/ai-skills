@@ -1027,10 +1027,8 @@ console.log("ok 6 проверка args");
     /^под skip-list: R/,
   );
   assert.ok(
-    result.notes.some((n) =>
-      n.includes(
-        "подавление src/a.php:40 finder'ом не принято (уровень xhigh)",
-      ),
+    result.notes.some(
+      (n) => n.includes("подавление src/a.php:40") && n.includes("xhigh"),
     ),
     "нота называет уровень",
   );
@@ -1040,4 +1038,90 @@ console.log("ok 6 проверка args");
     "снято голосом верификатора",
   );
   console.log("ok 15 xhigh: самоподавление finder'а не принято");
+}
+
+// 16. high: security-запись suppressed поднимается по пункту 4 (не по уровню), признак и категория
+//     сохраняются, голос SUPPRESSED её не снимает; нота называет причину «security».
+{
+  const { result, calls } = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [], suppressed: [sup("src/a.php", 60, true)] }
+        : EMPTY;
+    return verdicts(p, () => "SUPPRESSED");
+  });
+  const verifiers = calls.filter((c) => !isFinder(c.opts));
+  assert.equal(verifiers.length, 1, "security-запись проверена");
+  assert.deepEqual(result.suppressed, [], "SUPPRESSED не снял security");
+  assert.equal(result.survivors.length, 1);
+  assert.equal(
+    result.survivors[0].category,
+    "security",
+    "категория security сохранена",
+  );
+  assert.equal(result.survivors[0].security, true);
+  assert.ok(
+    result.notes.some(
+      (n) => n.includes("подавление src/a.php:60") && n.includes("security"),
+    ),
+    "нота называет причину",
+  );
+  console.log("ok 16 high: security-запись suppressed поднята по пункту 4");
+}
+
+// 17. xhigh: security-голос единственного верификатора не даёт его же SUPPRESSED снять кандидата,
+//     которого finder security не отметил.
+{
+  const { result } = await runScript(base("xhigh", 1), (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [cand("src/a.php", 70, "x")], suppressed: [] }
+        : EMPTY;
+    const v = verdicts(p, () => "SUPPRESSED");
+    v.verdicts.forEach((x) => (x.security = true));
+    return v;
+  });
+  assert.deepEqual(result.suppressed, [], "голос security верификатора учтён");
+  assert.equal(result.survivors.length, 1);
+  console.log("ok 17 xhigh: security-голос верификатора");
+}
+
+// 18. xhigh: подавление sweep-finder'ом тоже не принимается на веру — запись идёт на верификацию.
+{
+  const { result, calls } = await runScript(base("xhigh", 1), (p, o) => {
+    if (isSweep(o))
+      return { candidates: [], suppressed: [sup("src/b.php", 20)] };
+    if (isFinder(o)) return EMPTY;
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  const verifiers = calls.filter((c) => !isFinder(c.opts) && !isSweep(c.opts));
+  assert.equal(verifiers.length, 1, "запись sweep проверена");
+  assert.deepEqual(
+    result.survivors.map((s) => `${s.file}:${s.line}`),
+    ["src/b.php:20"],
+  );
+  assert.deepEqual(result.suppressed, []);
+  console.log("ok 18 xhigh: подавление sweep не принято");
+}
+
+// 19. medium: самоподавление finder'а без security-признака принимается — без верификации.
+{
+  const { result, calls } = await runScript(base("medium", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [], suppressed: [sup("src/a.php", 80)] }
+        : EMPTY;
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.equal(
+    calls.filter((c) => !isFinder(c.opts)).length,
+    0,
+    "верификаторов нет",
+  );
+  assert.deepEqual(
+    result.suppressed.map((s) => `${s.file}:${s.line}`),
+    ["src/a.php:80"],
+  );
+  console.log("ok 19 medium: самоподавление принято");
 }
