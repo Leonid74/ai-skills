@@ -26,9 +26,10 @@ ai-skills/
         ├── workflows/     ← review-code.js — конвейер review-code (dev-toolkit:review-code-pipeline)
         ├── tests/workflows/ ← стенд-заглушка для workflow-скрипта (моки agent/parallel/pipeline)
         └── hooks/
-            ├── hooks.json       ← регистрация PreToolUse/Notification/Stop
+            ├── hooks.json       ← регистрация PreToolUse/SessionStart/Notification/Stop
             ├── guard-bash.sh    ← PreToolUse: блокирует деструктивные Bash-команды + секреты
-            └── notify-sound.sh  ← Notification/Stop: звуковое уведомление
+            ├── notify-sound.sh  ← Notification/Stop: звуковое уведомление
+            └── post-compact-reminder.sh ← SessionStart(compact): напоминание после компакции
 ```
 
 Плагин `andrej-karpathy-skills` подключён как внешний GitHub source
@@ -44,11 +45,12 @@ claude plugin validate ./plugins/dev-toolkit              # plugin.json + ком
 ```
 
 Для bash-хуков (`plugins/dev-toolkit/hooks/*.sh`) дополнительно гонять `shellcheck` и
-тест-векторы guard-bash:
+тест-векторы хуков (guard-bash, post-compact-reminder):
 
 ```bash
-shellcheck -S style -o all plugins/dev-toolkit/hooks/guard-bash.sh
+shellcheck -S style -o all plugins/dev-toolkit/hooks/guard-bash.sh plugins/dev-toolkit/hooks/post-compact-reminder.sh
 bash plugins/dev-toolkit/hooks/tests/test-guard-bash.sh
+bash plugins/dev-toolkit/hooks/tests/test-post-compact-reminder.sh
 ```
 
 Для workflow-скрипта (`plugins/dev-toolkit/workflows/review-code.js`) — стенд-заглушка; `node --check`
