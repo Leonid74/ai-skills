@@ -31,7 +31,7 @@ fi
 # Каталог команд для PATH: только то, что нужно шаблону, плюс заглушки. Так
 # проверяется и поведение без tmux/timeout, и то, что настоящий tmux не задет.
 _log="${_root}/calls.log"
-_tools=(bash cat jq git grep whoami hostname sleep readlink)
+_tools=(bash cat jq git whoami hostname sleep readlink)
 
 # make_bin <имя каталога> <режим timeout: ok|hang|none> <tmux: yes|no>
 make_bin() {
