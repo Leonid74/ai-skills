@@ -25,6 +25,7 @@ ai-skills/
         │                     server-disk-cleanup, debug
         ├── workflows/     ← review-code.js — конвейер review-code (dev-toolkit:review-code-pipeline)
         ├── tests/workflows/ ← стенд-заглушка для workflow-скрипта (моки agent/parallel/pipeline)
+        ├── tests/statusline/ ← тест шаблона statusline.sh из SKILL.md скилла statusline-setup
         └── hooks/
             ├── hooks.json       ← регистрация PreToolUse/SessionStart/Notification/Stop
             ├── guard-bash.sh    ← PreToolUse: блокирует деструктивные Bash-команды + секреты
@@ -59,6 +60,23 @@ bash plugins/dev-toolkit/hooks/tests/test-post-compact-reminder.sh
 ```bash
 node plugins/dev-toolkit/tests/workflows/test-review-code.mjs
 ```
+
+Для шаблона `statusline.sh` (блок кода в `plugins/dev-toolkit/skills/statusline-setup/SKILL.md`) — тест с
+заглушками `tmux`/`timeout` в `PATH`; настоящий tmux он не вызывает. Мутационная проверка —
+`STATUSLINE_TEMPLATE=<копия шаблона>`:
+
+```bash
+bash plugins/dev-toolkit/tests/statusline/test-statusline-template.sh
+```
+
+**Живой tmux не трогать.** Нельзя убивать или останавливать сервер tmux, в котором работает Claude:
+никаких `kill-server`/`kill-session`/`kill-window`/`kill-pane`, `respawn-*`, сигналов по pid сервера —
+ни самому, ни субагентам. Эксперименты с настоящим tmux — только на отдельном сервере и со снятыми
+`TMUX`/`TMUX_PANE`: `env -u TMUX -u TMUX_PANE TMUX_TMPDIR=<каталог> tmux -L <имя> …`. Одного `-L` или
+одного `TMUX_TMPDIR` мало: внутри tmux переменная `TMUX` унаследована и важнее `TMUX_TMPDIR`, так что
+«голый» `tmux kill-server` в тестовом скрипте убивает живой сервер вместе с сессией Claude (так
+случилось 03.10.2026). Тестовые скрипты начинать с `unset TMUX TMUX_PANE`; субагентам давать готовую
+обёртку и это объяснение в брифе.
 
 ## Workflow-скрипт review-code (ловушки)
 
