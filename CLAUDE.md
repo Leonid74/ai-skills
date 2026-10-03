@@ -69,6 +69,15 @@ node plugins/dev-toolkit/tests/workflows/test-review-code.mjs
 bash plugins/dev-toolkit/tests/statusline/test-statusline-template.sh
 ```
 
+**Живой tmux не трогать.** Нельзя убивать или останавливать сервер tmux, в котором работает Claude:
+никаких `kill-server`/`kill-session`/`kill-window`/`kill-pane`, `respawn-*`, сигналов по pid сервера —
+ни самому, ни субагентам. Эксперименты с настоящим tmux — только на отдельном сервере и со снятыми
+`TMUX`/`TMUX_PANE`: `env -u TMUX -u TMUX_PANE TMUX_TMPDIR=<каталог> tmux -L <имя> …`. Одного `-L` или
+одного `TMUX_TMPDIR` мало: внутри tmux переменная `TMUX` унаследована и важнее `TMUX_TMPDIR`, так что
+«голый» `tmux kill-server` в тестовом скрипте убивает живой сервер вместе с сессией Claude (так
+случилось 03.10.2026). Тестовые скрипты начинать с `unset TMUX TMUX_PANE`; субагентам давать готовую
+обёртку и это объяснение в брифе.
+
 ## Workflow-скрипт review-code (ловушки)
 
 - Тексты правил (ракурсы углов, skip-list, инварианты, протоколы, формат кандидата) в скрипте **не
