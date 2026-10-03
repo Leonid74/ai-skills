@@ -77,10 +77,17 @@ fixture() {
   fi
 }
 
+# fixture_raw <JSON целиком> — для векторов с лимитами, effort и полями не того типа.
+fixture_raw() {
+  printf '%s' "$1" >"${_fx}"
+}
+
 _out=""
 _err=""
 _rc=0
 _ms=0
+# _wait=0 — не ждать журнал моста (векторы вне tmux, где мост не проверяется).
+_wait=1
 # run <каталог bin> <TMUX | -> <TMUX_PANE | ->: вывод, stderr, код, длительность
 # (мс); затем ждёт фоновый мост — запись заглушки в журнал.
 run() {
@@ -96,7 +103,7 @@ run() {
   _ms=$(((_t1 - _t0) / 1000000))
   _err="$(cat "${_root}/err")"
   for _i in 1 2 3 4 5 6 7 8 9 10; do
-    [[ -s "${_log}" ]] && break
+    [[ "${_wait}" -eq 0 || -s "${_log}" ]] && break
     sleep 0.05
   done
 }
@@ -122,7 +129,7 @@ _ref="${_out}"
 check 'вне tmux: tmux/timeout не вызваны' "$(cat "${_log}")" ''
 check 'вне tmux: код возврата' "${_rc}" 0
 check 'вне tmux: stderr пуст' "${_err}" ''
-check 'вне tmux: сегмент ctx округлён' "$([[ "${_out}" == *'ctx 42%'* ]] && echo да)" да
+check 'вне tmux: сегмент Context округлён' "${_out#* | }" 'M | Context 42%'
 
 # --- в tmux: форма вызова -----------------------------------------------------
 run ok "${_T}" %7
@@ -184,6 +191,76 @@ run notmux "${_T}" %7
 check 'нет tmux: вывод цел' "${_out}" "${_ref}"
 check 'нет tmux: код возврата' "${_rc}" 0
 check 'нет tmux: stderr пуст' "${_err}" ''
+
+# --- лимиты подписки и effort --------------------------------------------------
+# Хвост строки после «user@host:папка | » сверяется целиком: так видны и лишний
+# сегмент, и сдвиг полей. /tmp — не репозиторий, сегмента ветки нет.
+_sep=$'\xe2\x97\x94'
+_y=$'\033[01;33m'
+_r=$'\033[01;31m'
+_z=$'\033[00m'
+_base='"model":{"display_name":"M"},"workspace":{"current_dir":"/tmp"},"context_window":{"used_percentage":42.4}'
+
+# tail_check <описание> <остальные поля JSON> <ожидаемый хвост>
+tail_check() {
+  fixture_raw "{${_base}$2}"
+  _wait=0
+  run ok - -
+  _wait=1
+  check "$1" "${_out#* | }" "$3"
+  check "$1: код возврата" "${_rc}" 0
+  check "$1: stderr пуст" "${_err}" ''
+}
+
+tail_check 'всё есть' \
+  ',"effort":{"level":"high"},"rate_limits":{"five_hour":{"used_percentage":33.6,"resets_at":1},"seven_day":{"used_percentage":5,"resets_at":2}}' \
+  "M ${_sep} high | Context 42% | 5h 34% | 7d 5%"
+tail_check 'только пятичасовое окно' ',"rate_limits":{"five_hour":{"used_percentage":12}}' \
+  'M | Context 42% | 5h 12%'
+tail_check 'только недельное окно' ',"rate_limits":{"seven_day":{"used_percentage":12}}' \
+  'M | Context 42% | 7d 12%'
+tail_check 'rate_limits пуст' ',"rate_limits":{}' 'M | Context 42%'
+tail_check 'границы 0 и 100' ',"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{"used_percentage":100}}' \
+  "M | Context 42% | 5h 0% | ${_r}7d 100%${_z}"
+tail_check 'пороги цвета 59/60' ',"rate_limits":{"five_hour":{"used_percentage":59},"seven_day":{"used_percentage":60}}' \
+  "M | Context 42% | 5h 59% | ${_y}7d 60%${_z}"
+tail_check 'пороги цвета 79/80' ',"rate_limits":{"five_hour":{"used_percentage":79},"seven_day":{"used_percentage":80}}' \
+  "M | Context 42% | ${_y}5h 79%${_z} | ${_r}7d 80%${_z}"
+
+# Значение не число или вне 0–100, блок не того типа — сегмента нет, строка цела.
+for _v in '"five_hour":{"used_percentage":"7; x"}' '"five_hour":{"used_percentage":101}' \
+  '"five_hour":{"used_percentage":-1}' '"five_hour":{"used_percentage":1e19}' \
+  '"five_hour":{"used_percentage":null}' '"five_hour":"str"' '"five_hour":[1]'; do
+  tail_check "лимит ${_v}: сегмента нет" ",\"rate_limits\":{${_v},\"seven_day\":{\"used_percentage\":5}}" \
+    'M | Context 42% | 7d 5%'
+done
+tail_check 'rate_limits — строка' ',"rate_limits":"str"' 'M | Context 42%'
+tail_check 'rate_limits — массив' ',"rate_limits":[1,2]' 'M | Context 42%'
+
+# effort уходит в терминал: только строчные латинские буквы, иначе — без него.
+for _v in '"High"' '"medium\nx"' '"medium\n"' '"\u001b[31mx"' '"a b"' '""' '"abcdefghijklm"' 5 null '{"level":"x"}'; do
+  tail_check "effort.level=${_v}: без effort" ",\"effort\":{\"level\":${_v}}" 'M | Context 42%'
+done
+tail_check 'effort — строка' ',"effort":"high"' 'M | Context 42%'
+
+# Перевод строки в названии модели и в пути не сдвигает поля.
+fixture_raw '{"model":{"display_name":"M\nX"},"cwd":"/tmp/a\nb","effort":{"level":"low"},"context_window":{"used_percentage":7},"rate_limits":{"five_hour":{"used_percentage":1},"seven_day":{"used_percentage":2}}}'
+run ok - -
+check 'перевод строки в модели и пути: поля на месте' "${_out#* | }" "M X ${_sep} low | Context 7% | 5h 1% | 7d 2%"
+check 'перевод строки в пути: путь цел' "$([[ "${_out}" == *$'/tmp/a\nb'* ]] && echo да)" да
+
+# Поля не того типа целиком — строка статуса не гаснет.
+fixture_raw '{"model":"M","cwd":"/tmp","workspace":"w","context_window":"c","rate_limits":7,"effort":[1]}'
+run ok - -
+check 'поля не того типа: хвост' "${_out#* | }" '?'
+check 'поля не того типа: код возврата' "${_rc}" 0
+check 'поля не того типа: stderr пуст' "${_err}" ''
+
+# Мост в tmux по-прежнему получает только процент контекста.
+fixture_raw "{${_base},\"effort\":{\"level\":\"high\"},\"rate_limits\":{\"five_hour\":{\"used_percentage\":90},\"seven_day\":{\"used_percentage\":95}}}"
+run ok "${_T}" %7
+check 'лимиты и мост: в опцию идёт контекст' "$(cat "${_log}")" \
+  "timeout [-s] [KILL] [1] [tmux] [if] [-F] [-t] [%7] [${_cond_pre}#{!=:#{@claude_ctx},42},0}] [set -p -t %7 @claude_ctx 42] ${_null}"
 
 printf 'pass=%s fail=%s\n' "${_pass}" "${_fail}"
 [[ "${_fail}" -eq 0 ]]

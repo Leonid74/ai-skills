@@ -1,15 +1,21 @@
 ---
 name: statusline-setup
-description: Настройка строки статуса (statusline) Claude Code через плагин dev-toolkit. Использовать когда пользователь говорит "настрой statusline", "setup statusline", "установи statusline", "хочу statusline с моделью, контекстом и git-веткой", "настрой строку статуса", "добавь строку статуса в Claude Code". Строка статуса показывает модель, процент контекста (ctx) и git-ветку; внутри tmux скрипт дополнительно кладёт процент контекста в опцию панели @claude_ctx, чтобы его могла показать строка статуса tmux ("процент контекста Claude в tmux", "ctx в строке статуса tmux"). Skill создаёт скрипт ~/.claude/statusline.sh и прописывает секцию statusLine в ~/.claude/settings.json. Не использовать если пользователь просто спрашивает про статус сессии или модели без намерения что-то настраивать.
+description: Настройка строки статуса (statusline) Claude Code через плагин dev-toolkit. Использовать когда пользователь говорит "настрой statusline", "setup statusline", "установи statusline", "хочу statusline с моделью, контекстом, лимитами и git-веткой", "настрой строку статуса", "добавь строку статуса в Claude Code". Строка статуса показывает модель с уровнем effort, процент контекста (Context), расход лимитов подписки за пять часов и за неделю (5h, 7d) и git-ветку; внутри tmux скрипт дополнительно кладёт процент контекста в опцию панели @claude_ctx, чтобы его могла показать строка статуса tmux ("процент контекста Claude в tmux", "ctx в строке статуса tmux"). Skill создаёт скрипт ~/.claude/statusline.sh и прописывает секцию statusLine в ~/.claude/settings.json. Не использовать если пользователь просто спрашивает про статус сессии или модели без намерения что-то настраивать.
 ---
 
 # Настройка statusline
 
 ## Что делает этот skill
 
-Настраивает строку статуса Claude Code, которая показывает: `user@host:папка | модель | ctx NN% | git-ветка`.
+Настраивает строку статуса Claude Code, которая показывает: `user@host:папка | модель ◔ effort | Context NN% | 5h NN% | 7d NN% | git-ветка`.
 
-Сегмент `ctx` — процент заполнения контекстного окна (`context_window.used_percentage` из JSON сессии): до 59% без цвета, 60–79% жёлтый, от 80% красный. До первого ответа API поля нет — тогда сегмент не выводится.
+Сегмент `Context` — процент заполнения контекстного окна (`context_window.used_percentage` из JSON сессии): до 59% без цвета, 60–79% жёлтый, от 80% красный. До первого ответа API поля нет — тогда сегмент не выводится.
+
+Сегменты `5h` и `7d` — сколько **израсходовано** лимита подписки в пятичасовом окне и за неделю (`rate_limits.five_hour.used_percentage` и `rate_limits.seven_day.used_percentage`; остаток — 100 минус значение), пороги цвета те же. Блок `rate_limits` есть только при подписке claude.ai (Pro/Max) и появляется после первого ответа API; при работе по API-ключу его нет, а каждое из окон может отсутствовать по отдельности — сегмент без значения не выводится.
+
+После названия модели через `◔` идёт уровень effort (`effort.level`: `low`…`max`, меняется вместе с `/effort`). Поля нет, если модель не поддерживает effort, — тогда выводится одно название модели.
+
+Скрипт запускается по событиям сессии (новое сообщение ассистента, `/compact`, смена режима разрешений, наступление времени сброса окна лимита), в простое строка не обновляется. Чтобы она обновлялась и в простое, в секцию `statusLine` можно добавить `"refreshInterval": <секунды>` — по просьбе пользователя, сам скилл его не ставит.
 
 Строка статуса — это bash-скрипт, получающий JSON сессии на stdin и выводящий форматированную строку. Claude Code вызывает его и показывает результат в интерфейсе.
 
@@ -67,21 +73,43 @@ jq --version
 
 ```bash
 #!/usr/bin/env bash
-# Строка статуса Claude Code: user@host:папка | модель | ctx NN% | git-ветка.
-# Получает JSON сессии на stdin (поля .model / .workspace / .context_window).
+# Строка статуса Claude Code:
+#   user@host:папка | модель ◔ effort | Context NN% | 5h NN% | 7d NN% | git-ветка.
+# Получает JSON сессии на stdin (поля .model / .effort / .workspace /
+# .context_window / .rate_limits).
 
 set -euo pipefail
 
 input="$(cat)"
 
-model="$(printf '%s' "$input" | jq -r '.model.display_name // "?"')"
-dir="$(printf '%s' "$input" | jq -r '.workspace.current_dir // .cwd // "."')"
-# Процент заполнения контекста; округление в jq, а не в printf: под ru_RU
-# printf '%.0f' ждёт десятичную запятую и падает на "83.4". Поля нет до
-# первого ответа API — тогда пустая строка и сегмент не выводится; нечисловое
-# значение (numbers) тоже даёт пустую строку, а не ошибку jq, которая под
-# set -e погасила бы всю строку статуса.
-ctx="$(printf '%s' "$input" | jq -r '.context_window.used_percentage // empty | numbers | round')"
+# Все поля — одним вызовом jq (скрипт вызывается несколько раз в секунду), по
+# строке на поле; папка — последней: только в ней допустим перевод строки.
+# - Проценты (контекст; лимиты подписки за пять часов и за неделю — сколько
+#   израсходовано): округление в jq, а не в printf — под ru_RU printf '%.0f'
+#   ждёт десятичную запятую и падает на "83.4". Поля нет (контекст — до первого
+#   ответа API; лимиты — ещё и без подписки claude.ai, и каждое окно по
+#   отдельности) — пустая строка, сегмент не выводится. Не число или вне 0–100 —
+#   тоже пустая строка.
+# - effort — только строчные латинские буквы (low…max): значение уходит в
+#   терминал. Поля нет, если модель не поддерживает effort.
+# - try: поле не того типа (rate_limits — строка) даёт пустое значение, а не
+#   ошибку jq, которая под set -e погасила бы всю строку статуса.
+parsed="$(printf '%s' "$input" | jq -r '
+  def pct(f): ((try f catch null) | numbers | round | select(. >= 0 and . <= 100)) // "";
+  def str(f): (try f catch null) | strings;
+  pct(.context_window.used_percentage),
+  pct(.rate_limits.five_hour.used_percentage),
+  pct(.rate_limits.seven_day.used_percentage),
+  ((str(.effort.level) | select(test("\\A[a-z]{1,12}\\z"))) // ""),
+  ((str(.model.display_name) | gsub("[\\r\\n]"; " ")) // "?"),
+  (str(.workspace.current_dir) // str(.cwd) // ".")
+')"
+ctx="" limit_5h="" limit_7d="" effort="" model=""
+for field in ctx limit_5h limit_7d effort model; do
+  printf -v "$field" '%s' "${parsed%%$'\n'*}"
+  parsed="${parsed#*$'\n'}"
+done
+dir="$parsed"
 
 # Мост в tmux: процент контекста кладём в опцию панели @claude_ctx, откуда его
 # читает строка статуса tmux (сам tmux этого значения узнать не может). Значения
@@ -139,23 +167,33 @@ reset=$'\033[00m'
 # user@host:dir в стиле PS1.
 printf '%s%s@%s%s:%s%s%s' "$green" "$(whoami)" "$(hostname -s)" "$reset" "$blue" "$short_dir" "$reset"
 
-# Модель.
+# Модель и через ◔ (U+25D4) уровень effort, если он есть.
 printf ' | %s' "$model"
+if [ -n "$effort" ]; then
+  printf ' \xe2\x97\x94 %s' "$effort"
+fi
 
-# Контекст: < 60% — без цвета, 60–79% — жёлтый, >= 80% — красный.
-if [ -n "$ctx" ]; then
-  color=""
-  if [ "$ctx" -ge 80 ]; then
+# pct_segment <подпись> <процент>: сегмент « | подпись NN%»; < 60% — без цвета,
+# 60–79% — жёлтый, >= 80% — красный. Процент пуст — сегмент не выводится.
+pct_segment() {
+  local color=""
+  [ -n "$2" ] || return 0
+  if [ "$2" -ge 80 ]; then
     color="$red"
-  elif [ "$ctx" -ge 60 ]; then
+  elif [ "$2" -ge 60 ]; then
     color="$yellow"
   fi
   if [ -n "$color" ]; then
-    printf ' | %sctx %s%%%s' "$color" "$ctx" "$reset"
+    printf ' | %s%s %s%%%s' "$color" "$1" "$2" "$reset"
   else
-    printf ' | ctx %s%%' "$ctx"
+    printf ' | %s %s%%' "$1" "$2"
   fi
-fi
+}
+
+# Контекст и лимиты подписки: пятичасовое окно и неделя.
+pct_segment Context "$ctx"
+pct_segment 5h "$limit_5h"
+pct_segment 7d "$limit_7d"
 
 # Git-ветка (со значком Powerline ), если есть.
 if [ -n "$branch" ]; then
