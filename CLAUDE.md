@@ -25,6 +25,7 @@ ai-skills/
         │                     server-disk-cleanup, debug
         ├── workflows/     ← review-code.js — конвейер review-code (dev-toolkit:review-code-pipeline)
         ├── tests/workflows/ ← стенд-заглушка для workflow-скрипта (моки agent/parallel/pipeline)
+        ├── tests/statusline/ ← тест шаблона statusline.sh из SKILL.md скилла statusline-setup
         └── hooks/
             ├── hooks.json       ← регистрация PreToolUse/SessionStart/Notification/Stop
             ├── guard-bash.sh    ← PreToolUse: блокирует деструктивные Bash-команды + секреты
@@ -58,6 +59,14 @@ bash plugins/dev-toolkit/hooks/tests/test-post-compact-reminder.sh
 
 ```bash
 node plugins/dev-toolkit/tests/workflows/test-review-code.mjs
+```
+
+Для шаблона `statusline.sh` (блок кода в `plugins/dev-toolkit/skills/statusline-setup/SKILL.md`) — тест с
+заглушками `tmux`/`timeout` в `PATH`; настоящий tmux он не вызывает. Мутационная проверка —
+`STATUSLINE_TEMPLATE=<копия шаблона>`:
+
+```bash
+bash plugins/dev-toolkit/tests/statusline/test-statusline-template.sh
 ```
 
 ## Workflow-скрипт review-code (ловушки)
