@@ -840,6 +840,11 @@ console.log("ok 6 проверка args");
   const silent = await runScript(base("max", 1), () => null);
   assert.equal(silent.result.mode, "прерван");
   assert.match(silent.result.halted, /не ответил ни один/);
+  assert.doesNotMatch(
+    silent.result.halted,
+    /opus/,
+    "без пола модели подсказки о недоступном opus нет",
+  );
   assert.equal(silent.calls.length, 5, "вторая волна углов не стартовала");
   assert.equal(
     silent.result.agents.total,
@@ -1262,7 +1267,7 @@ for (const [level, pass, cheap, strongCalls] of [
 }
 console.log("ok 21 слабая сессия: opus у угла 5, верификаторов и линз");
 
-// 22. Сессия на opus или сильнее: на xhigh и max последняя линия идёт без model — признак false не
+// 22. Сессия на opus: на xhigh и max последняя линия идёт без model — признак false не
 // должен понижать её до opus (на high это закрепляют векторы 1 и 2).
 for (const level of ["xhigh", "max"]) {
   const { result, calls } = await runScript(base(level, 1), (p, o) => {
@@ -1288,3 +1293,36 @@ for (const level of ["xhigh", "max"]) {
   assert.equal(result.agents.byModel.default.count, strong.length);
 }
 console.log("ok 22 сильная сессия: последняя линия без model на xhigh и max");
+
+// 23. Слабая сессия, opus ей недоступен: агенты с model: opus не отвечают, остальные работают. Волна
+// верификаторов без единого ответа останавливает прогон, и причина называет возможную недоступность
+// opus — чтобы сессия не ждала сброса лимита, а вынесла решение пользователю.
+{
+  const a = base("high", 2);
+  a.sessionBelowOpus = true;
+  const { result } = await runScript(a, (p, o) => {
+    if (o.model === "opus") return null;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? {
+            candidates: [
+              cand("src/a.php", 1, "x"),
+              cand("src/a.php", 20, "y"),
+              cand("src/b.php", 3, "z"),
+            ],
+            suppressed: [],
+          }
+        : EMPTY;
+    return verdicts(p, () => "CONFIRMED");
+  });
+  assert.equal(result.mode, "прерван");
+  assert.match(result.halted, /не ответил ни один/);
+  assert.match(result.halted, /opus этой сессии недоступен/);
+  assert.deepEqual(
+    result.failedAngles.map((f) => [f.n, f.model]),
+    [[5, "opus"]],
+  );
+}
+console.log(
+  "ok 23 слабая сессия без доступа к opus: причина остановки названа",
+);

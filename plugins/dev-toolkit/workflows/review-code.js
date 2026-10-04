@@ -168,7 +168,7 @@ if (!Number.isInteger(pass) || pass < 1) {
 const sessionBelowOpus = input.sessionBelowOpus;
 if (typeof sessionBelowOpus !== "boolean") {
   throw new Error(
-    `args.sessionBelowOpus: обязательный true|false (true — модель сессии слабее opus либо неизвестна), получено «${input.sessionBelowOpus}»`,
+    `args.sessionBelowOpus: обязательный true|false (true — пол модели включён: сессия не на opus), получено «${input.sessionBelowOpus}»`,
   );
 }
 const wave = input.wave === undefined ? DEFAULT_WAVE : input.wave;
@@ -361,7 +361,11 @@ async function runWaves(tasks) {
     const silentLimit =
       !halted && chunk.length >= 2 && failed.length === chunk.length;
     if (silentLimit) {
-      halted = `запуск агентов остановлен: в волне из ${chunk.length} агентов не ответил ни один — похоже на лимит использования`;
+      // Молчит вся волна, шедшая на opus по полу модели, — причиной может быть не лимит, а opus,
+      // недоступный слабой сессии: скилл выносит это пользователю вместо ожидания сброса.
+      const opusFloor =
+        sessionBelowOpus && chunk.every((t) => t.model === "opus");
+      halted = `запуск агентов остановлен: в волне из ${chunk.length} агентов не ответил ни один — похоже на лимит использования${opusFloor ? "; вся волна шла с model: opus при слабой сессии — возможно, opus этой сессии недоступен" : ""}`;
       log(halted);
     }
     launched.forEach((r, j) => {
