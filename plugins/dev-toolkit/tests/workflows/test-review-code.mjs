@@ -840,11 +840,6 @@ console.log("ok 6 проверка args");
   const silent = await runScript(base("max", 1), () => null);
   assert.equal(silent.result.mode, "прерван");
   assert.match(silent.result.halted, /не ответил ни один/);
-  assert.doesNotMatch(
-    silent.result.halted,
-    /opus/,
-    "без пола модели подсказки о недоступном opus нет",
-  );
   assert.equal(silent.calls.length, 5, "вторая волна углов не стартовала");
   assert.equal(
     silent.result.agents.total,
@@ -1194,7 +1189,7 @@ console.log("ok 6 проверка args");
   console.log("ok 20 max: security-голос одной линзы");
 }
 
-// 21. Сессия слабее opus или неизвестна: угол 5, верификаторы и линзы получают opus на любом уровне и
+// 21. Пол модели включён (сессия на sonnet, haiku либо модель неизвестна): угол 5, верификаторы и линзы получают opus на любом уровне и
 // проходе — в том числе при перезапуске и при верификации кандидатов sweep; дешёвые роли (включая обе
 // половины расщеплённого угла 2) от признака не зависят.
 for (const [level, pass, cheap, strongCalls] of [
@@ -1294,35 +1289,63 @@ for (const level of ["xhigh", "max"]) {
 }
 console.log("ok 22 сильная сессия: последняя линия без model на xhigh и max");
 
-// 23. Слабая сессия, opus ей недоступен: агенты с model: opus не отвечают, остальные работают. Волна
-// верификаторов без единого ответа останавливает прогон, и причина называет возможную недоступность
-// opus — чтобы сессия не ждала сброса лимита, а вынесла решение пользователю.
+// 23. Слабая сессия, opus ей недоступен: агенты с model: opus не отвечают, остальные работают.
+// Признак opusUnavailable — структурный и объективный: ни один агент на opus не ответил, а агенты на
+// sonnet отвечали. На pass=1 (все роли на opus) и при общем молчании он не ставится — это лимит.
+// Текст причины остановки про opus не говорит: он собирается в том числе из текста ошибок агентов.
 {
-  const a = base("high", 2);
-  a.sessionBelowOpus = true;
-  const { result } = await runScript(a, (p, o) => {
-    if (o.model === "opus") return null;
-    if (isFinder(o))
-      return o.label.startsWith("угол 1")
-        ? {
-            candidates: [
-              cand("src/a.php", 1, "x"),
-              cand("src/a.php", 20, "y"),
-              cand("src/b.php", 3, "z"),
-            ],
-            suppressed: [],
-          }
-        : EMPTY;
-    return verdicts(p, () => "CONFIRMED");
-  });
-  assert.equal(result.mode, "прерван");
-  assert.match(result.halted, /не ответил ни один/);
-  assert.match(result.halted, /opus этой сессии недоступен/);
+  const three = {
+    candidates: [
+      cand("src/a.php", 1, "x"),
+      cand("src/a.php", 20, "y"),
+      cand("src/b.php", 3, "z"),
+    ],
+    suppressed: [],
+  };
+  const one = { candidates: [cand("src/a.php", 1, "x")], suppressed: [] };
+  const scenario = (level, pass, weak, found, silent) => {
+    const a = base(level, pass);
+    a.sessionBelowOpus = weak;
+    return runScript(a, (p, o) => {
+      if (silent(o)) return null;
+      if (isSweep(o)) return EMPTY;
+      if (isFinder(o)) return o.label.startsWith("угол 1") ? found : EMPTY;
+      return verdicts(p, () => "CONFIRMED");
+    });
+  };
+  const noOpus = (o) => o.model === "opus";
+
+  const many = await scenario("high", 2, true, three, noOpus);
+  assert.equal(many.result.mode, "прерван");
+  assert.match(many.result.halted, /не ответил ни один/);
+  assert.doesNotMatch(many.result.halted, /opus/);
+  assert.equal(many.result.opusUnavailable, true, "волна верификаторов");
   assert.deepEqual(
-    result.failedAngles.map((f) => [f.n, f.model]),
+    many.result.failedAngles.map((f) => [f.n, f.model]),
     [[5, "opus"]],
   );
+
+  const single = await scenario("high", 2, true, one, noOpus);
+  assert.equal(single.result.mode, "деградированный");
+  assert.equal(
+    single.result.opusUnavailable,
+    true,
+    "одна локация, без остановки",
+  );
+
+  const medium = await scenario("medium", 2, true, one, noOpus);
+  assert.equal(medium.result.opusUnavailable, true, "medium: угла 5 нет");
+
+  const first = await scenario("high", 1, true, one, noOpus);
+  assert.equal(first.result.opusUnavailable, false, "pass=1: все роли на opus");
+
+  const limit = await scenario("high", 2, true, one, () => true);
+  assert.equal(limit.result.opusUnavailable, false, "молчат все — это лимит");
+
+  const fine = await scenario("high", 2, true, one, () => false);
+  assert.equal(fine.result.opusUnavailable, false, "opus отвечает");
+
+  const strong = await scenario("high", 2, false, one, () => false);
+  assert.equal(strong.result.opusUnavailable, false, "пола нет");
 }
-console.log(
-  "ok 23 слабая сессия без доступа к opus: причина остановки названа",
-);
+console.log("ok 23 слабая сессия без доступа к opus: признак opusUnavailable");

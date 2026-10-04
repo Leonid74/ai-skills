@@ -242,6 +242,9 @@ const stats = {
   byModel: { opus: {}, sonnet: {}, default: {} },
   // Запуски, сгоревшие об лимит использования: в число агентов прогона они не входят.
   limitHits: 0,
+  // Ответившие агенты по корзинам моделей — для признака «opus недоступен слабой сессии».
+  replied: { opus: 0, sonnet: 0, default: 0 },
+  asked: { opus: 0, sonnet: 0, default: 0 },
 };
 const notes = [];
 const degraded = [];
@@ -319,6 +322,8 @@ async function run(task, restart) {
     agentType: "general-purpose",
   };
   if (task.model) agentOpts.model = task.model;
+  const bucket = task.model || "default";
+  stats.asked[bucket] += 1;
   let reply;
   try {
     reply = await agent(task.prompt, agentOpts);
@@ -331,6 +336,7 @@ async function run(task, restart) {
     log(`агент «${agentOpts.label}» упал: ${e && e.message ? e.message : e}`);
     reply = null;
   }
+  if (reply) stats.replied[bucket] += 1;
   return { reply: reply || null, limit: false, skipped: false };
 }
 
@@ -361,11 +367,7 @@ async function runWaves(tasks) {
     const silentLimit =
       !halted && chunk.length >= 2 && failed.length === chunk.length;
     if (silentLimit) {
-      // Молчит вся волна, шедшая на opus по полу модели, — причиной может быть не лимит, а opus,
-      // недоступный слабой сессии: скилл выносит это пользователю вместо ожидания сброса.
-      const opusFloor =
-        sessionBelowOpus && chunk.every((t) => t.model === "opus");
-      halted = `запуск агентов остановлен: в волне из ${chunk.length} агентов не ответил ни один — похоже на лимит использования${opusFloor ? "; вся волна шла с model: opus при слабой сессии — возможно, opus этой сессии недоступен" : ""}`;
+      halted = `запуск агентов остановлен: в волне из ${chunk.length} агентов не ответил ни один — похоже на лимит использования`;
       log(halted);
     }
     launched.forEach((r, j) => {
@@ -1098,6 +1100,13 @@ return {
   rejected,
   overflow,
   failedAngles,
+  // Объективный признак, а не текст ошибки: ни один агент на opus не ответил, а агенты на sonnet
+  // отвечали. Обе модели в одном прогоне бывают только при поле модели на pass ≥ 2; на pass=1 все
+  // роли идут на opus, и общее молчание там — лимит, а не недоступная модель.
+  opusUnavailable:
+    stats.asked.opus > 0 &&
+    stats.replied.opus === 0 &&
+    stats.replied.sonnet > 0,
   sweep,
   agents: {
     total: totalAgents(),
