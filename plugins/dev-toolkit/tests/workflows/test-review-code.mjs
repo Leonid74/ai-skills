@@ -1343,5 +1343,55 @@ console.log("ok 22 сильная сессия: последняя линия б
 
   const strong = await scenario("high", 2, false, one, () => false);
   assert.equal(strong.result.opusSilent, false, "пола нет");
+
+  // Частичный ответ opus — не молчание: один верификатор из трёх молчит, двое отвечают.
+  const partial = await scenario(
+    "high",
+    2,
+    true,
+    three,
+    (o) => !isFinder(o) && o.label.includes("src/b.php"),
+  );
+  assert.equal(partial.result.opusSilent, false, "часть opus-агентов ответила");
+
+  // Ответ на перезапуске — тоже ответ: первый запуск каждого opus-агента пуст, перезапуск отвечает.
+  const retried = await scenario(
+    "high",
+    2,
+    true,
+    one,
+    (o) => o.model === "opus" && !o.label.endsWith("перезапуск"),
+  );
+  assert.equal(retried.result.opusSilent, false, "opus ответил на перезапуске");
+
+  // Отказ исключением (не про лимит) — запрос к opus был, ответа нет.
+  const thrown = await scenario("high", 2, true, one, (o) => {
+    if (o.model === "opus") throw new Error("model is not available");
+    return false;
+  });
+  assert.equal(thrown.result.opusSilent, true, "opus отказал исключением");
+
+  // Границы: одного запроса к opus и одного ответа на sonnet достаточно. Отвечает только угол 1,
+  // единственный верификатор падает исключением про лимит — перезапуска нет.
+  const edge = await scenario("medium", 2, true, one, (o) => {
+    if (o.model === "opus") throw new Error("429 too many requests");
+    return isFinder(o) && !o.label.startsWith("угол 1");
+  });
+  assert.equal(
+    edge.result.agents.byModel.sonnet.count,
+    5,
+    "угол 1 и два отказа с перезапуском",
+  );
+  assert.equal(edge.result.opusSilent, true, "по одному запросу и ответу");
+
+  // Ответы агентов без model за ответы на другой модели не считаются: сессия на opus, pass=1,
+  // finder'ы на opus молчат, угол 5 и верификатор (без model) работают.
+  const b = base("high", 1);
+  const plain = await runScript(b, (p, o) => {
+    if (o.model === "opus") return null;
+    return isFinder(o) ? one : verdicts(p, () => "CONFIRMED");
+  });
+  assert.ok(plain.result.agents.byModel.default.count > 0);
+  assert.equal(plain.result.opusSilent, false, "ответы без model — не sonnet");
 }
 console.log("ok 23 слабая сессия без доступа к opus: признак opusSilent");
