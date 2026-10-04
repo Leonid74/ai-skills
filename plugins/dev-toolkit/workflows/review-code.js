@@ -168,7 +168,7 @@ if (!Number.isInteger(pass) || pass < 1) {
 const sessionBelowOpus = input.sessionBelowOpus;
 if (typeof sessionBelowOpus !== "boolean") {
   throw new Error(
-    `args.sessionBelowOpus: обязательный true|false (true — пол модели включён: сессия не на opus), получено «${input.sessionBelowOpus}»`,
+    `args.sessionBelowOpus: обязательный true|false (true — пол модели включён; false — сессия на opus либо пол снят пользователем), получено «${input.sessionBelowOpus}»`,
   );
 }
 const wave = input.wave === undefined ? DEFAULT_WAVE : input.wave;
@@ -242,7 +242,8 @@ const stats = {
   byModel: { opus: {}, sonnet: {}, default: {} },
   // Запуски, сгоревшие об лимит использования: в число агентов прогона они не входят.
   limitHits: 0,
-  // Ответившие агенты по корзинам моделей — для признака «opus недоступен слабой сессии».
+  // Запросы к агентам (asked — все, включая сгоревшие об лимит) и структурные ответы (replied) по
+  // корзинам моделей — для признака opusSilent.
   replied: { opus: 0, sonnet: 0, default: 0 },
   asked: { opus: 0, sonnet: 0, default: 0 },
 };
@@ -1100,10 +1101,11 @@ return {
   rejected,
   overflow,
   failedAngles,
-  // Объективный признак, а не текст ошибки: ни один агент на opus не ответил, а агенты на sonnet
-  // отвечали. Обе модели в одном прогоне бывают только при поле модели на pass ≥ 2; на pass=1 все
-  // роли идут на opus, и общее молчание там — лимит, а не недоступная модель.
-  opusUnavailable:
+  // Наблюдение, а не диагноз: ни один агент на opus не дал структурного ответа, а агенты на sonnet
+  // дали. Причину (opus недоступен сессии, лимит посреди прогона, отказы формата) скрипт не знает —
+  // скилл по этому полю лишь добавляет пользователю вариант «без пола модели». Обе модели в одном
+  // прогоне бывают только при поле модели на pass ≥ 2.
+  opusSilent:
     stats.asked.opus > 0 &&
     stats.replied.opus === 0 &&
     stats.replied.sonnet > 0,

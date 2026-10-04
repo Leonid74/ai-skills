@@ -1290,8 +1290,8 @@ for (const level of ["xhigh", "max"]) {
 console.log("ok 22 сильная сессия: последняя линия без model на xhigh и max");
 
 // 23. Слабая сессия, opus ей недоступен: агенты с model: opus не отвечают, остальные работают.
-// Признак opusUnavailable — структурный и объективный: ни один агент на opus не ответил, а агенты на
-// sonnet отвечали. На pass=1 (все роли на opus) и при общем молчании он не ставится — это лимит.
+// Поле opusSilent — наблюдение, а не диагноз: ни один агент на opus не дал структурного ответа, а
+// агенты на sonnet дали. На pass=1 (все роли на opus) и при общем молчании оно не ставится.
 // Текст причины остановки про opus не говорит: он собирается в том числе из текста ошибок агентов.
 {
   const three = {
@@ -1319,7 +1319,7 @@ console.log("ok 22 сильная сессия: последняя линия б
   assert.equal(many.result.mode, "прерван");
   assert.match(many.result.halted, /не ответил ни один/);
   assert.doesNotMatch(many.result.halted, /opus/);
-  assert.equal(many.result.opusUnavailable, true, "волна верификаторов");
+  assert.equal(many.result.opusSilent, true, "волна верификаторов");
   assert.deepEqual(
     many.result.failedAngles.map((f) => [f.n, f.model]),
     [[5, "opus"]],
@@ -1327,25 +1327,21 @@ console.log("ok 22 сильная сессия: последняя линия б
 
   const single = await scenario("high", 2, true, one, noOpus);
   assert.equal(single.result.mode, "деградированный");
-  assert.equal(
-    single.result.opusUnavailable,
-    true,
-    "одна локация, без остановки",
-  );
+  assert.equal(single.result.opusSilent, true, "одна локация, без остановки");
 
   const medium = await scenario("medium", 2, true, one, noOpus);
-  assert.equal(medium.result.opusUnavailable, true, "medium: угла 5 нет");
+  assert.equal(medium.result.opusSilent, true, "medium: угла 5 нет");
 
   const first = await scenario("high", 1, true, one, noOpus);
-  assert.equal(first.result.opusUnavailable, false, "pass=1: все роли на opus");
+  assert.equal(first.result.opusSilent, false, "pass=1: все роли на opus");
 
   const limit = await scenario("high", 2, true, one, () => true);
-  assert.equal(limit.result.opusUnavailable, false, "молчат все — это лимит");
+  assert.equal(limit.result.opusSilent, false, "молчат все — это лимит");
 
   const fine = await scenario("high", 2, true, one, () => false);
-  assert.equal(fine.result.opusUnavailable, false, "opus отвечает");
+  assert.equal(fine.result.opusSilent, false, "opus отвечает");
 
   const strong = await scenario("high", 2, false, one, () => false);
-  assert.equal(strong.result.opusUnavailable, false, "пола нет");
+  assert.equal(strong.result.opusSilent, false, "пола нет");
 }
-console.log("ok 23 слабая сессия без доступа к opus: признак opusUnavailable");
+console.log("ok 23 слабая сессия без доступа к opus: признак opusSilent");
