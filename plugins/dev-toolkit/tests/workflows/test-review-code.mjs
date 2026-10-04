@@ -104,6 +104,7 @@ function base(level, pass, split) {
   return {
     level,
     pass,
+    sessionBelowOpus: false,
     context: "DIFF",
     finderRules: "RULES",
     verifyProtocol: "PROTO",
@@ -586,6 +587,20 @@ for (const [name, mut, re] of [
       a.files = [];
     },
     /args\.files/,
+  ],
+  [
+    "sessionBelowOpus не передан",
+    (a) => {
+      delete a.sessionBelowOpus;
+    },
+    /args\.sessionBelowOpus/,
+  ],
+  [
+    "sessionBelowOpus строкой",
+    (a) => {
+      a.sessionBelowOpus = "false";
+    },
+    /args\.sessionBelowOpus/,
   ],
 ]) {
   const a = base("high", 1);
@@ -1145,3 +1160,49 @@ console.log("ok 6 проверка args");
   assert.equal(result.survivors.length, 1);
   console.log("ok 20 max: security-голос одной линзы");
 }
+
+// 21. Сессия слабее opus или неизвестна: угол 5, верификаторы (xhigh) и линзы (max) получают opus,
+// в том числе при перезапуске; дешёвые роли от признака не зависят.
+for (const [level, pass, cheap] of [
+  ["xhigh", 1, "opus"],
+  ["xhigh", 2, "sonnet"],
+  ["max", 1, "opus"],
+]) {
+  const a = base(level, pass);
+  a.sessionBelowOpus = true;
+  let failedOnce = false;
+  const { result, calls } = await runScript(a, (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o)) {
+      if (o.label.startsWith("угол 5") && !failedOnce) {
+        failedOnce = true;
+        return null;
+      }
+      return o.label.startsWith("угол 1")
+        ? { candidates: [cand("src/a.php", 7, "y")], suppressed: [] }
+        : EMPTY;
+    }
+    return verdicts(p, () => "CONFIRMED");
+  });
+  const strong = calls.filter(
+    (c) =>
+      c.opts.label.startsWith("угол 5") ||
+      !(isFinder(c.opts) || isSweep(c.opts)),
+  );
+  assert.equal(
+    strong.length,
+    level === "max" ? 5 : 3,
+    `${level}: угол 5, его перезапуск и верификация`,
+  );
+  for (const c of strong)
+    assert.equal(c.opts.model, "opus", `${level}: ${c.opts.label}`);
+  for (const c of calls.filter((x) => !strong.includes(x)))
+    assert.equal(c.opts.model, cheap, `${level} pass=${pass}: ${c.opts.label}`);
+  assert.equal(
+    result.agents.byModel.default.count,
+    0,
+    "корзина «без model» пуста",
+  );
+  checkSums(result.agents);
+}
+console.log("ok 21 слабая сессия: opus у угла 5, верификаторов и линз");

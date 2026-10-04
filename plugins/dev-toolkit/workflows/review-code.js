@@ -163,6 +163,14 @@ const pass = input.pass === undefined ? 1 : input.pass;
 if (!Number.isInteger(pass) || pass < 1) {
   throw new Error(`args.pass: ожидается целое ≥ 1, получено «${input.pass}»`);
 }
+// Признак обязателен: молчаливое умолчание либо отключило бы пол модели, либо понизило бы
+// верификацию сильной сессии до opus — оба исхода скилл обязан выбрать явно.
+const sessionBelowOpus = input.sessionBelowOpus;
+if (typeof sessionBelowOpus !== "boolean") {
+  throw new Error(
+    `args.sessionBelowOpus: обязательный true|false (true — модель сессии слабее opus либо неизвестна), получено «${input.sessionBelowOpus}»`,
+  );
+}
 const wave = input.wave === undefined ? DEFAULT_WAVE : input.wave;
 if (!Number.isInteger(wave) || wave < MIN_WAVE || wave > MAX_WAVE) {
   throw new Error(
@@ -252,13 +260,14 @@ function totalAgents() {
 }
 
 /**
- * Модель агента по правилу «Модель субагентов»: только роль и номер прохода.
+ * Модель агента по правилу «Модель субагентов»: роль, номер прохода и признак слабой сессии.
  *
  * @param {boolean} cheapRole true — finder-угол (кроме угла 5) или sweep; false — угол 5, верификатор, линза.
  * @returns {string|undefined} значение opts.model либо undefined («model не передавать»).
  */
 function modelFor(cheapRole) {
-  if (!cheapRole) return undefined;
+  // Последняя линия (угол 5, верификация) не должна идти на модели слабее finder'ов прохода 1.
+  if (!cheapRole) return sessionBelowOpus ? "opus" : undefined;
   return pass === 1 ? "opus" : "sonnet";
 }
 
