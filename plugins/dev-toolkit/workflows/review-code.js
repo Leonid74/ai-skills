@@ -27,7 +27,7 @@ export const meta = {
 // Механика оркестрации скилла review-code (dev-toolkit ≥ 2.0.0). Тексты правил — ракурсы углов,
 // skip-list, инварианты, протокол верификации, формат кандидата — в скрипте НЕ дублируются: их
 // собирает скилл из своего SKILL.md и правил проекта и передаёт через args. Здесь только то, что
-// обязано быть детерминированным: состав агентов, модель по роли и проходу, волны запуска,
+// обязано быть детерминированным: состав агентов, модель (роль, проход, признак слабой сессии), волны,
 // перезапуски, группировка по локации, подсчёт голосов, счётчики для сводки.
 // Date.now()/Math.random()/new Date() не использовать — ломают resume; время меряет сессия.
 
@@ -163,6 +163,14 @@ const pass = input.pass === undefined ? 1 : input.pass;
 if (!Number.isInteger(pass) || pass < 1) {
   throw new Error(`args.pass: ожидается целое ≥ 1, получено «${input.pass}»`);
 }
+// Признак обязателен: молчаливое умолчание либо отключило бы пол модели, либо понизило бы
+// верификацию сильной сессии до opus — оба исхода скилл обязан выбрать явно.
+const sessionBelowOpus = input.sessionBelowOpus;
+if (typeof sessionBelowOpus !== "boolean") {
+  throw new Error(
+    `args.sessionBelowOpus: обязательный true|false (true — пол модели включён; false — сессия на opus либо пол снят пользователем), получено «${input.sessionBelowOpus}»`,
+  );
+}
 const wave = input.wave === undefined ? DEFAULT_WAVE : input.wave;
 if (!Number.isInteger(wave) || wave < MIN_WAVE || wave > MAX_WAVE) {
   throw new Error(
@@ -234,6 +242,10 @@ const stats = {
   byModel: { opus: {}, sonnet: {}, default: {} },
   // Запуски, сгоревшие об лимит использования: в число агентов прогона они не входят.
   limitHits: 0,
+  // Запросы к агентам (asked — все, включая сгоревшие об лимит) и структурные ответы (replied) по
+  // корзинам моделей — для признака opusSilent.
+  replied: { opus: 0, sonnet: 0, default: 0 },
+  asked: { opus: 0, sonnet: 0, default: 0 },
 };
 const notes = [];
 const degraded = [];
@@ -252,13 +264,14 @@ function totalAgents() {
 }
 
 /**
- * Модель агента по правилу «Модель субагентов»: только роль и номер прохода.
+ * Модель агента по правилу «Модель субагентов»: роль, номер прохода и признак слабой сессии.
  *
  * @param {boolean} cheapRole true — finder-угол (кроме угла 5) или sweep; false — угол 5, верификатор, линза.
  * @returns {string|undefined} значение opts.model либо undefined («model не передавать»).
  */
 function modelFor(cheapRole) {
-  if (!cheapRole) return undefined;
+  // Последняя линия (угол 5, верификация) не должна идти на модели слабее finder'ов прохода 1.
+  if (!cheapRole) return sessionBelowOpus ? "opus" : undefined;
   return pass === 1 ? "opus" : "sonnet";
 }
 
@@ -310,6 +323,8 @@ async function run(task, restart) {
     agentType: "general-purpose",
   };
   if (task.model) agentOpts.model = task.model;
+  const bucket = task.model || "default";
+  stats.asked[bucket] += 1;
   let reply;
   try {
     reply = await agent(task.prompt, agentOpts);
@@ -322,6 +337,7 @@ async function run(task, restart) {
     log(`агент «${agentOpts.label}» упал: ${e && e.message ? e.message : e}`);
     reply = null;
   }
+  if (reply) stats.replied[bucket] += 1;
   return { reply: reply || null, limit: false, skipped: false };
 }
 
@@ -1085,6 +1101,14 @@ return {
   rejected,
   overflow,
   failedAngles,
+  // Наблюдение, а не диагноз: ни один агент на opus не дал структурного ответа, а агенты на sonnet
+  // дали. Причину (opus недоступен сессии, лимит посреди прогона, отказы формата) скрипт не знает —
+  // скилл по этому полю лишь добавляет пользователю вариант «без пола модели». Обе модели в одном
+  // прогоне бывают только при поле модели на pass ≥ 2.
+  opusSilent:
+    stats.asked.opus > 0 &&
+    stats.replied.opus === 0 &&
+    stats.replied.sonnet > 0,
   sweep,
   agents: {
     total: totalAgents(),

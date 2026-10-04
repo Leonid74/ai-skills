@@ -104,6 +104,7 @@ function base(level, pass, split) {
   return {
     level,
     pass,
+    sessionBelowOpus: false,
     context: "DIFF",
     finderRules: "RULES",
     verifyProtocol: "PROTO",
@@ -586,6 +587,48 @@ for (const [name, mut, re] of [
       a.files = [];
     },
     /args\.files/,
+  ],
+  [
+    "sessionBelowOpus не передан",
+    (a) => {
+      delete a.sessionBelowOpus;
+    },
+    /args\.sessionBelowOpus/,
+  ],
+  [
+    "sessionBelowOpus строкой",
+    (a) => {
+      a.sessionBelowOpus = "false";
+    },
+    /args\.sessionBelowOpus/,
+  ],
+  [
+    "sessionBelowOpus = null",
+    (a) => {
+      a.sessionBelowOpus = null;
+    },
+    /args\.sessionBelowOpus/,
+  ],
+  [
+    "sessionBelowOpus = 0",
+    (a) => {
+      a.sessionBelowOpus = 0;
+    },
+    /args\.sessionBelowOpus/,
+  ],
+  [
+    "sessionBelowOpus = 1",
+    (a) => {
+      a.sessionBelowOpus = 1;
+    },
+    /args\.sessionBelowOpus/,
+  ],
+  [
+    "sessionBelowOpus — строка true",
+    (a) => {
+      a.sessionBelowOpus = "true";
+    },
+    /args\.sessionBelowOpus/,
   ],
 ]) {
   const a = base("high", 1);
@@ -1145,3 +1188,210 @@ console.log("ok 6 проверка args");
   assert.equal(result.survivors.length, 1);
   console.log("ok 20 max: security-голос одной линзы");
 }
+
+// 21. Пол модели включён (сессия на sonnet, haiku либо модель неизвестна): угол 5, верификаторы и линзы получают opus на любом уровне и
+// проходе — в том числе при перезапуске и при верификации кандидатов sweep; дешёвые роли (включая обе
+// половины расщеплённого угла 2) от признака не зависят.
+for (const [level, pass, cheap, strongCalls] of [
+  ["medium", 1, "opus", 2],
+  ["high", 2, "sonnet", 4],
+  ["xhigh", 1, "opus", 5],
+  ["xhigh", 2, "sonnet", 5],
+  ["max", 1, "opus", 9],
+  ["max", 2, "sonnet", 9],
+]) {
+  const a = base(level, pass, level === "max");
+  a.sessionBelowOpus = true;
+  let angleFailed = false;
+  let verifierFailed = false;
+  const { result, calls } = await runScript(a, (p, o) => {
+    if (isSweep(o))
+      return { candidates: [cand("src/b.php", 9, "s")], suppressed: [] };
+    if (isFinder(o)) {
+      if (o.label.startsWith("угол 5") && !angleFailed) {
+        angleFailed = true;
+        return null;
+      }
+      return o.label.startsWith("угол 1")
+        ? { candidates: [cand("src/a.php", 7, "y")], suppressed: [] }
+        : EMPTY;
+    }
+    if (!verifierFailed) {
+      verifierFailed = true;
+      return null;
+    }
+    return verdicts(p, () => "CONFIRMED");
+  });
+  const strong = calls.filter(
+    (c) =>
+      c.opts.label.startsWith("угол 5") ||
+      !(isFinder(c.opts) || isSweep(c.opts)),
+  );
+  // Точное число защищает от опустевшего фильтра: угол 5 с перезапуском (с high), голоса локации
+  // фазы 2 с одним перезапуском и, на xhigh/max, голоса локации sweep.
+  assert.equal(
+    strong.length,
+    strongCalls,
+    `${level} pass=${pass}: сильные роли`,
+  );
+  assert.ok(
+    strong.some(
+      (c) => !isFinder(c.opts) && c.opts.label.endsWith("перезапуск"),
+    ),
+    `${level}: перезапуск верификатора состоялся`,
+  );
+  if (level === "xhigh" || level === "max")
+    assert.ok(
+      strong.some((c) => c.opts.phase === "Sweep"),
+      `${level}: верификация кандидата sweep состоялась`,
+    );
+  for (const c of strong)
+    assert.equal(
+      c.opts.model,
+      "opus",
+      `${level} pass=${pass}: ${c.opts.label}`,
+    );
+  for (const c of calls.filter((x) => !strong.includes(x)))
+    assert.equal(c.opts.model, cheap, `${level} pass=${pass}: ${c.opts.label}`);
+  assert.equal(
+    result.agents.byModel.default.count,
+    0,
+    "корзина «без model» пуста",
+  );
+  checkSums(result.agents);
+}
+console.log("ok 21 слабая сессия: opus у угла 5, верификаторов и линз");
+
+// 22. Сессия на opus: на xhigh и max последняя линия идёт без model — признак false не
+// должен понижать её до opus (на high это закрепляют векторы 1 и 2).
+for (const level of ["xhigh", "max"]) {
+  const { result, calls } = await runScript(base(level, 1), (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [cand("src/a.php", 7, "y")], suppressed: [] }
+        : EMPTY;
+    return verdicts(p, () => "CONFIRMED");
+  });
+  const strong = calls.filter(
+    (c) =>
+      c.opts.label.startsWith("угол 5") ||
+      !(isFinder(c.opts) || isSweep(c.opts)),
+  );
+  assert.equal(
+    strong.length,
+    level === "max" ? 4 : 2,
+    `${level}: сильные роли`,
+  );
+  for (const c of strong)
+    assert.equal(c.opts.model, undefined, `${level}: ${c.opts.label}`);
+  assert.equal(result.agents.byModel.default.count, strong.length);
+}
+console.log("ok 22 сильная сессия: последняя линия без model на xhigh и max");
+
+// 23. Слабая сессия, opus ей недоступен: агенты с model: opus не отвечают, остальные работают.
+// Поле opusSilent — наблюдение, а не диагноз: ни один агент на opus не дал структурного ответа, а
+// агенты на sonnet дали. На pass=1 (все роли на opus) и при общем молчании оно не ставится.
+// Текст причины остановки про opus не говорит: он собирается в том числе из текста ошибок агентов.
+{
+  const three = {
+    candidates: [
+      cand("src/a.php", 1, "x"),
+      cand("src/a.php", 20, "y"),
+      cand("src/b.php", 3, "z"),
+    ],
+    suppressed: [],
+  };
+  const one = { candidates: [cand("src/a.php", 1, "x")], suppressed: [] };
+  const scenario = (level, pass, weak, found, silent) => {
+    const a = base(level, pass);
+    a.sessionBelowOpus = weak;
+    return runScript(a, (p, o) => {
+      if (silent(o)) return null;
+      if (isSweep(o)) return EMPTY;
+      if (isFinder(o)) return o.label.startsWith("угол 1") ? found : EMPTY;
+      return verdicts(p, () => "CONFIRMED");
+    });
+  };
+  const noOpus = (o) => o.model === "opus";
+
+  const many = await scenario("high", 2, true, three, noOpus);
+  assert.equal(many.result.mode, "прерван");
+  assert.match(many.result.halted, /не ответил ни один/);
+  assert.doesNotMatch(many.result.halted, /opus/);
+  assert.equal(many.result.opusSilent, true, "волна верификаторов");
+  assert.deepEqual(
+    many.result.failedAngles.map((f) => [f.n, f.model]),
+    [[5, "opus"]],
+  );
+
+  const single = await scenario("high", 2, true, one, noOpus);
+  assert.equal(single.result.mode, "деградированный");
+  assert.equal(single.result.opusSilent, true, "одна локация, без остановки");
+
+  const medium = await scenario("medium", 2, true, one, noOpus);
+  assert.equal(medium.result.opusSilent, true, "medium: угла 5 нет");
+
+  const first = await scenario("high", 1, true, one, noOpus);
+  assert.equal(first.result.opusSilent, false, "pass=1: все роли на opus");
+
+  const limit = await scenario("high", 2, true, one, () => true);
+  assert.equal(limit.result.opusSilent, false, "молчат все — это лимит");
+
+  const fine = await scenario("high", 2, true, one, () => false);
+  assert.equal(fine.result.opusSilent, false, "opus отвечает");
+
+  const strong = await scenario("high", 2, false, one, () => false);
+  assert.equal(strong.result.opusSilent, false, "пола нет");
+
+  // Частичный ответ opus — не молчание: один верификатор из трёх молчит, двое отвечают.
+  const partial = await scenario(
+    "high",
+    2,
+    true,
+    three,
+    (o) => !isFinder(o) && o.label.includes("src/b.php"),
+  );
+  assert.equal(partial.result.opusSilent, false, "часть opus-агентов ответила");
+
+  // Ответ на перезапуске — тоже ответ: первый запуск каждого opus-агента пуст, перезапуск отвечает.
+  const retried = await scenario(
+    "high",
+    2,
+    true,
+    one,
+    (o) => o.model === "opus" && !o.label.endsWith("перезапуск"),
+  );
+  assert.equal(retried.result.opusSilent, false, "opus ответил на перезапуске");
+
+  // Отказ исключением (не про лимит) — запрос к opus был, ответа нет.
+  const thrown = await scenario("high", 2, true, one, (o) => {
+    if (o.model === "opus") throw new Error("model is not available");
+    return false;
+  });
+  assert.equal(thrown.result.opusSilent, true, "opus отказал исключением");
+
+  // Границы: одного запроса к opus и одного ответа на sonnet достаточно. Отвечает только угол 1,
+  // единственный верификатор падает исключением про лимит — перезапуска нет.
+  const edge = await scenario("medium", 2, true, one, (o) => {
+    if (o.model === "opus") throw new Error("429 too many requests");
+    return isFinder(o) && !o.label.startsWith("угол 1");
+  });
+  assert.equal(
+    edge.result.agents.byModel.sonnet.count,
+    5,
+    "угол 1 и два отказа с перезапуском",
+  );
+  assert.equal(edge.result.opusSilent, true, "по одному запросу и ответу");
+
+  // Ответы агентов без model за ответы на другой модели не считаются: сессия на opus, pass=1,
+  // finder'ы на opus молчат, угол 5 и верификатор (без model) работают.
+  const b = base("high", 1);
+  const plain = await runScript(b, (p, o) => {
+    if (o.model === "opus") return null;
+    return isFinder(o) ? one : verdicts(p, () => "CONFIRMED");
+  });
+  assert.ok(plain.result.agents.byModel.default.count > 0);
+  assert.equal(plain.result.opusSilent, false, "ответы без model — не sonnet");
+}
+console.log("ok 23 слабая сессия без доступа к opus: признак opusSilent");
