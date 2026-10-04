@@ -602,6 +602,34 @@ for (const [name, mut, re] of [
     },
     /args\.sessionBelowOpus/,
   ],
+  [
+    "sessionBelowOpus = null",
+    (a) => {
+      a.sessionBelowOpus = null;
+    },
+    /args\.sessionBelowOpus/,
+  ],
+  [
+    "sessionBelowOpus = 0",
+    (a) => {
+      a.sessionBelowOpus = 0;
+    },
+    /args\.sessionBelowOpus/,
+  ],
+  [
+    "sessionBelowOpus = 1",
+    (a) => {
+      a.sessionBelowOpus = 1;
+    },
+    /args\.sessionBelowOpus/,
+  ],
+  [
+    "sessionBelowOpus — строка true",
+    (a) => {
+      a.sessionBelowOpus = "true";
+    },
+    /args\.sessionBelowOpus/,
+  ],
 ]) {
   const a = base("high", 1);
   mut(a);
@@ -1161,26 +1189,36 @@ console.log("ok 6 проверка args");
   console.log("ok 20 max: security-голос одной линзы");
 }
 
-// 21. Сессия слабее opus или неизвестна: угол 5, верификаторы (xhigh) и линзы (max) получают opus,
-// в том числе при перезапуске; дешёвые роли от признака не зависят.
-for (const [level, pass, cheap] of [
-  ["xhigh", 1, "opus"],
-  ["xhigh", 2, "sonnet"],
-  ["max", 1, "opus"],
+// 21. Сессия слабее opus или неизвестна: угол 5, верификаторы и линзы получают opus на любом уровне и
+// проходе — в том числе при перезапуске и при верификации кандидатов sweep; дешёвые роли (включая обе
+// половины расщеплённого угла 2) от признака не зависят.
+for (const [level, pass, cheap, strongCalls] of [
+  ["medium", 1, "opus", 2],
+  ["high", 2, "sonnet", 4],
+  ["xhigh", 1, "opus", 5],
+  ["xhigh", 2, "sonnet", 5],
+  ["max", 1, "opus", 9],
+  ["max", 2, "sonnet", 9],
 ]) {
-  const a = base(level, pass);
+  const a = base(level, pass, level === "max");
   a.sessionBelowOpus = true;
-  let failedOnce = false;
+  let angleFailed = false;
+  let verifierFailed = false;
   const { result, calls } = await runScript(a, (p, o) => {
-    if (isSweep(o)) return EMPTY;
+    if (isSweep(o))
+      return { candidates: [cand("src/b.php", 9, "s")], suppressed: [] };
     if (isFinder(o)) {
-      if (o.label.startsWith("угол 5") && !failedOnce) {
-        failedOnce = true;
+      if (o.label.startsWith("угол 5") && !angleFailed) {
+        angleFailed = true;
         return null;
       }
       return o.label.startsWith("угол 1")
         ? { candidates: [cand("src/a.php", 7, "y")], suppressed: [] }
         : EMPTY;
+    }
+    if (!verifierFailed) {
+      verifierFailed = true;
+      return null;
     }
     return verdicts(p, () => "CONFIRMED");
   });
@@ -1189,13 +1227,30 @@ for (const [level, pass, cheap] of [
       c.opts.label.startsWith("угол 5") ||
       !(isFinder(c.opts) || isSweep(c.opts)),
   );
+  // Точное число защищает от опустевшего фильтра: угол 5 с перезапуском (с high), голоса локации
+  // фазы 2 с одним перезапуском и, на xhigh/max, голоса локации sweep.
   assert.equal(
     strong.length,
-    level === "max" ? 5 : 3,
-    `${level}: угол 5, его перезапуск и верификация`,
+    strongCalls,
+    `${level} pass=${pass}: сильные роли`,
   );
+  assert.ok(
+    strong.some(
+      (c) => !isFinder(c.opts) && c.opts.label.endsWith("перезапуск"),
+    ),
+    `${level}: перезапуск верификатора состоялся`,
+  );
+  if (level === "xhigh" || level === "max")
+    assert.ok(
+      strong.some((c) => c.opts.phase === "Sweep"),
+      `${level}: верификация кандидата sweep состоялась`,
+    );
   for (const c of strong)
-    assert.equal(c.opts.model, "opus", `${level}: ${c.opts.label}`);
+    assert.equal(
+      c.opts.model,
+      "opus",
+      `${level} pass=${pass}: ${c.opts.label}`,
+    );
   for (const c of calls.filter((x) => !strong.includes(x)))
     assert.equal(c.opts.model, cheap, `${level} pass=${pass}: ${c.opts.label}`);
   assert.equal(
@@ -1206,3 +1261,30 @@ for (const [level, pass, cheap] of [
   checkSums(result.agents);
 }
 console.log("ok 21 слабая сессия: opus у угла 5, верификаторов и линз");
+
+// 22. Сессия на opus или сильнее: на xhigh и max последняя линия идёт без model — признак false не
+// должен понижать её до opus (на high это закрепляют векторы 1 и 2).
+for (const level of ["xhigh", "max"]) {
+  const { result, calls } = await runScript(base(level, 1), (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [cand("src/a.php", 7, "y")], suppressed: [] }
+        : EMPTY;
+    return verdicts(p, () => "CONFIRMED");
+  });
+  const strong = calls.filter(
+    (c) =>
+      c.opts.label.startsWith("угол 5") ||
+      !(isFinder(c.opts) || isSweep(c.opts)),
+  );
+  assert.equal(
+    strong.length,
+    level === "max" ? 4 : 2,
+    `${level}: сильные роли`,
+  );
+  for (const c of strong)
+    assert.equal(c.opts.model, undefined, `${level}: ${c.opts.label}`);
+  assert.equal(result.agents.byModel.default.count, strong.length);
+}
+console.log("ok 22 сильная сессия: последняя линия без model на xhigh и max");
