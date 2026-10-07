@@ -31,7 +31,7 @@ fi
 # Каталог команд для PATH: только то, что нужно шаблону, плюс заглушки. Так
 # проверяется и поведение без tmux/timeout, и то, что настоящий tmux не задет.
 _log="${_root}/calls.log"
-_tools=(bash cat jq git whoami hostname sleep readlink mkdir)
+_tools=(bash cat jq git whoami hostname sleep readlink mkdir mv)
 
 # make_bin <имя каталога> <режим timeout: ok|hang|none> <tmux: yes|no>
 make_bin() {
@@ -452,7 +452,7 @@ tail_check 'темп: предел' "{${_m},\"rate_limits\":{$(win5 999 $((_now 
 tail_check 'темп: времени сброса нет' "{${_m},\"rate_limits\":{\"five_hour\":{\"used_percentage\":99}}}" \
   "M | ${_r}5h 99%${_z}"
 tail_check 'темп: время сброса прошло' "{${_m},\"rate_limits\":{$(win5 99 $((_now - 1)))}}" "M | ${_r}5h 99%${_z}"
-tail_check 'темп: сброс дальше длины окна' "{${_m},\"rate_limits\":{$(win5 50 $((_now + 18001)))}}" \
+tail_check 'темп: сброс дальше длины окна — до начала окна темпа нет' "{${_m},\"rate_limits\":{$(win5 50 $((_now + 18001)))}}" \
   'M | 5h 50% (resets in 5h00m)'
 
 # Кэш промпта. cache_check <описание> <объект prompt_cache, JSON> <ожидаемый сегмент | пусто>
@@ -484,7 +484,16 @@ cache_check 'объём 1500' "$(pc -5 1h ',"recache_tokens_if_cold":1500')" "ca
 cache_check 'объём 0' "$(pc -5 1h ',"recache_tokens_if_cold":0')" 'cache cold'
 cache_check 'объём огромный' "$(pc -5 1h ',"recache_tokens_if_cold":1e9')" 'cache cold'
 cache_check 'объём — строка' "$(pc -5 1h ',"recache_tokens_if_cold":"7; x"')" 'cache cold'
-cache_check 'тёплый: объём не выводится' "$(pc 1860 1h "${_re}")" 'cache warm 31m'
+cache_check 'объём дробный — вниз' "$(pc -5 1h ',"recache_tokens_if_cold":999.6')" "cache cold ${_dot} 999"
+cache_check 'expires_at ноль' '{"caching_observed":true,"expires_at":0}' ''
+cache_check 'время истечения дробное' '{"caching_observed":true,"ttl":"1h","expires_at":'"$((_now + 1860))"'.9}' 'cache warm 31m'
+# warm: false — Claude Code сам считает кэш не тёплым: холодный с объёмом.
+cache_check 'warm false при будущем времени' "$(pc 1860 1h "${_re}"',"warm":false')" "cache cold ${_dot} 151k"
+cache_check 'warm true' "$(pc 1860 1h "${_re}"',"warm":true')" 'cache warm 31m'
+cache_check 'warm не булево' "$(pc 1860 1h "${_re}"',"warm":"false"')" 'cache warm 31m'
+# Компакция важнее «истекает»: объём null в последней шестой части срока — холодный.
+cache_check 'после компакции, истекающий' "$(pc 300 1h ',"recache_tokens_if_cold":null')" 'cache cold'
+cache_check 'после компакции, 5m' "$(pc 200 5m ',"recache_tokens_if_cold":null')" 'cache cold'
 cache_check 'expires_at null, кэш наблюдался' '{"caching_observed":true,"expires_at":null,"recache_tokens_if_cold":45000}' \
   "cache cold ${_dot} 45k"
 cache_check 'expires_at нет, кэш наблюдался' '{"caching_observed":true}' 'cache cold'
@@ -531,22 +540,30 @@ check 'состояние: модель запомнена' "$(cat "${_sf}")" "A
 state_check 'модель сменили — холодный с объёмом' '"A"' '"claude-sonnet-5-5"' 1800 "${_k}" "cache cold ${_dot} 56k"
 check 'состояние: при смене модели запись не тронута' "$(cat "${_sf}")" "A $((_now + 1800)) claude-haiku-5-5"
 state_check 'модель сменили, объёма нет' '"A"' '"claude-sonnet-5-5"' 1800 '' 'cache cold'
-state_check 'модель сменили: истекающий — без цвета и без тарифа' '"A"' '"claude-sonnet-5-5"' 1800 "${_k}" \
+state_check 'модель сменили при 5m — без тарифа' '"A"' '"claude-sonnet-5-5"' 1800 "${_k}" \
   "cache cold ${_dot} 56k" 5m
 state_check 'истекающий — жёлтый' '"G"' '"claude-haiku-5-5"' 300 "${_k}" "${_y}cache warm 5m${_z}"
 state_check 'истекающий, модель сменили — холодный' '"G"' '"claude-sonnet-5-5"' 300 "${_k}" "cache cold ${_dot} 56k"
+state_check 'истекающий при 5m — жёлтый с тарифом' '"G5"' '"claude-haiku-5-5"' 60 "${_k}" \
+  "${_y}cache warm 1m${_z} (5m ttl)" 5m
+state_check 'истекающий при 5m, модель сменили — без цвета и тарифа' '"G5"' '"claude-sonnet-5-5"' 60 "${_k}" \
+  "cache cold ${_dot} 56k" 5m
 : >"${_sf}"
 state_check 'первый рендер заново' '"A"' '"claude-haiku-5-5"' 1800 "${_k}" 'cache warm 30m'
 state_check 'модель вернули — снова тёплый' '"A"' '"claude-haiku-5-5"' 1800 "${_k}" 'cache warm 30m'
 state_check 'запрос на новой модели — тёплый' '"A"' '"claude-sonnet-5-5"' 2000 "${_k}" 'cache warm 33m'
 check 'состояние: запись обновлена' "$(cat "${_sf}")" "A $((_now + 2000)) claude-sonnet-5-5"
-# Новая сессия с тем же временем истечения, что записано за другой, — кэш
-# прежнего разговора (/clear, /new): холодный без объёма, запись не появляется.
-state_check 'новая сессия с чужим временем — холодный' '"B"' '"claude-sonnet-5-5"' 2000 "${_k}" 'cache cold'
-check 'состояние: чужое время не записано' "$(cat "${_sf}")" "A $((_now + 2000)) claude-sonnet-5-5"
-state_check 'новая сессия, свой запрос — тёплый' '"B"' '"claude-opus-5-5[1m]"' 2100 "${_k}" 'cache warm 35m'
+# Другая сессия с тем же временем истечения (ответы в одну секунду) — сама по
+# себе: тёплая, со своей записью.
+state_check 'другая сессия с тем же временем — тёплая' '"B"' '"claude-sonnet-5-5"' 2000 "${_k}" 'cache warm 33m'
+check 'состояние: вторая сессия записана' "$(cat "${_sf}")" \
+  "A $((_now + 2000)) claude-sonnet-5-5"$'\n'"B $((_now + 2000)) claude-sonnet-5-5"
+state_check 'другая сессия, свой запрос — тёплая' '"B"' '"claude-opus-5-5[1m]"' 2100 "${_k}" 'cache warm 35m'
 check 'состояние: две сессии' "$(cat "${_sf}")" "A $((_now + 2000)) claude-sonnet-5-5"$'\n'"B $((_now + 2100)) claude-opus-5-5[1m]"
-state_check 'у сессии запись есть — чужое время не мешает' '"A"' '"claude-sonnet-5-5"' 2100 "${_k}" 'cache warm 35m'
+state_check 'время как у другой сессии — запись обновляется' '"A"' '"claude-sonnet-5-5"' 2100 "${_k}" 'cache warm 35m'
+check 'состояние: временных файлов не осталось' "$(ls "${_st}/claude-statusline")" 'cache-model'
+check 'состояние: каталог 700' "$(stat -c %a "${_st}/claude-statusline")" 700
+check 'состояние: файл 600' "$(stat -c %a "${_sf}")" 600
 # /compact: поле объёма есть, значение null — холодный без объёма; поля нет — тёплый.
 state_check 'после компакции — холодный' '"A"' '"claude-sonnet-5-5"' 2500 ',"recache_tokens_if_cold":null' 'cache cold'
 check 'состояние: после компакции запись не тронута' "$(grep -c "^A $((_now + 2100)) " "${_sf}")" 1
@@ -562,6 +579,20 @@ for _v in '"A",null' 'null,"claude-x"' '"a b","claude-x"' '"A","claude x"' '"A\n
   state_check "идентификаторы ${_v:0:40}: тёплый" "${_v%%,*}" "${_v#*,}" 1800 "${_k}" 'cache warm 30m'
   check "идентификаторы ${_v:0:40}: записи нет" "$(cat "${_sf}")" "${_before}"
 done
+# Все допустимые знаки проходят и запись, и чтение (смена модели видна).
+state_check 'знаки в идентификаторах: запись' '"a_b.c:d/e@f[g]-h"' '"us.vendor/claude-x_v1:0@z[1m]"' 1800 "${_k}" 'cache warm 30m'
+check 'знаки в идентификаторах: записаны' "$(grep -c -F "a_b.c:d/e@f[g]-h $((_now + 1800)) us.vendor/claude-x_v1:0@z[1m]" "${_sf}")" 1
+state_check 'знаки в идентификаторах: чтение' '"a_b.c:d/e@f[g]-h"' '"us.vendor/claude-y_v1:0@z[1m]"' 1800 "${_k}" "cache cold ${_dot} 56k"
+# Дробное время истечения пишется целым — иначе строка не прочлась бы обратно.
+_frac="{\"caching_observed\":true,\"ttl\":\"1h\",\"expires_at\":$((_now + 1800)).5${_k}}"
+tail_check 'состояние: дробное время — запись' \
+  "{\"session_id\":\"FR\",\"model\":{\"id\":\"claude-x\",\"display_name\":\"M\"},\"workspace\":{\"current_dir\":\"${_work}\"},\"prompt_cache\":${_frac}}" \
+  'M | cache warm 30m'
+check 'состояние: дробное время записано целым' "$(grep -c "^FR $((_now + 1800)) claude-x$" "${_sf}")" 1
+tail_check 'состояние: дробное время — смена модели видна' \
+  "{\"session_id\":\"FR\",\"model\":{\"id\":\"claude-y\",\"display_name\":\"M\"},\"workspace\":{\"current_dir\":\"${_work}\"},\"prompt_cache\":${_frac}}" \
+  "M | cache cold ${_dot} 56k"
+_before="$(cat "${_sf}")"
 state_check 'идентификаторы предельной длины' "\"$(printf 'a%.0s' {1..64})\"" "\"$(printf 'b%.0s' {1..128})\"" 1800 "${_k}" 'cache warm 30m'
 check 'идентификаторы предельной длины: записаны' "$(grep -c '^a\{64\} [0-9]* b\{128\}$' "${_sf}")" 1
 # Не больше 20 сессий: старые вытесняются.
@@ -576,9 +607,15 @@ printf '%s\n' 'мусор' "A $((_now + 1800)) claude-haiku-5-5" 'x y' "Z notanu
 state_check 'мусор в файле: запись читается' '"A"' '"claude-sonnet-5-5"' 1800 "${_k}" "cache cold ${_dot} 56k"
 state_check 'мусор в файле: новая сессия' '"N"' '"claude-x"' 1900 "${_k}" 'cache warm 31m'
 check 'мусор в файле: остались годные строки' "$(cat "${_sf}")" "A $((_now + 1800)) claude-haiku-5-5"$'\n'"N $((_now + 1900)) claude-x"
+# Строки верной структуры, но сверх длины, — тоже мусор: не сохраняются.
+printf '%s\n' "$(printf 'a%.0s' {1..65}) 1 m" "s 1234567890123 m" "s 1 $(printf 'b%.0s' {1..129})" "K 5 claude-k" >"${_sf}"
+state_check 'длинные строки в файле' '"N2"' '"claude-x"' 1900 "${_k}" 'cache warm 31m'
+check 'длинные строки в файле: не сохранены' "$(cat "${_sf}")" "K 5 claude-k"$'\n'"N2 $((_now + 1900)) claude-x"
 # Читаются только первые 40 строк.
 { for _i in $(seq 1 40); do echo "F${_i} 1 m"; done; echo "A $((_now + 1800)) claude-haiku-5-5"; } >"${_sf}"
 state_check 'запись дальше 40-й строки не читается' '"A"' '"claude-sonnet-5-5"' 1800 "${_k}" 'cache warm 30m'
+{ for _i in $(seq 1 39); do echo "F${_i} 1 m"; done; echo "A $((_now + 1800)) claude-haiku-5-5"; } >"${_sf}"
+state_check 'запись на 40-й строке читается' '"A"' '"claude-sonnet-5-5"' 1800 "${_k}" "cache cold ${_dot} 56k"
 # Каталог состояния недоступен или его нечем создать — строка цела.
 printf 'x' >"${_root}/notdir"
 _extra=("STATUSLINE_NOW=${_now}" "XDG_CACHE_HOME=${_root}/notdir")
@@ -591,18 +628,117 @@ run nomkdir - - nowait
 check 'нет mkdir: вывод' "${_out#* | }" 'M | cache warm 30m'
 check 'нет mkdir: код возврата' "${_rc}" 0
 check 'нет mkdir: stderr пуст' "${_err}" ''
-# XDG_CACHE_HOME не задан — каталог в HOME.
+# XDG_CACHE_HOME не задан или пуст — каталог в HOME.
+_hf="${_root}/.cache/claude-statusline/cache-model"
 _extra=("STATUSLINE_NOW=${_now}")
 state_check 'каталог по умолчанию' '"H"' '"claude-x"' 1800 "${_k}" 'cache warm 30m'
-check 'каталог по умолчанию: ~/.cache' "$(cat "${_root}/.cache/claude-statusline/cache-model")" "H $((_now + 1800)) claude-x"
+check 'каталог по умолчанию: ~/.cache' "$(cat "${_hf}")" "H $((_now + 1800)) claude-x"
+check 'каталог по умолчанию: ~/.cache создан с правами 700' "$(stat -c %a "${_root}/.cache")" 700
+_extra=("STATUSLINE_NOW=${_now}" XDG_CACHE_HOME=)
+state_check 'XDG_CACHE_HOME пуст' '"H2"' '"claude-x"' 1800 "${_k}" 'cache warm 30m'
+check 'XDG_CACHE_HOME пуст: ~/.cache' "$(grep -c "^H2 " "${_hf}")" 1
+# Относительный XDG_CACHE_HOME не берётся: файл не появляется в рабочем каталоге.
+state_check 'заготовка для относительного пути' '"H3"' '"claude-x"' 1800 "${_k}" 'cache warm 30m'
+# Каталоги с такими именами в рабочем каталоге есть — писать в них нельзя.
+mkdir -p "${_root}/work/relcache" "${_root}/work/relhome/.cache"
+_o="$(cd "${_root}/work" && env -i "PATH=${_root}/ok" "HOME=${_root}" "STATUSLINE_NOW=${_now}" XDG_CACHE_HOME=relcache \
+  bash "${_tpl}" <"${_fx}" 2>&1)"
+check 'XDG_CACHE_HOME относительный: вывод' "${_o#* | }" 'M | cache warm 30m'
+check 'XDG_CACHE_HOME относительный: в каталог не записано' "$(ls "${_root}/work/relcache")" ''
+# HOME относительный и XDG_CACHE_HOME не задан — состояния нет, строка цела.
+_o="$(cd "${_root}/work" && env -i "PATH=${_root}/ok" HOME=relhome "STATUSLINE_NOW=${_now}" bash "${_tpl}" <"${_fx}" 2>&1)"
+check 'HOME относительный: вывод' "${_o#* | }" 'M | cache warm 30m'
+check 'HOME относительный: в каталог не записано' "$(ls "${_root}/work/relhome/.cache")" ''
+
+# --- файл состояния: не обычный файл, чужой каталог, сбой записи ---------------------
+_sx="${_root}/sx"
+_sxf="${_sx}/claude-statusline/cache-model"
+_extra=("STATUSLINE_NOW=${_now}" "XDG_CACHE_HOME=${_sx}")
+mkdir -p "${_sx}/claude-statusline"
+# Симлинк на месте файла: цель не читается и не затирается.
+printf 'A %s claude-haiku-5-5\n' "$((_now + 1800))" >"${_root}/victim"
+ln -s "${_root}/victim" "${_sxf}"
+state_check 'симлинк на месте файла: не читается' '"A"' '"claude-sonnet-5-5"' 1800 "${_k}" 'cache warm 30m'
+check 'симлинк на месте файла: цель цела' "$(cat "${_root}/victim")" "A $((_now + 1800)) claude-haiku-5-5"
+check 'симлинк на месте файла: заменён обычным файлом' "$([[ -f "${_sxf}" && ! -L "${_sxf}" ]] && cat "${_sxf}")" \
+  "A $((_now + 1800)) claude-sonnet-5-5"
+# FIFO на месте файла: чтение не зависает. Страховка самого теста: через 2 с в
+# FIFO (под вторым именем — жёсткой ссылкой) пишет фоновый процесс, так что
+# шаблон, всё же открывший FIFO, не повиснет навсегда, а провалит проверку
+# времени; исправный шаблон FIFO не открывает, и писатель снимается по timeout.
+mv "${_sxf}" "${_root}/sx-old"
+mkfifo "${_sxf}"
+ln "${_sxf}" "${_root}/fifo-alias"
+# shellcheck disable=SC2016 # $1 раскрывает вложенный bash, а не эта оболочка
+(sleep 2 && timeout 3 bash -c 'printf "x\n" >"$1"' _ "${_root}/fifo-alias") >/dev/null 2>&1 &
+state_check 'FIFO на месте файла: строка цела' '"A"' '"claude-x"' 1800 "${_k}" 'cache warm 30m'
+check "FIFO на месте файла: скрипт не ждёт (${_ms} мс)" "$((_ms < 1500 ? 1 : 0))" 1
+check 'FIFO на месте файла: заменён обычным файлом' "$([[ -f "${_sxf}" && ! -L "${_sxf}" ]] && cat "${_sxf}")" \
+  "A $((_now + 1800)) claude-x"
+# Каталог состояния — симлинк: в чужой каталог не пишем и оттуда не читаем.
+mkdir -p "${_root}/sy" "${_root}/foreign"
+printf 'A %s claude-haiku-5-5\n' "$((_now + 1800))" >"${_root}/foreign/cache-model"
+ln -s "${_root}/foreign" "${_root}/sy/claude-statusline"
+_extra=("STATUSLINE_NOW=${_now}" "XDG_CACHE_HOME=${_root}/sy")
+state_check 'каталог состояния — симлинк: не читается' '"A"' '"claude-sonnet-5-5"' 1800 "${_k}" 'cache warm 30m'
+check 'каталог состояния — симлинк: чужой файл цел' "$(cat "${_root}/foreign/cache-model")" "A $((_now + 1800)) claude-haiku-5-5"
+check 'каталог состояния — симлинк: лишних файлов нет' "$(ls "${_root}/foreign")" 'cache-model'
+# Сбой переименования: прежний файл цел, смена модели по-прежнему видна.
+mkdir -p "${_root}/mvfail"
+for _t in bash cat jq git whoami hostname mkdir; do ln -s "$(command -v "${_t}")" "${_root}/mvfail/${_t}"; done
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"${_root}/mvfail/mv"
+chmod +x "${_root}/mvfail/mv"
+_extra=("STATUSLINE_NOW=${_now}" "XDG_CACHE_HOME=${_sx}")
+printf 'A %s claude-haiku-5-5\nB 7 claude-b\n' "$((_now + 1800))" >"${_sxf}.keep"
+mv "${_sxf}.keep" "${_sxf}"
+fixture_raw "{\"session_id\":\"C\",\"model\":{\"id\":\"claude-x\",\"display_name\":\"M\"},\"workspace\":{\"current_dir\":\"${_work}\"},\"prompt_cache\":$(pc 1900)}"
+run mvfail - - nowait
+check 'сбой mv: вывод' "${_out#* | }" 'M | cache warm 31m'
+check 'сбой mv: код возврата' "${_rc}" 0
+check 'сбой mv: stderr пуст' "${_err}" ''
+check 'сбой mv: прежний файл цел' "$(cat "${_sxf}")" "A $((_now + 1800)) claude-haiku-5-5"$'\n'"B 7 claude-b"
+# Каталог создать нельзя — mkdir не запускается ни разу; можно — ровно один раз.
+mkdir -p "${_root}/mklog"
+for _t in bash cat jq git whoami hostname mv; do ln -s "$(command -v "${_t}")" "${_root}/mklog/${_t}"; done
+printf '%s\n' '#!/usr/bin/env bash' "echo mkdir >>\"${_root}/mkdir.calls\"" "exec \"$(command -v mkdir)\" \"\$@\"" >"${_root}/mklog/mkdir"
+chmod +x "${_root}/mklog/mkdir"
+: >"${_root}/mkdir.calls"
+_extra=("STATUSLINE_NOW=${_now}" "XDG_CACHE_HOME=${_root}/notdir")
+run mklog - - nowait
+run mklog - - nowait
+check 'каталог создать нельзя: mkdir не запускается' "$(grep -c '' "${_root}/mkdir.calls")" 0
+check 'каталог создать нельзя: вывод' "${_out#* | }" 'M | cache warm 31m'
+# На месте самого каталога состояния — файл: тоже без попыток.
+mkdir -p "${_root}/occupied"
+printf 'x' >"${_root}/occupied/claude-statusline"
+_extra=("STATUSLINE_NOW=${_now}" "XDG_CACHE_HOME=${_root}/occupied")
+run mklog - - nowait
+run mklog - - nowait
+check 'на месте каталога состояния файл: mkdir не запускается' "$(grep -c '' "${_root}/mkdir.calls")" 0
+check 'на месте каталога состояния файл: вывод' "${_out#* | }" 'M | cache warm 31m'
+check 'на месте каталога состояния файл: файл цел' "$(cat "${_root}/occupied/claude-statusline")" 'x'
+mkdir -p "${_root}/ro/base"
+chmod 555 "${_root}/ro/base"
+_extra=("STATUSLINE_NOW=${_now}" "XDG_CACHE_HOME=${_root}/ro/base")
+run mklog - - nowait
+check 'каталог только для чтения: mkdir не запускается' "$(grep -c '' "${_root}/mkdir.calls")" 0
+chmod 755 "${_root}/ro/base"
+_extra=("STATUSLINE_NOW=${_now}" "XDG_CACHE_HOME=${_root}/fresh/cache")
+run mklog - - nowait
+check 'нет и родителя XDG_CACHE_HOME: mkdir не запускается' "$(grep -c '' "${_root}/mkdir.calls")" 0
+mkdir -p "${_root}/fresh"
+run mklog - - nowait
+run mklog - - nowait
+check 'каталог можно создать: mkdir один раз' "$(grep -c '' "${_root}/mkdir.calls")" 1
+check 'каталог можно создать: запись есть' "$(cat "${_root}/fresh/cache/claude-statusline/cache-model")" "C $((_now + 1900)) claude-x"
 
 # --- NO_COLOR --------------------------------------------------------------------
 _all="{${_m},\"context_window\":{\"used_percentage\":85},\"rate_limits\":{$(win5 53 $((_now + 15600)))},\"prompt_cache\":$(pc 30)}"
-_extra=("STATUSLINE_NOW=${_now}" NO_COLOR=1)
+_extra=("STATUSLINE_NOW=${_now}" NO_COLOR=1 USER=alice HOSTNAME=box)
 fixture_raw "${_all}"
 run ok - - nowait
 check 'NO_COLOR: вывод без ANSI' "${_out}" \
-  "$(env -i "PATH=${_root}/ok" whoami)@${HOSTNAME%%.*}:~/work | M | Context 85% | 5h 53% 4.0${_x} (resets in 4h20m) | cache warm <1m"
+  "alice@box:~/work | M | Context 85% | 5h 53% 4.0${_x} (resets in 4h20m) | cache warm <1m"
 _extra=("STATUSLINE_NOW=${_now}" NO_COLOR=)
 tail_check 'NO_COLOR пуст: цвета есть' "${_all}" \
   "M | ${_r}Context 85%${_z} | ${_y}5h 53% 4.0${_x}${_z} (resets in 4h20m) | ${_y}cache warm <1m${_z}"
@@ -624,6 +760,53 @@ for _v in USER= HOSTNAME=box; do
   check "${_v}: имя из whoami" "${_out%%:*}" $'\033[01;32m'"$(env -i "PATH=${_root}/ok" whoami)@box${_z}"
   check "${_v}: код возврата" "${_rc}" 0
 done
+# Сбой whoami или hostname (нет записи о пользователе, нет утилиты) — пустое
+# имя, строка статуса цела.
+mkdir -p "${_root}/whofail"
+for _t in bash cat jq git; do ln -s "$(command -v "${_t}")" "${_root}/whofail/${_t}"; done
+printf '%s\n' '#!/usr/bin/env bash' 'echo oops' 'echo "cannot find name" >&2' 'exit 1' >"${_root}/whofail/whoami"
+printf '%s\n' '#!/usr/bin/env bash' 'echo oops' 'echo "no hostname" >&2' 'exit 1' >"${_root}/whofail/hostname"
+chmod +x "${_root}/whofail/whoami" "${_root}/whofail/hostname"
+_g=$'\033[01;32m'
+_extra=(HOSTNAME=box)
+run whofail - - nowait
+check 'сбой whoami: имя пусто, строка цела' "${_out}" "${_g}@box${_z}:"$'\033[01;34m'"~/work${_z} | M"
+check 'сбой whoami: код возврата' "${_rc}" 0
+check 'сбой whoami: stderr пуст' "${_err}" ''
+_extra=(USER=alice HOSTNAME=)
+run whofail - - nowait
+check 'сбой hostname: хост пуст, строка цела' "${_out%%:*}" "${_g}alice@${_z}"
+check 'сбой hostname: код возврата' "${_rc}" 0
+check 'сбой hostname: stderr пуст' "${_err}" ''
+run nowho - - nowait
+check 'нет hostname: хост пуст, строка цела' "${_out%%:*}" "${_g}alice@${_z}"
+check 'нет hostname: код возврата' "${_rc}" 0
+check 'нет hostname: stderr пуст' "${_err}" ''
+_extra=(HOSTNAME=box)
+run nowho - - nowait
+check 'нет whoami: имя пусто, строка цела' "${_out%%:*}" "${_g}@box${_z}"
+check 'нет whoami: код возврата' "${_rc}" 0
+check 'нет whoami: stderr пуст' "${_err}" ''
+# HOSTNAME пуст, hostname работает — короткое имя от утилиты.
+printf '%s\n' '#!/usr/bin/env bash' 'echo "host.example.org"' >"${_root}/whofail/hostname"
+_extra=(USER=alice HOSTNAME=)
+run whofail - - nowait
+check 'HOSTNAME пуст: короткий хост от hostname' "${_out%%:*}" "${_g}alice@host${_z}"
+# Значения окружения — в терминал только очищенными: управляющие символы C0 и
+# C1, перевод строки и смена направления письма убраны, прочий юникод цел.
+_extra=("USER=ro"$'\033'"[2Jot"$'\n'"X"$'\302\233'"1"$'\342\200\256'"жук" "HOSTNAME=h"$'\033'"]0;pwn"$'\a'"x"$'\342\201\246'"é.example")
+run nowho - - nowait
+check 'имя и хост очищены' "${_out%%:*}" "${_g}ro[2JotX1жук@h]0;pwnxé${_z}"
+check 'имя и хост очищены: вывод в одну строку' "$(printf '%s\n' "${_out}" | grep -c '')" 1
+# То же в UTF-8-локали пользователя (из тех, что есть на машине): очистка идёт
+# по байтам и от локали не зависит.
+_dirty=("${_extra[@]}")
+for _loc in $(locale -a 2>/dev/null | grep -i -E '^(C|en_US|ru_RU)\.utf-?8$'); do
+  _extra=("${_dirty[@]}" "LC_ALL=${_loc}")
+  run nowho - - nowait
+  check "имя и хост очищены в локали ${_loc}" "${_out%%:*}" "${_g}ro[2JotX1жук@h]0;pwnxé${_z}"
+  check "имя и хост очищены в локали ${_loc}: stderr пуст" "${_err}" ''
+done
 _extra=()
 
 # --- git: один вызов; репозиторий без коммитов — ветки нет -------------------------
@@ -644,6 +827,12 @@ run ok - - nowait
 check 'репозиторий без коммитов: ветки нет' "${_out#* | }" 'M'
 check 'репозиторий без коммитов: код возврата' "${_rc}" 0
 check 'репозиторий без коммитов: stderr пуст' "${_err}" ''
+# Имя ветки — из репозитория, который может быть чужим: в терминал очищенным.
+_bad="x"$'\302\233'"31mY"$'\342\200\256'"Z"$'\342\201\247'"é"
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_repo}" checkout -q -b "${_bad}" >/dev/null 2>&1
+jq -n --arg d "${_repo}" '{model:{display_name:"M"},workspace:{current_dir:$d}}' >"${_fx}"
+run ok - - nowait
+check 'имя ветки очищено' "${_out#* | }" $'M | \xee\x82\xa0 x31mYZé'
 
 printf 'pass=%s fail=%s\n' "${_pass}" "${_fail}"
 [[ "${_fail}" -eq 0 ]]
