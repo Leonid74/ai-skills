@@ -31,7 +31,7 @@ fi
 # Каталог команд для PATH: только то, что нужно шаблону, плюс заглушки. Так
 # проверяется и поведение без tmux/timeout, и то, что настоящий tmux не задет.
 _log="${_root}/calls.log"
-_tools=(bash cat jq git whoami hostname sleep readlink)
+_tools=(bash cat jq git whoami hostname sleep readlink mkdir)
 
 # make_bin <имя каталога> <режим timeout: ok|hang|none> <tmux: yes|no>
 make_bin() {
@@ -93,6 +93,8 @@ _out=""
 _err=""
 _rc=0
 _ms=0
+# Дополнительные переменные окружения шаблона (STATUSLINE_NOW, NO_COLOR, USER…).
+_extra=()
 # run <каталог bin> <TMUX | -> <TMUX_PANE | -> [nowait]: вывод, stderr, код,
 # длительность (мс); затем ждёт фоновый мост — запись заглушки в журнал.
 # nowait — не ждать: вектор вне tmux, где журнал моста не проверяется.
@@ -101,6 +103,7 @@ run() {
   local -a _env=(env -i "PATH=${_bin}" "HOME=${_root}" "GIT_CEILING_DIRECTORIES=${_root}")
   [[ "$2" != "-" ]] && _env+=("TMUX=$2")
   [[ "$3" != "-" ]] && _env+=("TMUX_PANE=$3")
+  _env+=(${_extra[@]+"${_extra[@]}"})
   : >"${_log}"
   _rc=0
   _t0=$(date +%s%N)
@@ -367,6 +370,280 @@ for _v in -0.4 999.5 '[1]'; do
   run ok "${_T}" %7
   check "used_percentage=${_v}: снятие, не запись" "$(cat "${_log}")" "${_unset}"
 done
+
+# --- отсчёт до сброса, темп, кэш промпта ---------------------------------------
+# Часы подменены: STATUSLINE_NOW. Времена в фикстурах — смещения от _now.
+_now=1800000000
+_extra=("STATUSLINE_NOW=${_now}")
+_x=$'\xc3\x97'
+_dot=$'\xc2\xb7'
+_m="\"model\":{\"display_name\":\"M\"},\"workspace\":{\"current_dir\":\"${_work}\"}"
+
+# win5 <процент> <время сброса, JSON>: окно пяти часов.
+win5() { printf '"five_hour":{"used_percentage":%s,"resets_at":%s}' "$1" "$2"; }
+win7() { printf '"seven_day":{"used_percentage":%s,"resets_at":%s}' "$1" "$2"; }
+
+# Отсчёт: округление вниз, только будущее время и не дальше окна плюс час.
+# reset_check <смещение от _now | JSON> <ожидаемый отсчёт | пусто>
+reset_check() {
+  local _r="$1" _exp=""
+  [[ "${_r}" =~ ^-?[0-9]+$ ]] && _r=$((_now + _r))
+  [[ -n "$2" ]] && _exp=" (resets in $2)"
+  tail_check "отсчёт: сброс $1" "{${_m},\"rate_limits\":{$(win5 10 "${_r}")}}" "M | 5h 10%${_exp}"
+}
+reset_check 8940 2h29m
+reset_check 8999 2h29m
+reset_check 3600 1h00m
+reset_check 4199 1h09m
+reset_check 4200 1h10m
+reset_check 3599 59m
+reset_check 60 1m
+reset_check 59 '<1m'
+reset_check 1 '<1m'
+reset_check 0 ''
+reset_check -5 ''
+reset_check 21600 6h00m
+reset_check 21601 ''
+reset_check "$((_now + 8940)).9" 2h29m
+reset_check '"1800008940"' ''
+reset_check null ''
+reset_check '[1800008940]' ''
+reset_check 1e19 ''
+tail_check 'отсчёт: у недели его нет' "{${_m},\"rate_limits\":{$(win7 10 $((_now + 300000)))}}" 'M | 7d 10%'
+tail_check 'отсчёт: процента нет — сегмента нет' \
+  "{${_m},\"rate_limits\":{\"five_hour\":{\"resets_at\":$((_now + 8940))}}}" 'M'
+
+# Темп: средний с начала окна; от 1.0, не раньше 5% окна; с темпом сегмент жёлтый.
+# 53% за 40 минут пятичасового окна — 3.975; 61% за 304800 с недели — 1.21.
+tail_check 'темп: оба окна' \
+  "{${_m},\"rate_limits\":{$(win5 53 $((_now + 15600))),$(win7 61 $((_now + 300000)))}}" \
+  "M | ${_y}5h 53% 4.0${_x}${_z} (resets in 4h20m) | ${_y}7d 61% 1.2${_x}${_z}"
+tail_check 'темп: ниже 1.0 не выводится' \
+  "{${_m},\"rate_limits\":{$(win5 37 $((_now + 8940))),$(win7 30 $((_now + 300000)))}}" \
+  'M | 5h 37% (resets in 2h29m) | 7d 30%'
+# Порог — до округления: половина окна и 49.9% — темп 0.998, не выводится; 50% — 1.0.
+tail_check 'темп: 0.998 не выводится' "{${_m},\"rate_limits\":{$(win5 49.9 $((_now + 9000)))}}" \
+  'M | 5h 50% (resets in 2h30m)'
+tail_check 'темп: ровно 1.0' "{${_m},\"rate_limits\":{$(win5 50 $((_now + 9000)))}}" \
+  "M | ${_y}5h 50% 1.0${_x}${_z} (resets in 2h30m)"
+tail_check 'темп: 1.04 — 1.0' "{${_m},\"rate_limits\":{$(win5 52 $((_now + 9000)))}}" \
+  "M | ${_y}5h 52% 1.0${_x}${_z} (resets in 2h30m)"
+tail_check 'темп: 1.06 — 1.1' "{${_m},\"rate_limits\":{$(win5 53 $((_now + 9000)))}}" \
+  "M | ${_y}5h 53% 1.1${_x}${_z} (resets in 2h30m)"
+# Граница 5% окна: 900 с от начала — темп есть, 899 с — нет.
+tail_check 'темп: ровно 5% окна' "{${_m},\"rate_limits\":{$(win5 30 $((_now + 17100)))}}" \
+  "M | ${_y}5h 30% 6.0${_x}${_z} (resets in 4h45m)"
+tail_check 'темп: раньше 5% окна' "{${_m},\"rate_limits\":{$(win5 30 $((_now + 17101)))}}" \
+  'M | 5h 30% (resets in 4h45m)'
+# Неделя: 5% — 30240 с.
+tail_check 'темп: неделя, ровно 5% окна' "{${_m},\"rate_limits\":{$(win7 10 $((_now + 574560)))}}" \
+  "M | ${_y}7d 10% 2.0${_x}${_z}"
+tail_check 'темп: неделя, раньше 5% окна' "{${_m},\"rate_limits\":{$(win7 10 $((_now + 574561)))}}" \
+  'M | 7d 10%'
+# От 10 — целое: за 1800 с 99.4% — 9.94 (9.9), 99.6% — 9.96 (10), 85% за 900 с — 17.
+tail_check 'темп: 9.9' "{${_m},\"rate_limits\":{$(win5 99.4 $((_now + 16200)))}}" \
+  "M | ${_r}5h 99% 9.9${_x}${_z} (resets in 4h30m)"
+tail_check 'темп: 10 — целое' "{${_m},\"rate_limits\":{$(win5 99.6 $((_now + 16200)))}}" \
+  "M | ${_r}5h 100% 10${_x}${_z} (resets in 4h30m)"
+tail_check 'темп: красный важнее жёлтого' "{${_m},\"rate_limits\":{$(win5 85 $((_now + 17100)))}}" \
+  "M | ${_r}5h 85% 17${_x}${_z} (resets in 4h45m)"
+tail_check 'темп: предел' "{${_m},\"rate_limits\":{$(win5 999 $((_now + 17100)))}}" \
+  "M | ${_r}5h 999% 200${_x}${_z} (resets in 4h45m)"
+tail_check 'темп: времени сброса нет' "{${_m},\"rate_limits\":{\"five_hour\":{\"used_percentage\":99}}}" \
+  "M | ${_r}5h 99%${_z}"
+tail_check 'темп: время сброса прошло' "{${_m},\"rate_limits\":{$(win5 99 $((_now - 1)))}}" "M | ${_r}5h 99%${_z}"
+tail_check 'темп: сброс дальше длины окна' "{${_m},\"rate_limits\":{$(win5 50 $((_now + 18001)))}}" \
+  'M | 5h 50% (resets in 5h00m)'
+
+# Кэш промпта. cache_check <описание> <объект prompt_cache, JSON> <ожидаемый сегмент | пусто>
+cache_check() {
+  local _exp=""
+  [[ -n "$3" ]] && _exp=" | $3"
+  tail_check "кэш: $1" "{${_m},\"context_window\":{\"used_percentage\":7},\"prompt_cache\":$2}" "M | Context 7%${_exp}"
+}
+# pc <смещение expires_at от _now> [ttl] [прочие поля]
+pc() { printf '{"caching_observed":true,"ttl":"%s","expires_at":%s%s}' "${2:-1h}" "$((_now + $1))" "${3:-}"; }
+_re=',"recache_tokens_if_cold":151000'
+cache_check 'тёплый' "$(pc 1860 1h "${_re}")" 'cache warm 31m'
+cache_check 'тёплый, меньше минуты до границы' "$(pc 601)" 'cache warm 10m'
+cache_check 'истекает с шестой части TTL' "$(pc 600)" "${_y}cache warm 10m${_z}"
+cache_check 'истекает, меньше минуты' "$(pc 1)" "${_y}cache warm <1m${_z}"
+cache_check 'остаток не больше TTL' "$(pc 99999)" 'cache warm 1h00m'
+cache_check 'TTL не назван — час' '{"caching_observed":true,"expires_at":'"$((_now + 99999))"'}' 'cache warm 1h00m'
+cache_check 'TTL неизвестен — час' "$(pc 601 2h)" 'cache warm 10m'
+cache_check '5m: тёплый' "$(pc 61 5m)" 'cache warm 1m (5m ttl)'
+cache_check '5m: истекает с минуты' "$(pc 60 5m)" "${_y}cache warm 1m${_z} (5m ttl)"
+cache_check '5m: остаток не больше TTL' "$(pc 99999 5m)" 'cache warm 5m (5m ttl)'
+cache_check 'истёк' "$(pc 0 1h "${_re}")" "cache cold ${_dot} 151k"
+cache_check 'истёк давно' "$(pc -99999 5m "${_re}")" "cache cold ${_dot} 151k"
+cache_check 'истёк, объём неизвестен' "$(pc -5 1h ',"recache_tokens_if_cold":null')" 'cache cold'
+cache_check 'объём 999' "$(pc -5 1h ',"recache_tokens_if_cold":999')" "cache cold ${_dot} 999"
+cache_check 'объём 1000' "$(pc -5 1h ',"recache_tokens_if_cold":1000')" "cache cold ${_dot} 1k"
+cache_check 'объём 1499' "$(pc -5 1h ',"recache_tokens_if_cold":1499')" "cache cold ${_dot} 1k"
+cache_check 'объём 1500' "$(pc -5 1h ',"recache_tokens_if_cold":1500')" "cache cold ${_dot} 2k"
+cache_check 'объём 0' "$(pc -5 1h ',"recache_tokens_if_cold":0')" 'cache cold'
+cache_check 'объём огромный' "$(pc -5 1h ',"recache_tokens_if_cold":1e9')" 'cache cold'
+cache_check 'объём — строка' "$(pc -5 1h ',"recache_tokens_if_cold":"7; x"')" 'cache cold'
+cache_check 'тёплый: объём не выводится' "$(pc 1860 1h "${_re}")" 'cache warm 31m'
+cache_check 'expires_at null, кэш наблюдался' '{"caching_observed":true,"expires_at":null,"recache_tokens_if_cold":45000}' \
+  "cache cold ${_dot} 45k"
+cache_check 'expires_at нет, кэш наблюдался' '{"caching_observed":true}' 'cache cold'
+cache_check 'кэширование не наблюдалось' '{"caching_observed":false,"expires_at":null}' ''
+cache_check 'caching_observed нет' '{"expires_at":null}' ''
+cache_check 'пустой объект' '{}' ''
+cache_check 'expires_at — строка' '{"caching_observed":true,"expires_at":"1800001860"}' ''
+cache_check 'expires_at отрицательный' '{"caching_observed":true,"expires_at":-1}' ''
+cache_check 'expires_at огромный' '{"caching_observed":true,"expires_at":1e19}' ''
+cache_check 'prompt_cache — строка' '"warm"' ''
+cache_check 'prompt_cache — массив' '[1]' ''
+cache_check 'prompt_cache — null' null ''
+
+# Всё вместе: порядок сегментов, поля не сдвинуты, папка на месте.
+head_check 'всё вместе' \
+  "{${_m},\"effort\":{\"level\":\"high\"},\"context_window\":{\"used_percentage\":42.4},\"rate_limits\":{$(win5 53 $((_now + 15600))),$(win7 61 $((_now + 300000)))},\"prompt_cache\":$(pc 200 5m)}" \
+  "${_home}/work" \
+  "M ${_sep} high | Context 42% | ${_y}5h 53% 4.0${_x}${_z} (resets in 4h20m) | ${_y}7d 61% 1.2${_x}${_z} | cache warm 3m (5m ttl)"
+# Мост в tmux от новых полей не зависит.
+run ok "${_T}" %7
+check 'всё вместе: в опцию идёт контекст' "$([[ "$(cat "${_log}")" == *'[set -p -t %7 @claude_ctx 42]'* ]] && echo да)" да
+
+# STATUSLINE_NOW не из цифр — берутся настоящие часы (сброс через 2 ч 30 мин 30 с).
+for _v in abc '1;x' '' 1234567890123; do
+  _extra=("STATUSLINE_NOW=${_v}")
+  tail_check "STATUSLINE_NOW=[${_v}]: настоящие часы" \
+    "{${_m},\"rate_limits\":{$(win5 10 $(($(date +%s) + 9030)))}}" 'M | 5h 10% (resets in 2h30m)'
+done
+
+# --- смена модели, /compact, /clear: «тёплый» кэш показывается холодным ----------
+# Файл состояния — в своём каталоге (XDG_CACHE_HOME); строки «сессия время модель».
+_st="${_root}/st"
+_sf="${_st}/claude-statusline/cache-model"
+_extra=("STATUSLINE_NOW=${_now}" "XDG_CACHE_HOME=${_st}")
+# state_check <описание> <сессия, JSON> <модель, JSON> <смещение expires_at> <прочие поля кэша> <ожидаемый сегмент>
+state_check() {
+  tail_check "состояние: $1" \
+    "{\"session_id\":$2,\"model\":{\"id\":$3,\"display_name\":\"M\"},\"workspace\":{\"current_dir\":\"${_work}\"},\"prompt_cache\":$(pc "$4" "${7:-1h}" "$5")}" \
+    "M | $6"
+}
+_k=',"recache_tokens_if_cold":56209'
+state_check 'первый рендер — тёплый' '"A"' '"claude-haiku-5-5"' 1800 "${_k}" 'cache warm 30m'
+check 'состояние: модель запомнена' "$(cat "${_sf}")" "A $((_now + 1800)) claude-haiku-5-5"
+state_check 'модель сменили — холодный с объёмом' '"A"' '"claude-sonnet-5-5"' 1800 "${_k}" "cache cold ${_dot} 56k"
+check 'состояние: при смене модели запись не тронута' "$(cat "${_sf}")" "A $((_now + 1800)) claude-haiku-5-5"
+state_check 'модель сменили, объёма нет' '"A"' '"claude-sonnet-5-5"' 1800 '' 'cache cold'
+state_check 'модель сменили: истекающий — без цвета и без тарифа' '"A"' '"claude-sonnet-5-5"' 1800 "${_k}" \
+  "cache cold ${_dot} 56k" 5m
+state_check 'истекающий — жёлтый' '"G"' '"claude-haiku-5-5"' 300 "${_k}" "${_y}cache warm 5m${_z}"
+state_check 'истекающий, модель сменили — холодный' '"G"' '"claude-sonnet-5-5"' 300 "${_k}" "cache cold ${_dot} 56k"
+: >"${_sf}"
+state_check 'первый рендер заново' '"A"' '"claude-haiku-5-5"' 1800 "${_k}" 'cache warm 30m'
+state_check 'модель вернули — снова тёплый' '"A"' '"claude-haiku-5-5"' 1800 "${_k}" 'cache warm 30m'
+state_check 'запрос на новой модели — тёплый' '"A"' '"claude-sonnet-5-5"' 2000 "${_k}" 'cache warm 33m'
+check 'состояние: запись обновлена' "$(cat "${_sf}")" "A $((_now + 2000)) claude-sonnet-5-5"
+# Новая сессия с тем же временем истечения, что записано за другой, — кэш
+# прежнего разговора (/clear, /new): холодный без объёма, запись не появляется.
+state_check 'новая сессия с чужим временем — холодный' '"B"' '"claude-sonnet-5-5"' 2000 "${_k}" 'cache cold'
+check 'состояние: чужое время не записано' "$(cat "${_sf}")" "A $((_now + 2000)) claude-sonnet-5-5"
+state_check 'новая сессия, свой запрос — тёплый' '"B"' '"claude-opus-5-5[1m]"' 2100 "${_k}" 'cache warm 35m'
+check 'состояние: две сессии' "$(cat "${_sf}")" "A $((_now + 2000)) claude-sonnet-5-5"$'\n'"B $((_now + 2100)) claude-opus-5-5[1m]"
+state_check 'у сессии запись есть — чужое время не мешает' '"A"' '"claude-sonnet-5-5"' 2100 "${_k}" 'cache warm 35m'
+# /compact: поле объёма есть, значение null — холодный без объёма; поля нет — тёплый.
+state_check 'после компакции — холодный' '"A"' '"claude-sonnet-5-5"' 2500 ',"recache_tokens_if_cold":null' 'cache cold'
+check 'состояние: после компакции запись не тронута' "$(grep -c "^A $((_now + 2100)) " "${_sf}")" 1
+state_check 'поля объёма нет — тёплый' '"A"' '"claude-sonnet-5-5"' 2500 '' 'cache warm 41m'
+cache_check 'после компакции, без сессии — холодный' "$(pc 1860 1h ',"recache_tokens_if_cold":null')" 'cache cold'
+# Истёкший кэш состояние не трогает.
+_before="$(cat "${_sf}")"
+state_check 'истёкший — холодный' '"C"' '"claude-haiku-5-5"' -5 "${_k}" "cache cold ${_dot} 56k"
+check 'состояние: истёкший не записан' "$(cat "${_sf}")" "${_before}"
+# Сессия или модель не названы либо с посторонними символами — проверки и записи нет.
+for _v in '"A",null' 'null,"claude-x"' '"a b","claude-x"' '"A","claude x"' '"A\nB","claude-x"' '"A","claude\u001b[31m"' \
+  '7,"claude-x"' '"A",["claude-x"]' '"","claude-x"' "\"$(printf 'a%.0s' {1..65})\",\"claude-x\"" "\"A\",\"$(printf 'a%.0s' {1..129})\""; do
+  state_check "идентификаторы ${_v:0:40}: тёплый" "${_v%%,*}" "${_v#*,}" 1800 "${_k}" 'cache warm 30m'
+  check "идентификаторы ${_v:0:40}: записи нет" "$(cat "${_sf}")" "${_before}"
+done
+state_check 'идентификаторы предельной длины' "\"$(printf 'a%.0s' {1..64})\"" "\"$(printf 'b%.0s' {1..128})\"" 1800 "${_k}" 'cache warm 30m'
+check 'идентификаторы предельной длины: записаны' "$(grep -c '^a\{64\} [0-9]* b\{128\}$' "${_sf}")" 1
+# Не больше 20 сессий: старые вытесняются.
+: >"${_sf}"
+for _i in $(seq 1 25); do
+  state_check "сессия S${_i}" "\"S${_i}\"" '"claude-x"' "$((3000 + _i))" "${_k}" 'cache warm 50m'
+done
+check 'состояние: 20 строк' "$(grep -c '' "${_sf}")" 20
+check 'состояние: первая — S6, последняя — S25' "$(sed -n '1p;$p' "${_sf}" | cut -d' ' -f1 | tr '\n' ' ')" 'S6 S25 '
+# Мусор в файле: строка статуса цела, годные строки сохранены, мусор не переписан.
+printf '%s\n' 'мусор' "A $((_now + 1800)) claude-haiku-5-5" 'x y' "Z notanumber m" '' "$(printf 'q%.0s' {1..5000})" >"${_sf}"
+state_check 'мусор в файле: запись читается' '"A"' '"claude-sonnet-5-5"' 1800 "${_k}" "cache cold ${_dot} 56k"
+state_check 'мусор в файле: новая сессия' '"N"' '"claude-x"' 1900 "${_k}" 'cache warm 31m'
+check 'мусор в файле: остались годные строки' "$(cat "${_sf}")" "A $((_now + 1800)) claude-haiku-5-5"$'\n'"N $((_now + 1900)) claude-x"
+# Читаются только первые 40 строк.
+{ for _i in $(seq 1 40); do echo "F${_i} 1 m"; done; echo "A $((_now + 1800)) claude-haiku-5-5"; } >"${_sf}"
+state_check 'запись дальше 40-й строки не читается' '"A"' '"claude-sonnet-5-5"' 1800 "${_k}" 'cache warm 30m'
+# Каталог состояния недоступен или его нечем создать — строка цела.
+printf 'x' >"${_root}/notdir"
+_extra=("STATUSLINE_NOW=${_now}" "XDG_CACHE_HOME=${_root}/notdir")
+state_check 'каталог состояния — файл' '"A"' '"claude-x"' 1800 "${_k}" 'cache warm 30m'
+_extra=("STATUSLINE_NOW=${_now}" "XDG_CACHE_HOME=${_root}/st-nomkdir")
+fixture_raw "{\"session_id\":\"A\",\"model\":{\"id\":\"claude-x\",\"display_name\":\"M\"},\"workspace\":{\"current_dir\":\"${_work}\"},\"prompt_cache\":$(pc 1800)}"
+mkdir -p "${_root}/nomkdir"
+for _t in bash cat jq git whoami hostname; do ln -s "$(command -v "${_t}")" "${_root}/nomkdir/${_t}"; done
+run nomkdir - - nowait
+check 'нет mkdir: вывод' "${_out#* | }" 'M | cache warm 30m'
+check 'нет mkdir: код возврата' "${_rc}" 0
+check 'нет mkdir: stderr пуст' "${_err}" ''
+# XDG_CACHE_HOME не задан — каталог в HOME.
+_extra=("STATUSLINE_NOW=${_now}")
+state_check 'каталог по умолчанию' '"H"' '"claude-x"' 1800 "${_k}" 'cache warm 30m'
+check 'каталог по умолчанию: ~/.cache' "$(cat "${_root}/.cache/claude-statusline/cache-model")" "H $((_now + 1800)) claude-x"
+
+# --- NO_COLOR --------------------------------------------------------------------
+_all="{${_m},\"context_window\":{\"used_percentage\":85},\"rate_limits\":{$(win5 53 $((_now + 15600)))},\"prompt_cache\":$(pc 30)}"
+_extra=("STATUSLINE_NOW=${_now}" NO_COLOR=1)
+fixture_raw "${_all}"
+run ok - - nowait
+check 'NO_COLOR: вывод без ANSI' "${_out}" \
+  "$(env -i "PATH=${_root}/ok" whoami)@${HOSTNAME%%.*}:~/work | M | Context 85% | 5h 53% 4.0${_x} (resets in 4h20m) | cache warm <1m"
+_extra=("STATUSLINE_NOW=${_now}" NO_COLOR=)
+tail_check 'NO_COLOR пуст: цвета есть' "${_all}" \
+  "M | ${_r}Context 85%${_z} | ${_y}5h 53% 4.0${_x}${_z} (resets in 4h20m) | ${_y}cache warm <1m${_z}"
+
+# --- имя и хост: из переменных, без процессов ------------------------------------
+# Каталог без whoami и hostname: с USER шаблон их не запускает.
+mkdir -p "${_root}/nowho"
+for _t in bash cat jq git; do ln -s "$(command -v "${_t}")" "${_root}/nowho/${_t}"; done
+_extra=(USER=alice HOSTNAME=box.example.org)
+fixture -
+run nowho - - nowait
+check 'USER и HOSTNAME: имя и короткий хост' "${_out%%:*}" $'\033[01;32m'"alice@box${_z}"
+check 'USER и HOSTNAME: код возврата' "${_rc}" 0
+check 'USER и HOSTNAME: stderr пуст' "${_err}" ''
+# USER пуст или не задан — whoami.
+for _v in USER= HOSTNAME=box; do
+  _extra=("${_v}" HOSTNAME=box)
+  run ok - - nowait
+  check "${_v}: имя из whoami" "${_out%%:*}" $'\033[01;32m'"$(env -i "PATH=${_root}/ok" whoami)@box${_z}"
+  check "${_v}: код возврата" "${_rc}" 0
+done
+_extra=()
+
+# --- git: один вызов; репозиторий без коммитов — ветки нет -------------------------
+mkdir -p "${_root}/gitlog"
+for _t in bash cat jq whoami hostname; do ln -s "$(command -v "${_t}")" "${_root}/gitlog/${_t}"; done
+printf '%s\n' '#!/usr/bin/env bash' "echo git >>\"${_root}/git.calls\"" "exec \"$(command -v git)\" \"\$@\"" >"${_root}/gitlog/git"
+chmod +x "${_root}/gitlog/git"
+: >"${_root}/git.calls"
+jq -n --arg d "${_repo}" '{model:{display_name:"M"},workspace:{current_dir:$d}}' >"${_fx}"
+run gitlog - - nowait
+check 'git: ветка найдена' "${_out#* | }" $'M | \xee\x82\xa0 trunk'
+check 'git: один вызов' "$(grep -c '' "${_root}/git.calls")" 1
+_empty="${_root}/empty"
+mkdir -p "${_empty}"
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_empty}" init -q -b trunk >/dev/null 2>&1
+jq -n --arg d "${_empty}" '{model:{display_name:"M"},workspace:{current_dir:$d}}' >"${_fx}"
+run ok - - nowait
+check 'репозиторий без коммитов: ветки нет' "${_out#* | }" 'M'
+check 'репозиторий без коммитов: код возврата' "${_rc}" 0
+check 'репозиторий без коммитов: stderr пуст' "${_err}" ''
 
 printf 'pass=%s fail=%s\n' "${_pass}" "${_fail}"
 [[ "${_fail}" -eq 0 ]]

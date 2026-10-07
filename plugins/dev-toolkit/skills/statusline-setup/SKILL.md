@@ -1,21 +1,33 @@
 ---
 name: statusline-setup
-description: Настройка строки статуса (statusline) Claude Code через плагин dev-toolkit. Использовать когда пользователь говорит "настрой statusline", "setup statusline", "установи statusline", "хочу statusline с моделью, контекстом и git-веткой", "настрой строку статуса", "добавь строку статуса в Claude Code". Строка статуса показывает модель с уровнем effort, процент контекста (Context), расход лимитов подписки за пять часов и за неделю (5h, 7d) и git-ветку; внутри tmux скрипт дополнительно кладёт процент контекста в опцию панели @claude_ctx, чтобы его могла показать строка статуса tmux ("процент контекста Claude в tmux", "ctx в строке статуса tmux"). Skill создаёт скрипт ~/.claude/statusline.sh и прописывает секцию statusLine в ~/.claude/settings.json. Не использовать если пользователь просто спрашивает про статус сессии или модели без намерения что-то настраивать.
+description: Настройка строки статуса (statusline) Claude Code через плагин dev-toolkit. Использовать когда пользователь говорит "настрой statusline", "setup statusline", "установи statusline", "хочу statusline с моделью, контекстом и git-веткой", "настрой строку статуса", "добавь строку статуса в Claude Code". Строка статуса показывает модель с уровнем effort, процент контекста (Context), расход лимитов подписки за пять часов и за неделю (5h, 7d) с отсчётом до сброса и темпом расхода, состояние кэша промпта (cache warm / cache cold) и git-ветку; внутри tmux скрипт дополнительно кладёт процент контекста в опцию панели @claude_ctx, чтобы его могла показать строка статуса tmux ("процент контекста Claude в tmux", "ctx в строке статуса tmux"). Skill создаёт скрипт ~/.claude/statusline.sh и прописывает секцию statusLine в ~/.claude/settings.json. Не использовать если пользователь просто спрашивает про статус сессии или модели без намерения что-то настраивать.
 ---
 
 # Настройка statusline
 
 ## Что делает этот skill
 
-Настраивает строку статуса Claude Code, которая показывает: `user@host:папка | модель ◔ effort | Context NN% | 5h NN% | 7d NN% | git-ветка`.
+Настраивает строку статуса Claude Code, которая показывает: `user@host:папка | модель ◔ effort | Context NN% | 5h NN% (resets in 2h29m) | 7d NN% | cache warm 31m | git-ветка`.
 
 Сегмент `Context` — процент заполнения контекстного окна (`context_window.used_percentage` из JSON сессии): до 59% без цвета, 60–79% жёлтый, от 80% красный. До первого ответа API поля нет — тогда сегмент не выводится.
 
 Сегменты `5h` и `7d` — сколько **израсходовано** лимита подписки в пятичасовом окне и за неделю (`rate_limits.five_hour.used_percentage` и `rate_limits.seven_day.used_percentage`; остаток — 100 минус значение), пороги цвета те же. Блок `rate_limits` есть только при подписке claude.ai (Pro/Max) и появляется после первого ответа API; при работе по API-ключу его нет, а каждое из окон может отсутствовать по отдельности — сегмент без значения не выводится. Когда наступает время сброса окна, Claude Code убирает его из JSON — сегмент пропадает до следующего ответа API, а не обнуляется.
 
+У `5h` после процента идёт отсчёт до сброса окна — `(resets in 2h29m)`, `(resets in 29m)`, `(resets in <1m)` — из `rate_limits.five_hour.resets_at`; у недели отсчёта нет. У обоих окон перед отсчётом может стоять темп — `5h 53% 3.9× (resets in 4h20m)`: во сколько раз расход с начала окна быстрее ровного, при котором лимит кончается точно к сбросу. Темп выводится только от `1.0×` (при таком расходе лимит кончится раньше сброса) и не раньше 5% окна; с темпом сегмент жёлтый, от 80% — красный, отсчёт всегда без цвета.
+
+Сегмент `cache` — состояние кэша промпта основной переписки (`prompt_cache`, Claude Code 2.1.251 и новее; до первого ответа API и в старых версиях сегмента нет):
+
+- `cache warm 31m` — кэш тёплый, столько осталось до истечения; следующее сообщение читает контекст из кэша дёшево. Жёлтый — в последней шестой части срока жизни (10 минут из часа, но не меньше минуты). `(5m ttl)` — действует пятиминутный срок вместо часового.
+- `cache cold · 151k` — кэш остыл: следующее сообщение заново обработает около 151 тыс. токенов по полной цене. Без числа — когда объём неизвестен.
+- Холодным показывается и кэш, который Claude Code ещё считает тёплым, но следующий запрос его не прочтёт: после смены модели (`/model` — кэш у каждой модели свой; до первого ответа новой модели), после `/compact` и очистки старых результатов инструментов (до следующего запроса), после `/clear` и `/new`, если в данных остался кэш прежнего разговора.
+
+Чтобы заметить смену модели, скрипт запоминает, при какой модели был последний запрос сессии, в файле `~/.cache/claude-statusline/cache-model` (или `$XDG_CACHE_HOME/claude-statusline/`): по строке на сессию, не больше 20 строк, без секретов. Больше скрипт ничего не пишет и транскрипты не читает.
+
+Переменная окружения `NO_COLOR` (непустая) отключает цвета.
+
 После названия модели через `◔` идёт уровень effort (`effort.level`: `low`…`max`, меняется вместе с `/effort`). Поля нет, если модель не поддерживает effort, — тогда выводится одно название модели.
 
-Скрипт запускается по событиям сессии — среди них старт сессии, новое сообщение ассистента, `/compact`, смена режима разрешений, наступление времени сброса окна лимита, — в простое строка не обновляется. Чтобы она обновлялась и в простое, в секцию `statusLine` можно добавить `"refreshInterval": <секунды>` — по просьбе пользователя, сам скилл его не ставит.
+Скрипт запускается по событиям сессии — среди них старт сессии, новое сообщение ассистента, `/compact`, смена режима разрешений, наступление времени сброса окна лимита, — в простое строка не обновляется. Поэтому отсчёты (`resets in …`, `cache warm …`) в простое замирают; сама смена состояния — сброс окна, истечение кэша — перерисовывается без таймера. Чтобы строка обновлялась и в простое, в секцию `statusLine` добавляется `"refreshInterval": <секунды>` — скилл спрашивает об этом в шаге 4 и ставит только по согласию.
 
 Строка статуса — это bash-скрипт, получающий JSON сессии на stdin и выводящий форматированную строку. Claude Code вызывает его и показывает результат в интерфейсе.
 
@@ -74,9 +86,12 @@ jq --version
 ```bash
 #!/usr/bin/env bash
 # Строка статуса Claude Code:
-#   user@host:папка | модель ◔ effort | Context NN% | 5h NN% | 7d NN% | git-ветка.
+#   user@host:папка | модель ◔ effort | Context NN% | 5h NN% (resets in 2h29m) |
+#   7d NN% | cache warm 31m | git-ветка.
 # Получает JSON сессии на stdin (поля .model / .effort / .workspace /
-# .context_window / .rate_limits).
+# .context_window / .rate_limits / .prompt_cache).
+# Окружение: NO_COLOR (непустое) — без ANSI-цветов; STATUSLINE_NOW — текущее
+# время в секундах эпохи вместо часов (для тестов).
 
 set -euo pipefail
 
@@ -101,24 +116,145 @@ set -euo pipefail
 # - Пустая строка в названии модели и в папке — как отсутствие поля; путь с
 #   NUL-байтом (настоящим путём быть не может) — тоже. Поля effort нет, если
 #   модель его не поддерживает.
-parsed="$(jq -r '
+# - Время сброса окна лимита (win) — только будущее и не дальше длины окна плюс
+#   час; иначе ни отсчёта, ни темпа, процент остаётся. Отсчёт (dur) — «<1m»,
+#   «29m», «2h29m», округление вниз.
+# - Темп (pace) — расход относительно ровного, при котором окно кончается ровно
+#   к сбросу: средний с начала окна (начало — время сброса минус длина окна).
+#   Выводится от 1.0 (лимит кончится раньше сброса) и не раньше 5% окна — в
+#   начале одна вспышка дала бы огромное число. Десятые собираются из целых:
+#   tostring у дробного числа в старых jq даёт «3.8999999999999999».
+# - Кэш промпта (.prompt_cache, Claude Code от 2.1.251) — три строки: состояние
+#   (warm — в пределах TTL, soon — последняя шестая часть TTL, но не меньше
+#   минуты, cold — истёк), текст (остаток времени; у cold — сколько токенов
+#   перекэширует следующий запрос, «151k») и «5m» для пятиминутного TTL. Остаток
+#   не больше самого TTL. expires_at нет: cold, только если кэширование в сессии
+#   наблюдалось (caching_observed), иначе сегмента нет. Транскрипт не читается.
+#   После /compact и очистки старых результатов инструментов Claude Code
+#   оставляет кэш «тёплым», но recache_tokens_if_cold в объекте — null (поле
+#   есть, значения нет): переписанный разговор ещё не кэширован — cold без
+#   объёма. Для тёплого кэша дополнительно: время истечения цифрами и объём
+#   перекэширования — их использует проверка смены модели ниже.
+# - Всё, что jq отдаёт для отсчёта, темпа и кэша, собрано из цифр и букв
+#   h/m/k, «<» и «.» — значения из JSON в эти строки не попадают.
+# - Идентификатор сессии и модели (ident) — только для файла состояния, в
+#   терминал не выводятся: латинские буквы, цифры и «-_.:/[]@», до 64 и 128
+#   знаков; иное — пустая строка, проверки смены модели нет.
+now_arg="${STATUSLINE_NOW:-}"
+now_re='^[0-9]{1,12}$'
+[[ "$now_arg" =~ $now_re ]] || now_arg=""
+parsed="$(jq -r --arg t "$now_arg" '
   def one(f; d): ([f?] | .[0]) // d;
   def pct(f): one(f | numbers | select(. >= 0) | round | select(. <= 999) | . + 0; "");
   def str(f): f? | strings | select(. != "");
   def shown: explode | map(select((. >= 32 and . < 127) or (. > 159 and . != 8232 and . != 8233))) | implode;
-  pct(.context_window.used_percentage),
-  pct(.rate_limits.five_hour.used_percentage),
-  pct(.rate_limits.seven_day.used_percentage),
-  one(str(.effort.level) | select(length <= 12 and (explode | all(. >= 97 and . <= 122))); ""),
-  one(str(.model.display_name) | shown | select(. != ""); "?"),
-  (one(str(.workspace.current_dir), str(.cwd) | select(explode | index(0) | not); ".") | (shown, ., "."))
+  def dur: floor | if . < 60 then "<1m" elif . < 3600 then "\(. / 60 | floor)m"
+    else "\(. / 3600 | floor)h\(. % 3600 / 60 | floor | if . < 10 then "0\(.)" else "\(.)" end)m" end;
+  ($t | if . == "" then now else tonumber end | floor) as $now
+  | def win(f; $len): one(f | numbers | select(. > $now and . <= $now + $len + 3600) | floor; null);
+    def pace(f; $r; $len): one(
+      ($r | numbers | $now - (. - $len)) as $el
+      | select($el >= ([$len * 0.05, 600] | max) and $el <= $len)
+      | (f | numbers | select(. >= 0 and . <= 999)) * $len / $el / 10 | select(. >= 10) | round
+      | if . >= 100 then "\(. / 10 | round)" else "\(. / 10 | floor).\(. % 10)" end; "");
+    def ident(f; $max): one(str(f) | select(length <= $max and (explode | all(
+      (. >= 48 and . <= 58) or (. >= 64 and . <= 91) or (. >= 97 and . <= 122)
+      or . == 45 or . == 46 or . == 47 or . == 93 or . == 95))); "");
+    def cache: one(.prompt_cache | objects; null) as $pc
+      | if $pc == null then ["", "", "", "", ""] else
+          (if $pc.ttl == "5m" then 300 else 3600 end) as $ttl
+          | ($pc.expires_at) as $e
+          | ($pc.recache_tokens_if_cold | if type == "number" and . >= 1 and . < 1e9
+              then (if . >= 1000 then "\(. / 1000 | round)k" else "\(floor)" end) else "" end) as $re
+          | (if $pc.ttl == "5m" then "5m" else "" end) as $tier
+          | if ($e | type) == "number" and $e > 0 and $e < 1e12 then
+              ([$e - $now, $ttl] | min | floor) as $left
+              | if $left <= 0 then ["cold", $re, "", "", ""]
+                elif ($pc | has("recache_tokens_if_cold")) and $pc.recache_tokens_if_cold == null
+                  then ["cold", "", "", "", ""]
+                elif $left <= ([$ttl / 6, 60] | max) then ["soon", ($left | dur), $tier, "\($e | floor)", $re]
+                else ["warm", ($left | dur), $tier, "\($e | floor)", $re] end
+            elif $e == null and $pc.caching_observed == true then ["cold", $re, "", "", ""]
+            else ["", "", "", "", ""] end
+        end;
+    win(.rate_limits.five_hour.resets_at; 18000) as $r5
+  | win(.rate_limits.seven_day.resets_at; 604800) as $r7
+  | pct(.context_window.used_percentage),
+    pct(.rate_limits.five_hour.used_percentage),
+    pct(.rate_limits.seven_day.used_percentage),
+    ($r5 | if . == null then "" else . - $now | dur end),
+    pace(.rate_limits.five_hour.used_percentage; $r5; 18000),
+    pace(.rate_limits.seven_day.used_percentage; $r7; 604800),
+    cache[],
+    ident(.session_id; 64),
+    ident(.model.id; 128),
+    one(str(.effort.level) | select(length <= 12 and (explode | all(. >= 97 and . <= 122))); ""),
+    one(str(.model.display_name) | shown | select(. != ""); "?"),
+    (one(str(.workspace.current_dir), str(.cwd) | select(explode | index(0) | not); ".") | (shown, ., "."))
 ')"
-ctx="" limit_5h="" limit_7d="" effort="" model="" dir_shown=""
-for field in ctx limit_5h limit_7d effort model dir_shown; do
+ctx="" limit_5h="" limit_7d="" resets_5h="" pace_5h="" pace_7d=""
+cache_kind="" cache_text="" cache_tier="" cache_exp="" cache_re=""
+sid="" model_id="" effort="" model="" dir_shown=""
+for field in ctx limit_5h limit_7d resets_5h pace_5h pace_7d \
+  cache_kind cache_text cache_tier cache_exp cache_re sid model_id effort model dir_shown; do
   printf -v "$field" '%s' "${parsed%%$'\n'*}"
   parsed="${parsed#*$'\n'}"
 done
 dir="${parsed%$'\n'.}"
+
+# Смена модели и /clear: кэш промпта свой у каждой модели, а Claude Code после
+# /model оставляет в данных прежний «тёплый» кэш — следующий запрос его не
+# прочтёт. Поэтому для каждого времени истечения запоминаем модель, при
+# которой оно впервые увидено: файл состояния — строки «сессия время модель»,
+# последние 20 сессий.
+# - То же время истечения, другая модель — модель сменили: cold с объёмом.
+# - Сессии в файле нет, а её время истечения записано за другой сессией — кэш
+#   достался от прежнего разговора (/clear, /new): cold без объёма.
+# - Иначе (новое время — был запрос) — запоминаем текущую модель.
+# - Процессов не запускает (read и printf — встроенные), кроме mkdir один раз.
+#   Запись не атомарна: при гонке двух сессий строка может пропасть — тогда
+#   модель запомнится заново. Файл недоступен — проверки нет, строка цела.
+state_dir="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
+state_file="$state_dir/cache-model"
+state_re='^[][A-Za-z0-9_.:/@-]{1,64} [0-9]{1,12} [][A-Za-z0-9_.:/@-]{1,128}$'
+if [[ ("$cache_kind" == warm || "$cache_kind" == soon) && -n "$cache_exp" && -n "$sid" && -n "$model_id" ]]; then
+  own_exp="" own_model="" inherited="" state_n=0
+  state_keep=()
+  if [ -r "$state_file" ]; then
+    while IFS= read -r state_line && [ "$state_n" -lt 40 ]; do
+      state_n=$((state_n + 1))
+      if [[ "$state_line" =~ $state_re ]]; then
+        state_sid="${state_line%% *}"
+        state_rest="${state_line#* }"
+        if [ "$state_sid" = "$sid" ]; then
+          own_exp="${state_rest%% *}"
+          own_model="${state_rest#* }"
+        else
+          state_keep+=("$state_line")
+          if [ "${state_rest%% *}" = "$cache_exp" ]; then
+            inherited=1
+          fi
+        fi
+      fi
+    done <"$state_file" 2>/dev/null || true
+  fi
+  if [ "$own_exp" = "$cache_exp" ]; then
+    if [ "$own_model" != "$model_id" ]; then
+      cache_kind=cold cache_text="$cache_re" cache_tier=""
+    fi
+  elif [ -z "$own_exp" ] && [ -n "$inherited" ]; then
+    cache_kind=cold cache_text="" cache_tier=""
+  else
+    state_from=0
+    if [ "${#state_keep[@]}" -gt 19 ]; then
+      state_from=$((${#state_keep[@]} - 19))
+    fi
+    [ -d "$state_dir" ] || mkdir -p "$state_dir" 2>/dev/null || true
+    {
+      printf '%s\n' ${state_keep[@]+"${state_keep[@]:state_from}"} "$sid $cache_exp $model_id" >"$state_file"
+    } 2>/dev/null || true
+  fi
+fi
 
 # Мост в tmux: процент контекста кладём в опцию панели @claude_ctx, откуда его
 # читает строка статуса tmux (сам tmux этого значения узнать не может). Значения
@@ -160,21 +296,29 @@ fi
 # Короткое имя папки (~ вместо домашнего каталога) — из очищенного пути.
 short_dir="${dir_shown/#$HOME/\~}"
 
-# Ветка git, если текущая папка внутри репозитория.
-branch=""
-if git -C "$dir" rev-parse --abbrev-ref HEAD >/dev/null 2>&1; then
-  branch="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+# Ветка git, если текущая папка внутри репозитория. Один вызов: при ошибке
+# (не репозиторий; репозиторий без коммитов — там git печатает «HEAD» и
+# завершается с ошибкой) ветки нет.
+branch="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null)" || branch=""
+
+# ANSI-цвета как в PS1; NO_COLOR (непустое) — без цветов.
+green="" blue="" yellow="" red="" reset=""
+if [ -z "${NO_COLOR:-}" ]; then
+  green=$'\033[01;32m'
+  blue=$'\033[01;34m'
+  yellow=$'\033[01;33m'
+  red=$'\033[01;31m'
+  reset=$'\033[00m'
 fi
 
-# ANSI-цвета как в PS1.
-green=$'\033[01;32m'
-blue=$'\033[01;34m'
-yellow=$'\033[01;33m'
-red=$'\033[01;31m'
-reset=$'\033[00m'
-
-# user@host:dir в стиле PS1.
-printf '%s%s@%s%s:%s%s%s' "$green" "$(whoami)" "$(hostname -s)" "$reset" "$blue" "$short_dir" "$reset"
+# user@host:dir в стиле PS1. Имя и хост — из переменных оболочки (HOSTNAME bash
+# выставляет сам), без запуска процессов; whoami и hostname — только если
+# переменная пуста.
+user="${USER:-}"
+[ -n "$user" ] || user="$(whoami)"
+host="${HOSTNAME:-}"
+[ -n "$host" ] || host="$(hostname -s)"
+printf '%s%s@%s%s:%s%s%s' "$green" "$user" "${host%%.*}" "$reset" "$blue" "$short_dir" "$reset"
 
 # Модель и через ◔ (U+25D4) уровень effort, если он есть.
 printf ' | %s' "$model"
@@ -182,27 +326,52 @@ if [ -n "$effort" ]; then
   printf ' \xe2\x97\x94 %s' "$effort"
 fi
 
-# pct_segment <подпись> <процент>: сегмент « | подпись NN%»; < 60% — без цвета,
-# 60–79% — жёлтый, >= 80% — красный. Процент пуст — сегмент не выводится.
+# pct_segment <подпись> <процент> [темп] [отсчёт]: сегмент
+# « | подпись NN% 1.3× (resets in 2h29m)»; < 60% — без цвета, 60–79% или есть
+# темп (он выводится только от 1.0) — жёлтый, >= 80% — красный; отсчёт — без
+# цвета. Процент пуст — сегмент не выводится. × — U+00D7.
 pct_segment() {
-  local color=""
+  local color="" off=""
   [ -n "$2" ] || return 0
   if [ "$2" -ge 80 ]; then
     color="$red"
-  elif [ "$2" -ge 60 ]; then
+  elif [ "$2" -ge 60 ] || [ -n "${3:-}" ]; then
     color="$yellow"
   fi
   if [ -n "$color" ]; then
-    printf ' | %s%s %s%%%s' "$color" "$1" "$2" "$reset"
-  else
-    printf ' | %s %s%%' "$1" "$2"
+    off="$reset"
+  fi
+  printf ' | %s%s %s%%' "$color" "$1" "$2"
+  if [ -n "${3:-}" ]; then
+    printf ' %s\xc3\x97' "$3"
+  fi
+  printf '%s' "$off"
+  if [ -n "${4:-}" ]; then
+    printf ' (resets in %s)' "$4"
   fi
 }
 
 # Контекст и лимиты подписки: пятичасовое окно и неделя.
 pct_segment Context "$ctx"
-pct_segment 5h "$limit_5h"
-pct_segment 7d "$limit_7d"
+pct_segment 5h "$limit_5h" "$pace_5h" "$resets_5h"
+pct_segment 7d "$limit_7d" "$pace_7d"
+
+# Кэш промпта: остаток до истечения (жёлтый, когда истекает) либо cold и через
+# · (U+00B7) — сколько токенов перекэширует следующий запрос.
+case "$cache_kind" in
+  warm) printf ' | cache warm %s' "$cache_text" ;;
+  soon) printf ' | %scache warm %s%s' "$yellow" "$cache_text" "$reset" ;;
+  cold)
+    printf ' | cache cold'
+    if [ -n "$cache_text" ]; then
+      printf ' \xc2\xb7 %s' "$cache_text"
+    fi
+    ;;
+  *) ;;
+esac
+if [ -n "$cache_tier" ]; then
+  printf ' (%s ttl)' "$cache_tier"
+fi
 
 # Git-ветка (со значком Powerline ), если есть.
 if [ -n "$branch" ]; then
@@ -254,6 +423,8 @@ chmod +x ~/.claude/statusline.sh
 - Сообщи пользователю, что statusline настроен
 - Покажи итоговую конфигурацию
 - Предупреди, что изменения вступят в силу после перезапуска Claude Code (если сессия уже активна)
+- **Если в секции `statusLine` нет `refreshInterval`** — спроси, добавить ли `"refreshInterval": 30`: без него отсчёты до сброса лимита и до истечения кэша в простое не тикают (строка перерисовывается только по событиям сессии). Согласен — добавь поле Edit'ом в существующую секцию `statusLine`; отказ — не добавляй. Уже есть — не трогай и не спрашивай.
+- Скажи, что скрипт ведёт файл состояния `~/.cache/claude-statusline/cache-model` (до 20 строк «сессия, время, модель») — по нему видна смена модели; удалить его можно в любой момент, строка статуса от этого не ломается.
 - **Если сессия идёт внутри tmux** — расскажи про мост: скрипт пишет процент контекста в опцию панели `@claude_ctx`, и её можно показать в строке статуса tmux. Покажи пример ниже и скажи, что это правка `~/.tmux.conf`, которую пользователь делает сам (после неё — `tmux source-file ~/.tmux.conf`); сам `~/.tmux.conf` не меняй без прямой просьбы. Если в шаге 0 не нашёлся `timeout` или tmux старше 3.0 — скажи, что мост работать не будет, и почему.
 
   Сегмент ставится **в начало** собственного `status-right` пользователя (здесь после сегмента — штатное значение tmux); длину поднять, иначе штатные 40 знаков обрежут строку:
