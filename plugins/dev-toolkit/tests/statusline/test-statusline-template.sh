@@ -517,6 +517,11 @@ cache_check 'expires_at null, кэш наблюдался' '{"caching_observed":
 cache_check 'expires_at нет, кэш наблюдался' '{"caching_observed":true}' 'cache cold'
 cache_check 'кэширование не наблюдалось' '{"caching_observed":false,"expires_at":null}' ''
 cache_check 'caching_observed нет' '{"expires_at":null}' ''
+# Кэширование не наблюдалось — сегмента нет и при числовом времени истечения;
+# признака нет вовсе — время истечения показывается.
+cache_check 'кэширование не наблюдалось, время в будущем' '{"caching_observed":false,"ttl":"1h","expires_at":'"$((_now + 1860))"'}' ''
+cache_check 'кэширование не наблюдалось, время в прошлом' '{"caching_observed":false,"expires_at":'"$((_now - 5))"',"recache_tokens_if_cold":900}' ''
+cache_check 'caching_observed нет, время в будущем' '{"ttl":"1h","expires_at":'"$((_now + 1860))"'}' 'cache warm 31m'
 cache_check 'пустой объект' '{}' ''
 cache_check 'expires_at — строка' '{"caching_observed":true,"expires_at":"1800001860"}' ''
 cache_check 'expires_at отрицательный' '{"caching_observed":true,"expires_at":-1}' ''
