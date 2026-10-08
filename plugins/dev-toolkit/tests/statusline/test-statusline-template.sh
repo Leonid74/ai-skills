@@ -735,5 +735,210 @@ jq -n --arg d "${_repo}" '{model:{display_name:"M"},workspace:{current_dir:$d}}'
 run ok - - nowait
 check 'имя ветки очищено' "${_out#* | }" $'M | \xee\x82\xa0 x31mYZé'
 
+# --- узкий экран: ступени по COLUMNS ---------------------------------------------
+# Уже 80 колонок ступень выбирается по видимой длине строки: помещается в
+# «COLUMNS − 4» — она, иначе следующая (полная → средняя → сжатая → две строки;
+# у средней и сжатой между ними — та же строка с веткой, укороченной до 20
+# знаков). От 80 колонок строка всегда полная.
+_i=$'\xee\x82\xa0'
+_d=$'\xc2\xb7'
+_e=$'\xe2\x80\xa6'
+_b=$'\033[01;34m'
+_nrepo="${_root}/w"
+mkdir -p "${_nrepo}"
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_nrepo}" init -q -b main >/dev/null 2>&1
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_nrepo}" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init >/dev/null 2>&1
+
+# narrow_fixture <папка> [prompt_cache JSON]: все
+# сегменты разом — контекст, оба окна лимитов (у недели темп 1.2×), кэш.
+narrow_fixture() {
+  local _pc="{\"caching_observed\":true,\"warm\":true,\"ttl\":\"1h\",\"expires_at\":$((_now + 1860)),\"recache_tokens_if_cold\":151000}"
+  jq -n --arg d "$1" --argjson now "${_now}" --argjson pc "${2:-${_pc}}" '{
+      model: {display_name: "Opus 5.5"}, effort: {level: "high"}, workspace: {current_dir: $d},
+      context_window: {used_percentage: 42},
+      rate_limits: {
+        five_hour: {used_percentage: 37, resets_at: ($now + 8940)},
+        seven_day: {used_percentage: 61, resets_at: ($now + 300000)}
+      },
+      prompt_cache: $pc
+    }' >"${_fx}"
+}
+
+# narrow <COLUMNS | -> [переменные окружения…]: запуск с застывшими часами,
+# именем u и хостом h; «-» — без COLUMNS.
+narrow() {
+  local _c="$1"
+  shift
+  _extra=("STATUSLINE_NOW=${_now}" USER=u HOSTNAME=h "$@")
+  [[ "${_c}" != "-" ]] && _extra+=("COLUMNS=${_c}")
+  run ok - - nowait
+  _extra=()
+}
+
+# vlen <строка>: число знаков — по байтам, от локали теста не зависит.
+vlen() {
+  local LC_ALL=C _s="$1"
+  _s="${_s//[$'\200'-$'\277']/}"
+  printf '%s' "${#_s}"
+}
+
+# fits_check <описание> <строка> <следующая попытка>: строка выводится при
+# ширине «её длина + 4», а на знак уже — следующая попытка.
+fits_check() {
+  local _n
+  _n="$(vlen "$2")"
+  narrow "$((_n + 4))" NO_COLOR=1
+  check "$1: ширина $((_n + 4)) — помещается" "${_out}" "$2"
+  check "$1: ширина $((_n + 4)) — код возврата" "${_rc}" 0
+  check "$1: ширина $((_n + 4)) — stderr пуст" "${_err}" ''
+  narrow "$((_n + 3))" NO_COLOR=1
+  check "$1: ширина $((_n + 3)) — следующая попытка" "${_out}" "$3"
+  check "$1: ширина $((_n + 3)) — код возврата" "${_rc}" 0
+  check "$1: ширина $((_n + 3)) — stderr пуст" "${_err}" ''
+}
+
+_lim="5h 37% 2h29m | 7d 61% 1.2${_x}"
+_limd="5h 37% 2h29m ${_d} 7d 61% 1.2${_x}"
+_nf="u@h:~/w | Opus 5.5 ${_sep} high | Context 42% | 5h 37% (resets in 2h29m) | 7d 61% 1.2${_x} | cache warm 31m | ${_i} main"
+# shellcheck disable=SC2088 # «~» — текст строки статуса, а не путь
+_nm="~/w | Opus 5.5 | Ctx 42% | ${_lim} | cache 31m | ${_i} main"
+_nc="Ctx 42% ${_d} ${_limd} ${_d} cache 31m ${_d} ${_i} main"
+_nt="Ctx 42% ${_d} ${_limd}"$'\n'"cache 31m ${_d} ${_i} main"
+narrow_fixture "${_nrepo}"
+narrow - NO_COLOR=1
+check 'без COLUMNS: полная строка' "${_out}" "${_nf}"
+# Порог узкого экрана: от 80 колонок — полная строка, хотя она не помещается.
+for _v in 80 81 110 200; do
+  narrow "${_v}" NO_COLOR=1
+  check "ширина ${_v}: полная строка" "${_out}" "${_nf}"
+done
+narrow 79 NO_COLOR=1
+check 'ширина 79: средняя строка' "${_out}" "${_nm}"
+# Цвета в длину не входят: с цветами выбирается та же строка, что без них.
+narrow 79
+check 'ширина 79, цвета: средняя строка' "${_out}" \
+  "${_b}~/w${_z} | Opus 5.5 | Ctx 42% | 5h 37% 2h29m | ${_y}7d 61% 1.2${_x}${_z} | cache 31m | ${_i} main"
+fits_check 'средняя' "${_nm}" "${_nc}"
+fits_check 'сжатая' "${_nc}" "${_nt}"
+narrow 20 NO_COLOR=1
+check 'ширина 20: две строки' "${_out}" "${_nt}"
+narrow 9999 NO_COLOR=1
+check 'ширина 9999: полная строка' "${_out}" "${_nf}"
+
+# COLUMNS не число из 1–4 цифр или меньше 20 — полная строка, без ошибок.
+_nl=$'80\n80'
+for _v in '' abc 0 19 0019 12345 ' 80' '80 ' -5 1e2 '80;x' '8 0' "${_nl}"; do
+  narrow "${_v}" NO_COLOR=1
+  check "COLUMNS=[${_v}]: полная строка" "${_out}" "${_nf}"
+  check "COLUMNS=[${_v}]: код возврата" "${_rc}" 0
+  check "COLUMNS=[${_v}]: stderr пуст" "${_err}" ''
+done
+# Ведущие нули — десятичное число, а не восьмеричное («099» в $(( )) — ошибка).
+for _v in 79 0079; do
+  narrow "${_v}" NO_COLOR=1
+  check "COLUMNS=${_v}: средняя строка" "${_out}" "${_nm}"
+  check "COLUMNS=${_v}: код возврата" "${_rc}" 0
+  check "COLUMNS=${_v}: stderr пуст" "${_err}" ''
+done
+narrow 0020 NO_COLOR=1
+check 'COLUMNS=0020: две строки' "${_out}" "${_nt}"
+
+# Мост в tmux от ступени не зависит.
+_extra=("STATUSLINE_NOW=${_now}" USER=u HOSTNAME=h NO_COLOR=1 COLUMNS=30)
+run ok "${_T}" %7
+_extra=()
+check 'узкий экран в tmux: вывод — две строки' "${_out}" "${_nt}"
+check 'узкий экран в tmux: вызов моста' "$(cat "${_log}")" \
+  "timeout [-s] [KILL] [1] [tmux] [if] [-F] [-t] [%7] [${_cond_pre}#{!=:#{@claude_ctx},42},0}] [set -p -t %7 @claude_ctx 42] ${_null}"
+
+# Длинная ветка: перед следующей ступенью пробуется та же с укороченной веткой.
+# Сегментов мало (только контекст) — иначе уже 80 колонок полная и средняя
+# строки с такой веткой не помещаются.
+_long='feat/statusline-narrow-screens'
+_short="feat/statusline-nar${_e}"
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_nrepo}" checkout -q -b "${_long}" >/dev/null 2>&1
+jq -n --arg d "${_nrepo}" \
+  '{model:{display_name:"Opus 5.5"},effort:{level:"high"},workspace:{current_dir:$d},context_window:{used_percentage:42}}' >"${_fx}"
+_lf="u@h:~/w | Opus 5.5 ${_sep} high | Context 42% | ${_i} ${_long}"
+# shellcheck disable=SC2088 # «~» — текст строки статуса, а не путь
+_lm="~/w | Opus 5.5 | Ctx 42% | ${_i} ${_long}"
+_lms="${_lm%"${_long}"}${_short}"
+_lc="Ctx 42% ${_d} ${_i} ${_long}"
+_lcs="Ctx 42% ${_d} ${_i} ${_short}"
+_lts="Ctx 42%"$'\n'"${_i} ${_short}"
+fits_check 'длинная ветка, полная' "${_lf}" "${_lm}"
+fits_check 'длинная ветка, средняя' "${_lm}" "${_lms}"
+fits_check 'длинная ветка, средняя с укороченной' "${_lms}" "${_lc}"
+fits_check 'длинная ветка, сжатая' "${_lc}" "${_lcs}"
+fits_check 'длинная ветка, сжатая с укороченной' "${_lcs}" "${_lts}"
+narrow_fixture "${_nrepo}"
+
+# Укорачивание ветки: до 20 знаков — как есть, длиннее — 19 знаков и «…»; знаки,
+# а не байты, в любой локали.
+# branch_check <описание> <ветка> <ожидаемый вид> [переменные окружения…]
+branch_check() {
+  local _d1="$1" _br="$2" _exp="$3"
+  shift 3
+  env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_nrepo}" checkout -q -b "${_br}" >/dev/null 2>&1
+  narrow 20 NO_COLOR=1 "$@"
+  check "${_d1}" "${_out##*"${_i} "}" "${_exp}"
+  check "${_d1}: код возврата" "${_rc}" 0
+  check "${_d1}: stderr пуст" "${_err}" ''
+}
+branch_check 'ветка 20 знаков — целиком' 'b234567890123456789z' 'b234567890123456789z'
+branch_check 'ветка 21 знак — укорочена' 'c2345678901234567890z' "c234567890123456789${_e}"
+branch_check 'ветка 20 знаков кириллицей — целиком' 'ветка-ветка-ветка-ве' 'ветка-ветка-ветка-ве'
+branch_check 'ветка 23 знака кириллицей — укорочена' 'ветка-ветка-ветка-ветка' "ветка-ветка-ветка-в${_e}"
+branch_check 'ветка смешанная — укорочена' 'fix/ошибка-в-разборе-даты' "fix/ошибка-в-разбор${_e}"
+for _loc in ${_locs}; do
+  branch_check "ветка кириллицей в локали ${_loc}" "ветка-ветка-ветка-${_loc}" \
+    "ветка-ветка-ветка-${_loc:0:1}${_e}" "LC_ALL=${_loc}"
+done
+_big="$(printf 'a%.0s' {1..200})"
+branch_check 'ветка 200 знаков — укорочена' "${_big}" "aaaaaaaaaaaaaaaaaaa${_e}"
+check "ветка 200 знаков: скрипт не ждёт (${_ms} мс)" "$((_ms < 1500 ? 1 : 0))" 1
+
+# Кэш на ступенях после полной: без слова warm, без точки перед объёмом, срок — «(5m)».
+# narrow_cache_check <описание> <prompt_cache JSON> <ожидаемая вторая строка>
+narrow_cache_check() {
+  narrow_fixture "${_work}" "$2"
+  narrow 20
+  check "$1" "${_out#*$'\n'}" "$3"
+  check "$1: первая строка" "${_out%%$'\n'*}" "Ctx 42% ${_d} 5h 37% 2h29m ${_d} ${_y}7d 61% 1.2${_x}${_z}"
+}
+narrow_cache_check 'узкий экран: кэш истекает — жёлтый' \
+  "{\"caching_observed\":true,\"warm\":true,\"ttl\":\"1h\",\"expires_at\":$((_now + 240))}" "${_y}cache 4m${_z}"
+narrow_cache_check 'узкий экран: пятиминутный срок' \
+  "{\"caching_observed\":true,\"warm\":true,\"ttl\":\"5m\",\"expires_at\":$((_now + 200))}" 'cache 3m (5m)'
+narrow_cache_check 'узкий экран: кэш остыл, объём известен' \
+  "{\"caching_observed\":true,\"warm\":true,\"ttl\":\"1h\",\"expires_at\":$((_now - 10)),\"recache_tokens_if_cold\":151000}" \
+  'cache cold 151k'
+narrow_cache_check 'узкий экран: кэш остыл, объём неизвестен' \
+  "{\"caching_observed\":true,\"warm\":true,\"ttl\":\"1h\",\"expires_at\":$((_now + 1860)),\"recache_tokens_if_cold\":null}" \
+  'cache cold'
+
+# Данных мало: пустая первая строка не выводится; показать нечего — название модели.
+jq -n --arg d "${_nrepo}" --argjson now "${_now}" \
+  '{model:{display_name:"Opus 5.5"},workspace:{current_dir:$d},prompt_cache:{caching_observed:true,warm:true,ttl:"1h",expires_at:($now - 10),recache_tokens_if_cold:151000}}' >"${_fx}"
+narrow 20 NO_COLOR=1
+check 'две строки без лимитов: одна строка' "${_out}" "cache cold 151k ${_d} ${_i} aaaaaaaaaaaaaaaaaaa${_e}"
+jq -n --arg d "${_work}" '{model:{display_name:"Opus 5.5 (1M context)"},workspace:{current_dir:$d}}' >"${_fx}"
+narrow 20
+check 'показать нечего: название модели' "${_out}" 'Opus 5.5 (1M context)'
+check 'показать нечего: код возврата' "${_rc}" 0
+jq -n --arg d "${_work}" '{model:{display_name:"Opus 5.5 (1M context)"},workspace:{current_dir:$d},context_window:{used_percentage:42}}' >"${_fx}"
+narrow 20
+check 'только контекст на самой узкой: одна строка' "${_out}" 'Ctx 42%'
+# Вторая строка пуста (нет ни кэша, ни ветки): вывод не кончается переводом строки
+# — $(…) в run его срезает, поэтому вывод берётся с замком «.» в конце.
+narrow_fixture "${_work}" '{"caching_observed":false}'
+_o="$(env -i "PATH=${_root}/ok" "HOME=${_root}" "STATUSLINE_NOW=${_now}" NO_COLOR=1 COLUMNS=20 bash "${_tpl}" <"${_fx}" && printf .)"
+check 'две строки без второй: без перевода строки в конце' "${_o}" "Ctx 42% ${_d} ${_limd}."
+# Папка показывается пустой (из одних невидимых знаков): средняя строка начинается
+# с модели, без разделителя впереди — и с цветами тоже.
+jq -n --arg d "${_hid}" '{model:{display_name:"M"},cwd:$d,context_window:{used_percentage:42}}' >"${_fx}"
+narrow 20
+check 'средняя без папки: с модели' "${_out}" 'M | Ctx 42%'
+
 printf 'pass=%s fail=%s\n' "${_pass}" "${_fail}"
 [[ "${_fail}" -eq 0 ]]
