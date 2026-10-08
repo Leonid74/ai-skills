@@ -62,6 +62,24 @@ EOF
     chmod +x "${_dir}/tmux"
   fi
 }
+# link_tools <имя каталога> <утилита>…: каталог команд ровно из названных утилит
+# (для векторов, где какой-то утилиты нет или она подменена заглушкой).
+link_tools() {
+  local _dir="${_root}/$1" _t
+  shift
+  mkdir -p "${_dir}"
+  for _t in "$@"; do
+    ln -s "$(command -v "${_t}")" "${_dir}/${_t}"
+  done
+}
+
+# stub <имя каталога> <утилита> <строка тела>…: заглушка утилиты в каталоге команд.
+stub() {
+  local _file="${_root}/$1/$2"
+  shift 2
+  printf '%s\n' '#!/usr/bin/env bash' "$@" >"${_file}"
+  chmod +x "${_file}"
+}
 make_bin ok ok yes
 make_bin hang hang yes
 make_bin notimeout none yes
@@ -93,6 +111,8 @@ _out=""
 _err=""
 _rc=0
 _ms=0
+# Дополнительные переменные окружения шаблона (STATUSLINE_NOW, NO_COLOR, USER…).
+_extra=()
 # run <каталог bin> <TMUX | -> <TMUX_PANE | -> [nowait]: вывод, stderr, код,
 # длительность (мс); затем ждёт фоновый мост — запись заглушки в журнал.
 # nowait — не ждать: вектор вне tmux, где журнал моста не проверяется.
@@ -101,6 +121,7 @@ run() {
   local -a _env=(env -i "PATH=${_bin}" "HOME=${_root}" "GIT_CEILING_DIRECTORIES=${_root}")
   [[ "$2" != "-" ]] && _env+=("TMUX=$2")
   [[ "$3" != "-" ]] && _env+=("TMUX_PANE=$3")
+  _env+=(${_extra[@]+"${_extra[@]}"})
   : >"${_log}"
   _rc=0
   _t0=$(date +%s%N)
@@ -367,6 +388,352 @@ for _v in -0.4 999.5 '[1]'; do
   run ok "${_T}" %7
   check "used_percentage=${_v}: снятие, не запись" "$(cat "${_log}")" "${_unset}"
 done
+
+# --- отсчёт до сброса, темп, кэш промпта ---------------------------------------
+# Часы подменены: STATUSLINE_NOW. Времена в фикстурах — смещения от _now.
+_now=1800000000
+_extra=("STATUSLINE_NOW=${_now}")
+_x=$'\xc3\x97'
+_dot=$'\xc2\xb7'
+_m="\"model\":{\"display_name\":\"M\"},\"workspace\":{\"current_dir\":\"${_work}\"}"
+
+# win5 <процент> <время сброса, JSON>: окно пяти часов.
+win5() { printf '"five_hour":{"used_percentage":%s,"resets_at":%s}' "$1" "$2"; }
+win7() { printf '"seven_day":{"used_percentage":%s,"resets_at":%s}' "$1" "$2"; }
+
+# Отсчёт: округление вниз, только будущее время и не дальше окна плюс час.
+# reset_check <смещение от _now | JSON> <ожидаемый отсчёт | пусто>
+reset_check() {
+  local _r="$1" _exp=""
+  [[ "${_r}" =~ ^-?[0-9]+$ ]] && _r=$((_now + _r))
+  [[ -n "$2" ]] && _exp=" (resets in $2)"
+  tail_check "отсчёт: сброс $1" "{${_m},\"rate_limits\":{$(win5 10 "${_r}")}}" "M | 5h 10%${_exp}"
+}
+reset_check 8940 2h29m
+reset_check 8999 2h29m
+reset_check 3600 1h00m
+reset_check 4199 1h09m
+reset_check 4200 1h10m
+reset_check 3599 59m
+reset_check 60 1m
+reset_check 59 '<1m'
+reset_check 1 '<1m'
+reset_check 0 ''
+reset_check -5 ''
+reset_check 21600 6h00m
+reset_check 21601 ''
+reset_check "$((_now + 8940)).9" 2h29m
+reset_check '"1800008940"' ''
+reset_check null ''
+reset_check '[1800008940]' ''
+reset_check 1e19 ''
+tail_check 'отсчёт: у недели его нет' "{${_m},\"rate_limits\":{$(win7 10 $((_now + 300000)))}}" 'M | 7d 10%'
+tail_check 'отсчёт: процента нет — сегмента нет' \
+  "{${_m},\"rate_limits\":{\"five_hour\":{\"resets_at\":$((_now + 8940))}}}" 'M'
+
+# Темп: средний с начала окна; от 1.0, не раньше 5% окна; с темпом сегмент жёлтый.
+# 53% за 40 минут пятичасового окна — 3.975; 61% за 304800 с недели — 1.21.
+tail_check 'темп: оба окна' \
+  "{${_m},\"rate_limits\":{$(win5 53 $((_now + 15600))),$(win7 61 $((_now + 300000)))}}" \
+  "M | ${_y}5h 53% 4.0${_x}${_z} (resets in 4h20m) | ${_y}7d 61% 1.2${_x}${_z}"
+tail_check 'темп: ниже 1.0 не выводится' \
+  "{${_m},\"rate_limits\":{$(win5 37 $((_now + 8940))),$(win7 30 $((_now + 300000)))}}" \
+  'M | 5h 37% (resets in 2h29m) | 7d 30%'
+# Порог — до округления: половина окна и 49.9% — темп 0.998, не выводится; 50% — 1.0.
+tail_check 'темп: 0.998 не выводится' "{${_m},\"rate_limits\":{$(win5 49.9 $((_now + 9000)))}}" \
+  'M | 5h 50% (resets in 2h30m)'
+tail_check 'темп: ровно 1.0' "{${_m},\"rate_limits\":{$(win5 50 $((_now + 9000)))}}" \
+  "M | ${_y}5h 50% 1.0${_x}${_z} (resets in 2h30m)"
+tail_check 'темп: 1.04 — 1.0' "{${_m},\"rate_limits\":{$(win5 52 $((_now + 9000)))}}" \
+  "M | ${_y}5h 52% 1.0${_x}${_z} (resets in 2h30m)"
+tail_check 'темп: 1.06 — 1.1' "{${_m},\"rate_limits\":{$(win5 53 $((_now + 9000)))}}" \
+  "M | ${_y}5h 53% 1.1${_x}${_z} (resets in 2h30m)"
+# Граница 5% окна: 900 с от начала — темп есть, 899 с — нет.
+tail_check 'темп: ровно 5% окна' "{${_m},\"rate_limits\":{$(win5 30 $((_now + 17100)))}}" \
+  "M | ${_y}5h 30% 6.0${_x}${_z} (resets in 4h45m)"
+tail_check 'темп: раньше 5% окна' "{${_m},\"rate_limits\":{$(win5 30 $((_now + 17101)))}}" \
+  'M | 5h 30% (resets in 4h45m)'
+# Неделя: 5% — 30240 с.
+tail_check 'темп: неделя, ровно 5% окна' "{${_m},\"rate_limits\":{$(win7 10 $((_now + 574560)))}}" \
+  "M | ${_y}7d 10% 2.0${_x}${_z}"
+tail_check 'темп: неделя, раньше 5% окна' "{${_m},\"rate_limits\":{$(win7 10 $((_now + 574561)))}}" \
+  'M | 7d 10%'
+# От 10 — целое: за 1800 с 99.4% — 9.94 (9.9), 99.6% — 9.96 (10), 85% за 900 с — 17.
+tail_check 'темп: 9.9' "{${_m},\"rate_limits\":{$(win5 99.4 $((_now + 16200)))}}" \
+  "M | ${_r}5h 99% 9.9${_x}${_z} (resets in 4h30m)"
+tail_check 'темп: 10 — целое' "{${_m},\"rate_limits\":{$(win5 99.6 $((_now + 16200)))}}" \
+  "M | ${_r}5h 100% 10${_x}${_z} (resets in 4h30m)"
+tail_check 'темп: красный важнее жёлтого' "{${_m},\"rate_limits\":{$(win5 85 $((_now + 17100)))}}" \
+  "M | ${_r}5h 85% 17${_x}${_z} (resets in 4h45m)"
+tail_check 'темп: предел' "{${_m},\"rate_limits\":{$(win5 999 $((_now + 17100)))}}" \
+  "M | ${_r}5h 999% 200${_x}${_z} (resets in 4h45m)"
+tail_check 'темп: времени сброса нет' "{${_m},\"rate_limits\":{\"five_hour\":{\"used_percentage\":99}}}" \
+  "M | ${_r}5h 99%${_z}"
+tail_check 'темп: время сброса прошло' "{${_m},\"rate_limits\":{$(win5 99 $((_now - 1)))}}" "M | ${_r}5h 99%${_z}"
+tail_check 'темп: сброс дальше длины окна — до начала окна темпа нет' "{${_m},\"rate_limits\":{$(win5 50 $((_now + 18001)))}}" \
+  'M | 5h 50% (resets in 5h00m)'
+
+# Кэш промпта. cache_check <описание> <объект prompt_cache, JSON> <ожидаемый сегмент | пусто>
+cache_check() {
+  local _exp=""
+  [[ -n "$3" ]] && _exp=" | $3"
+  tail_check "кэш: $1" "{${_m},\"context_window\":{\"used_percentage\":7},\"prompt_cache\":$2}" "M | Context 7%${_exp}"
+}
+# pc <смещение expires_at от _now> [ttl] [прочие поля]
+pc() { printf '{"caching_observed":true,"ttl":"%s","expires_at":%s%s}' "${2:-1h}" "$((_now + $1))" "${3:-}"; }
+_re=',"recache_tokens_if_cold":151000'
+cache_check 'тёплый' "$(pc 1860 1h "${_re}")" 'cache warm 31m'
+cache_check 'тёплый, меньше минуты до границы' "$(pc 601)" 'cache warm 10m'
+cache_check 'истекает с шестой части TTL' "$(pc 600)" "${_y}cache warm 10m${_z}"
+cache_check 'истекает, меньше минуты' "$(pc 1)" "${_y}cache warm <1m${_z}"
+cache_check 'остаток не больше TTL' "$(pc 99999)" 'cache warm 1h00m'
+cache_check 'TTL не назван — час' '{"caching_observed":true,"expires_at":'"$((_now + 99999))"'}' 'cache warm 1h00m'
+cache_check 'TTL неизвестен — час' "$(pc 601 2h)" 'cache warm 10m'
+cache_check '5m: тёплый' "$(pc 61 5m)" 'cache warm 1m (5m ttl)'
+cache_check '5m: истекает с минуты' "$(pc 60 5m)" "${_y}cache warm 1m${_z} (5m ttl)"
+cache_check '5m: остаток не больше TTL' "$(pc 99999 5m)" 'cache warm 5m (5m ttl)'
+cache_check 'истёк' "$(pc 0 1h "${_re}")" "cache cold ${_dot} 151k"
+cache_check 'истёк давно' "$(pc -99999 5m "${_re}")" "cache cold ${_dot} 151k"
+cache_check 'истёк, объём неизвестен' "$(pc -5 1h ',"recache_tokens_if_cold":null')" 'cache cold'
+cache_check 'объём 999' "$(pc -5 1h ',"recache_tokens_if_cold":999')" "cache cold ${_dot} 999"
+cache_check 'объём 1000' "$(pc -5 1h ',"recache_tokens_if_cold":1000')" "cache cold ${_dot} 1k"
+cache_check 'объём 1499' "$(pc -5 1h ',"recache_tokens_if_cold":1499')" "cache cold ${_dot} 1k"
+cache_check 'объём 1500' "$(pc -5 1h ',"recache_tokens_if_cold":1500')" "cache cold ${_dot} 2k"
+cache_check 'объём 0' "$(pc -5 1h ',"recache_tokens_if_cold":0')" 'cache cold'
+cache_check 'объём огромный' "$(pc -5 1h ',"recache_tokens_if_cold":1e9')" 'cache cold'
+cache_check 'объём — строка' "$(pc -5 1h ',"recache_tokens_if_cold":"7; x"')" 'cache cold'
+cache_check 'объём дробный — вниз' "$(pc -5 1h ',"recache_tokens_if_cold":999.6')" "cache cold ${_dot} 999"
+cache_check 'expires_at ноль' '{"caching_observed":true,"expires_at":0}' ''
+cache_check 'время истечения дробное' '{"caching_observed":true,"ttl":"1h","expires_at":'"$((_now + 1860))"'.9}' 'cache warm 31m'
+# warm: false — Claude Code сам считает кэш не тёплым: холодный с объёмом.
+cache_check 'warm false при будущем времени' "$(pc 1860 1h "${_re}"',"warm":false')" "cache cold ${_dot} 151k"
+cache_check 'warm true' "$(pc 1860 1h "${_re}"',"warm":true')" 'cache warm 31m'
+cache_check 'warm не булево' "$(pc 1860 1h "${_re}"',"warm":"false"')" 'cache warm 31m'
+# Компакция важнее «истекает»: объём null в последней шестой части срока — холодный.
+cache_check 'после компакции, истекающий' "$(pc 300 1h ',"recache_tokens_if_cold":null')" 'cache cold'
+cache_check 'после компакции, 5m' "$(pc 200 5m ',"recache_tokens_if_cold":null')" 'cache cold'
+cache_check 'expires_at null, кэш наблюдался' '{"caching_observed":true,"expires_at":null,"recache_tokens_if_cold":45000}' \
+  "cache cold ${_dot} 45k"
+cache_check 'expires_at нет, кэш наблюдался' '{"caching_observed":true}' 'cache cold'
+cache_check 'кэширование не наблюдалось' '{"caching_observed":false,"expires_at":null}' ''
+cache_check 'caching_observed нет' '{"expires_at":null}' ''
+# Кэширование не наблюдалось — сегмента нет и при числовом времени истечения;
+# признака нет вовсе — время истечения показывается.
+cache_check 'кэширование не наблюдалось, время в будущем' '{"caching_observed":false,"ttl":"1h","expires_at":'"$((_now + 1860))"'}' ''
+cache_check 'кэширование не наблюдалось, время в прошлом' '{"caching_observed":false,"expires_at":'"$((_now - 5))"',"recache_tokens_if_cold":900}' ''
+cache_check 'caching_observed нет, время в будущем' '{"ttl":"1h","expires_at":'"$((_now + 1860))"'}' 'cache warm 31m'
+cache_check 'пустой объект' '{}' ''
+cache_check 'expires_at — строка' '{"caching_observed":true,"expires_at":"1800001860"}' ''
+cache_check 'expires_at отрицательный' '{"caching_observed":true,"expires_at":-1}' ''
+cache_check 'expires_at огромный' '{"caching_observed":true,"expires_at":1e19}' ''
+cache_check 'prompt_cache — строка' '"warm"' ''
+cache_check 'prompt_cache — массив' '[1]' ''
+cache_check 'prompt_cache — null' null ''
+
+# Всё вместе: порядок сегментов, поля не сдвинуты, папка на месте.
+head_check 'всё вместе' \
+  "{${_m},\"effort\":{\"level\":\"high\"},\"context_window\":{\"used_percentage\":42.4},\"rate_limits\":{$(win5 53 $((_now + 15600))),$(win7 61 $((_now + 300000)))},\"prompt_cache\":$(pc 200 5m)}" \
+  "${_home}/work" \
+  "M ${_sep} high | Context 42% | ${_y}5h 53% 4.0${_x}${_z} (resets in 4h20m) | ${_y}7d 61% 1.2${_x}${_z} | cache warm 3m (5m ttl)"
+# Мост в tmux от новых полей не зависит.
+run ok "${_T}" %7
+check 'всё вместе: в опцию идёт контекст' "$([[ "$(cat "${_log}")" == *'[set -p -t %7 @claude_ctx 42]'* ]] && echo да)" да
+
+# STATUSLINE_NOW не из цифр — берутся настоящие часы (сброс через 2 ч 30 мин 30 с).
+for _v in abc '1;x' '' 1234567890123; do
+  _extra=("STATUSLINE_NOW=${_v}")
+  tail_check "STATUSLINE_NOW=[${_v}]: настоящие часы" \
+    "{${_m},\"rate_limits\":{$(win5 10 $(($(date +%s) + 9030)))}}" 'M | 5h 10% (resets in 2h30m)'
+done
+
+_extra=("STATUSLINE_NOW=${_now}")
+cache_check 'после компакции' "$(pc 1860 1h ',"recache_tokens_if_cold":null')" 'cache cold'
+
+# --- смена модели не определяется; файлов скрипт не создаёт ------------------------
+# Идентификаторы сессии и модели на сегмент не влияют: после /model Claude Code
+# передаёт прежний тёплый кэш, и строка показывает его как есть.
+_k=',"recache_tokens_if_cold":56209'
+for _v in claude-haiku-5-5 claude-sonnet-5-5; do
+  tail_check "модель ${_v}: кэш как в данных" \
+    "{\"session_id\":\"A\",\"model\":{\"id\":\"${_v}\",\"display_name\":\"M\"},\"workspace\":{\"current_dir\":\"${_work}\"},\"prompt_cache\":$(pc 1800 1h "${_k}")}" \
+    'M | cache warm 30m'
+done
+check 'файлов в HOME не создано' "$([[ -e "${_root}/.cache" || -e "${_root}/.config" || -e "${_root}/.local" ]] && echo есть)" ''
+_extra=("STATUSLINE_NOW=${_now}" "XDG_CACHE_HOME=${_root}/xdg")
+run ok - - nowait
+check 'XDG_CACHE_HOME не используется' "$([[ -e "${_root}/xdg" ]] && echo есть)" ''
+
+# --- NO_COLOR --------------------------------------------------------------------
+_all="{${_m},\"context_window\":{\"used_percentage\":85},\"rate_limits\":{$(win5 53 $((_now + 15600)))},\"prompt_cache\":$(pc 30)}"
+_extra=("STATUSLINE_NOW=${_now}" NO_COLOR=1 USER=alice HOSTNAME=box)
+fixture_raw "${_all}"
+run ok - - nowait
+check 'NO_COLOR: вывод без ANSI' "${_out}" \
+  "alice@box:~/work | M | Context 85% | 5h 53% 4.0${_x} (resets in 4h20m) | cache warm <1m"
+_extra=("STATUSLINE_NOW=${_now}" NO_COLOR=)
+tail_check 'NO_COLOR пуст: цвета есть' "${_all}" \
+  "M | ${_r}Context 85%${_z} | ${_y}5h 53% 4.0${_x}${_z} (resets in 4h20m) | ${_y}cache warm <1m${_z}"
+
+# --- имя и хост: из переменных, без процессов ------------------------------------
+# Каталог без whoami и hostname: с USER шаблон их не запускает.
+link_tools nowho bash cat jq git
+_extra=(USER=alice HOSTNAME=box.example.org)
+fixture -
+run nowho - - nowait
+check 'USER и HOSTNAME: имя и короткий хост' "${_out%%:*}" $'\033[01;32m'"alice@box${_z}"
+check 'USER и HOSTNAME: код возврата' "${_rc}" 0
+check 'USER и HOSTNAME: stderr пуст' "${_err}" ''
+# USER пуст или не задан — whoami.
+for _v in USER= HOSTNAME=box; do
+  _extra=("${_v}" HOSTNAME=box)
+  run ok - - nowait
+  check "${_v}: имя из whoami" "${_out%%:*}" $'\033[01;32m'"$(env -i "PATH=${_root}/ok" whoami)@box${_z}"
+  check "${_v}: код возврата" "${_rc}" 0
+done
+# Сбой whoami или hostname (нет записи о пользователе, нет утилиты) — пустое
+# имя, строка статуса цела.
+link_tools whofail bash cat jq git
+stub whofail whoami 'echo oops' 'echo "cannot find name" >&2' 'exit 1'
+stub whofail hostname 'echo oops' 'echo "no hostname" >&2' 'exit 1'
+_g=$'\033[01;32m'
+_extra=(HOSTNAME=box)
+run whofail - - nowait
+check 'сбой whoami: имя пусто, строка цела' "${_out}" "${_g}@box${_z}:"$'\033[01;34m'"~/work${_z} | M"
+check 'сбой whoami: код возврата' "${_rc}" 0
+check 'сбой whoami: stderr пуст' "${_err}" ''
+_extra=(USER=alice HOSTNAME=)
+run whofail - - nowait
+check 'сбой hostname: хост пуст, строка цела' "${_out%%:*}" "${_g}alice@${_z}"
+check 'сбой hostname: код возврата' "${_rc}" 0
+check 'сбой hostname: stderr пуст' "${_err}" ''
+run nowho - - nowait
+check 'нет hostname: хост пуст, строка цела' "${_out%%:*}" "${_g}alice@${_z}"
+check 'нет hostname: код возврата' "${_rc}" 0
+check 'нет hostname: stderr пуст' "${_err}" ''
+_extra=(HOSTNAME=box)
+run nowho - - nowait
+check 'нет whoami: имя пусто, строка цела' "${_out%%:*}" "${_g}@box${_z}"
+check 'нет whoami: код возврата' "${_rc}" 0
+check 'нет whoami: stderr пуст' "${_err}" ''
+# HOSTNAME пуст, hostname работает — короткое имя от утилиты.
+stub whofail hostname 'echo "host.example.org"'
+_extra=(USER=alice HOSTNAME=)
+run whofail - - nowait
+check 'HOSTNAME пуст: короткий хост от hostname' "${_out%%:*}" "${_g}alice@host${_z}"
+# Значения окружения — в терминал только очищенными: управляющие символы C0 и
+# C1, перевод строки и смена направления письма убраны, прочий юникод цел.
+_extra=("USER=ro"$'\033'"[2Jot"$'\n'"X"$'\302\233'"1"$'\342\200\256'"жук" "HOSTNAME=h"$'\033'"]0;pwn"$'\a'"x"$'\342\201\246'"é.example")
+run nowho - - nowait
+check 'имя и хост очищены' "${_out%%:*}" "${_g}ro[2JotX1жук@h]0;pwnxé${_z}"
+check 'имя и хост очищены: вывод в одну строку' "$(printf '%s\n' "${_out}" | grep -c '')" 1
+# Края каждого диапазона clean: первый и последний символ убираются, соседние
+# снаружи остаются. clean_check <описание> <значение USER> <ожидаемое имя>
+clean_check() {
+  _extra=("USER=$2" HOSTNAME=h)
+  run nowho - - nowait
+  check "очистка: $1" "${_out%%:*}" "${_g}$3@h${_z}"
+}
+clean_check 'C0: U+0001 и U+001F' "a"$'\001'"b"$'\037'"c d" 'abc d'
+clean_check 'DEL' "a"$'\177'"b~" 'ab~'
+clean_check 'C1: U+0080 и U+009F' "a"$'\302\200'"b"$'\302\237'"c" 'abc'
+clean_check 'рядом с C1: U+00A0 остаётся' "a"$'\302\240'"b" "a"$'\302\240'"b"
+clean_check 'U+061C' "a"$'\330\234'"b"$'\330\233'"c" "ab"$'\330\233'"c"
+clean_check 'U+200B и U+200F' "a"$'\342\200\213'"b"$'\342\200\217'"c" 'abc'
+clean_check 'рядом: U+200A и U+2010 остаются' "a"$'\342\200\212'"b"$'\342\200\220'"c" "a"$'\342\200\212'"b"$'\342\200\220'"c"
+clean_check 'U+2028 и U+202E' "a"$'\342\200\250'"b"$'\342\200\256'"c" 'abc'
+clean_check 'рядом: U+2027 и U+202F остаются' "a"$'\342\200\247'"b"$'\342\200\257'"c" "a"$'\342\200\247'"b"$'\342\200\257'"c"
+clean_check 'U+2060 и U+206F' "a"$'\342\201\240'"b"$'\342\201\257'"c" 'abc'
+clean_check 'рядом: U+205F и U+2070 остаются' "a"$'\342\201\237'"b"$'\342\201\260'"c" "a"$'\342\201\237'"b"$'\342\201\260'"c"
+clean_check 'U+FEFF' "a"$'\357\273\277'"b"$'\357\273\276'"c" "ab"$'\357\273\276'"c"
+clean_check 'теги U+E0000 и U+E007F' "a"$'\363\240\200\200'"b"$'\363\240\201\277'"c" 'abc'
+clean_check 'рядом с тегами: U+E0080 остаётся' "a"$'\363\240\202\200'"b" "a"$'\363\240\202\200'"b"
+# Склейка: внутри пары C1 спрятана другая запрещённая последовательность — после
+# её удаления остаток не должен сложиться в U+009B.
+clean_check 'вложенная вставка: U+2028 внутри C1' "x"$'\302\342\200\250\233'"2J" 'x2J'
+clean_check 'вложенная вставка: U+2066 внутри U+202E' "x"$'\342\200\342\201\246\256'"y" 'xy'
+clean_check 'вложенная вставка: трижды' "x"$'\302\342\200\342\201\246\250\233'"y" 'xy'
+clean_check 'вложенная вставка: BEL внутри C1' "x"$'\302\a\233'"y" 'xy'
+# Предел проходов: семь уровней вложенности ещё чистятся, восемь — значение
+# отбрасывается целиком; время на враждебном значении ограничено.
+# nested <глубина>: C1-пара, в которую глубина раз вложена та же пара.
+nested() {
+  local _i _head="" _tail=""
+  for ((_i = 0; _i < $1; _i++)); do
+    _head+=$'\302'
+    _tail+=$'\233'
+  done
+  printf '%s%s' "${_head}" "${_tail}"
+}
+clean_check 'вложенность 7 — очищено' "a$(nested 7)b" 'ab'
+clean_check 'вложенность 8 — значение отброшено' "a$(nested 8)b" ''
+clean_check 'враждебное значение 16 КБ — отброшено' "a$(nested 8000)b" ''
+check "враждебное значение 16 КБ: скрипт не ждёт (${_ms} мс)" "$((_ms < 1500 ? 1 : 0))" 1
+# То же в UTF-8-локалях машины и в режиме диапазонов по порядку сортировки (так
+# работал bash до 5.0): очистка идёт по байтам и от локали не зависит.
+# Грязные имя, хост и ветка разом; репозиторий с грязной веткой — свой.
+_dirty="ro"$'\033'"[2Jot"$'\n'"X"$'\302\233'"1"$'\342\200\256'"жук"
+_dirty_host="h"$'\033'"]0;pwn"$'\a'"x"$'\342\201\246'"é"
+_lrepo="${_root}/locrepo"
+mkdir -p "${_lrepo}"
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_lrepo}" init -q -b trunk >/dev/null 2>&1
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_lrepo}" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init >/dev/null 2>&1
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_lrepo}" checkout -q -b "x"$'\302\233'"31mY"$'\342\200\256'"Zжук" >/dev/null 2>&1
+jq -n --arg d "${_lrepo}" '{model:{display_name:"M"},workspace:{current_dir:$d}}' >"${_fx}"
+_locs="$(locale -a 2>/dev/null | grep -i -E '^(C|en_US|ru_RU)\.utf-?8$')"
+_opts=(-O)
+if bash +O globasciiranges -c : 2>/dev/null; then
+  _opts+=(+O)
+else
+  printf 'ПРОПУСК: у bash нет опции globasciiranges — режим диапазонов по сортировке не проверен\n'
+fi
+if [[ -z "${_locs}" ]]; then
+  printf 'ПРОПУСК: на машине нет UTF-8-локалей (C, en_US, ru_RU) — очистка в локалях не проверена\n'
+fi
+for _loc in ${_locs}; do
+  for _opt in "${_opts[@]}"; do
+    _o="$(env -i "PATH=${_root}/ok" "HOME=${_root}" "USER=${_dirty}" "HOSTNAME=${_dirty_host}" "LC_ALL=${_loc}" \
+      bash "${_opt}" globasciiranges "${_tpl}" <"${_fx}" 2>&1)"
+    check "очистка в локали ${_loc}, ${_opt} globasciiranges: имя и хост" "${_o%%:*}" "${_g}ro[2JotX1жук@h]0;pwnxé${_z}"
+    check "очистка в локали ${_loc}, ${_opt} globasciiranges: ветка" "${_o##* | }" $'\xee\x82\xa0 x31mYZжук'
+    check "очистка в локали ${_loc}, ${_opt} globasciiranges: одна строка" "$(printf '%s\n' "${_o}" | grep -c '')" 1
+  done
+done
+# Папка и название модели — тот же набор (shown в jq).
+_hid=$'\330\234\342\200\213\342\200\217\342\200\250\342\200\256\342\201\240\342\201\246\342\201\257\357\273\277\363\240\200\201'
+jq -n --arg d "/nodir/a${_hid}b"$'\302\240'"c" --arg m "Op${_hid}us"$'\342\200\220'"X" '{model:{display_name:$m},cwd:$d}' >"${_fx}"
+_extra=()
+run ok - - nowait
+check 'папка: невидимые знаки убраны' "${_out%% | *}" "${_out%%:*}:"$'\033[01;34m'"/nodir/ab"$'\302\240'"c${_z}"
+check 'модель: невидимые знаки убраны' "${_out#* | }" "Opus"$'\342\200\220'"X"
+# Только невидимые знаки: модель — «?», папка показывается пустой.
+jq -n --arg d "${_hid}" --arg m "${_hid}" '{model:{display_name:$m},cwd:$d}' >"${_fx}"
+run ok - - nowait
+check 'папка из одних невидимых знаков — пусто' "${_out%% | *}" "${_out%%:*}:"$'\033[01;34m'"${_z}"
+check 'модель из одних невидимых знаков — «?»' "${_out#* | }" '?'
+_extra=()
+
+# --- git: один вызов; репозиторий без коммитов — ветки нет -------------------------
+link_tools gitlog bash cat jq whoami hostname
+stub gitlog git "echo git >>\"${_root}/git.calls\"" "exec \"$(command -v git)\" \"\$@\""
+: >"${_root}/git.calls"
+jq -n --arg d "${_repo}" '{model:{display_name:"M"},workspace:{current_dir:$d}}' >"${_fx}"
+run gitlog - - nowait
+check 'git: ветка найдена' "${_out#* | }" $'M | \xee\x82\xa0 trunk'
+check 'git: один вызов' "$(grep -c '' "${_root}/git.calls")" 1
+_empty="${_root}/empty"
+mkdir -p "${_empty}"
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_empty}" init -q -b trunk >/dev/null 2>&1
+jq -n --arg d "${_empty}" '{model:{display_name:"M"},workspace:{current_dir:$d}}' >"${_fx}"
+run ok - - nowait
+check 'репозиторий без коммитов: ветки нет' "${_out#* | }" 'M'
+check 'репозиторий без коммитов: код возврата' "${_rc}" 0
+check 'репозиторий без коммитов: stderr пуст' "${_err}" ''
+# Имя ветки — из репозитория, который может быть чужим: в терминал очищенным.
+_bad="x"$'\302\233'"31mY"$'\342\200\256'"Z"$'\342\201\247'"é"
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_repo}" checkout -q -b "${_bad}" >/dev/null 2>&1
+jq -n --arg d "${_repo}" '{model:{display_name:"M"},workspace:{current_dir:$d}}' >"${_fx}"
+run ok - - nowait
+check 'имя ветки очищено' "${_out#* | }" $'M | \xee\x82\xa0 x31mYZé'
 
 printf 'pass=%s fail=%s\n' "${_pass}" "${_fail}"
 [[ "${_fail}" -eq 0 ]]
