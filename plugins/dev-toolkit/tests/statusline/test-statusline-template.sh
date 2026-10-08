@@ -882,13 +882,24 @@ done
 narrow 0020 NO_COLOR=1
 check 'COLUMNS=0020: три строки' "${_out}" "${_n3}"
 
-# Мост в tmux от ступени не зависит.
-_extra=("STATUSLINE_NOW=${_now}" USER=u HOSTNAME=h NO_COLOR=1 COLUMNS=30)
-run ok "${_T}" %7
-_extra=()
-check 'узкий экран в tmux: вывод — три строки' "${_out}" "${_n3}"
-check 'узкий экран в tmux: вызов моста' "$(cat "${_log}")" \
-  "timeout [-s] [KILL] [1] [tmux] [if] [-F] [-t] [%7] [${_cond_pre}#{!=:#{@claude_ctx},42},0}] [set -p -t %7 @claude_ctx 42] ${_null}"
+# Мост в tmux от ступени не зависит: вызов один и тот же на средней (ширина
+# 79), сжатой (61), в двух строках (40) и в трёх (30).
+_bridge="timeout [-s] [KILL] [1] [tmux] [if] [-F] [-t] [%7] [${_cond_pre}#{!=:#{@claude_ctx},42},0}] [set -p -t %7 @claude_ctx 42] ${_null}"
+for _v in "79:${_nm}" "61:${_nc}" "40:${_nt}" "30:${_n3}"; do
+  _extra=("STATUSLINE_NOW=${_now}" USER=u HOSTNAME=h NO_COLOR=1 "COLUMNS=${_v%%:*}")
+  run ok "${_T}" %7
+  _extra=()
+  check "узкий экран в tmux, ширина ${_v%%:*}: вывод" "${_out}" "${_v#*:}"
+  check "узкий экран в tmux, ширина ${_v%%:*}: вызов моста" "$(cat "${_log}")" "${_bridge}"
+done
+
+# Кириллица в папке: знаки, а не байты.
+_cyr="${_root}/папка-проекта"
+mkdir -p "${_cyr}"
+small_fixture "${_cyr}"
+# shellcheck disable=SC2088 # «~» — текст строки статуса, а не путь
+fits_check 'кириллица в папке, средняя' "~/папка-проекта | Opus 5.5 | Ctx 42%" 'Ctx 42%' NO_COLOR=1
+narrow_fixture "${_nrepo}"
 
 # Цвета в длину не входят: на границе с цветами выбирается та же ступень, что
 # без них, — для каждого цвета (зелёный и синий — полная строка, красный —
