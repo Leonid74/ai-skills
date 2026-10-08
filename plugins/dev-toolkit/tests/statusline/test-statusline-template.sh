@@ -648,15 +648,48 @@ clean_check 'вложенная вставка: U+2028 внутри C1' "x"$'\30
 clean_check 'вложенная вставка: U+2066 внутри U+202E' "x"$'\342\200\342\201\246\256'"y" 'xy'
 clean_check 'вложенная вставка: трижды' "x"$'\302\342\200\342\201\246\250\233'"y" 'xy'
 clean_check 'вложенная вставка: BEL внутри C1' "x"$'\302\a\233'"y" 'xy'
+# Предел проходов: семь уровней вложенности ещё чистятся, восемь — значение
+# отбрасывается целиком; время на враждебном значении ограничено.
+# nested <глубина>: C1-пара, в которую глубина раз вложена та же пара.
+nested() {
+  local _i _head="" _tail=""
+  for ((_i = 0; _i < $1; _i++)); do
+    _head+=$'\302'
+    _tail+=$'\233'
+  done
+  printf '%s%s' "${_head}" "${_tail}"
+}
+clean_check 'вложенность 7 — очищено' "a$(nested 7)b" 'ab'
+clean_check 'вложенность 8 — значение отброшено' "a$(nested 8)b" ''
+clean_check 'враждебное значение 16 КБ — отброшено' "a$(nested 8000)b" ''
+check "враждебное значение 16 КБ: скрипт не ждёт (${_ms} мс)" "$((_ms < 1500 ? 1 : 0))" 1
 # То же в UTF-8-локалях машины и в режиме диапазонов по порядку сортировки (так
 # работал bash до 5.0): очистка идёт по байтам и от локали не зависит.
+# Грязные имя, хост и ветка разом; репозиторий с грязной веткой — свой.
 _dirty="ro"$'\033'"[2Jot"$'\n'"X"$'\302\233'"1"$'\342\200\256'"жук"
-jq -n --arg d "${_work}" '{model:{display_name:"M"},workspace:{current_dir:$d}}' >"${_fx}"
-for _loc in $(locale -a 2>/dev/null | grep -i -E '^(C|en_US|ru_RU)\.utf-?8$'); do
-  for _opt in -O +O; do
-    _o="$(env -i "PATH=${_root}/nowho" "HOME=${_root}" "USER=${_dirty}" HOSTNAME=h "LC_ALL=${_loc}" \
+_dirty_host="h"$'\033'"]0;pwn"$'\a'"x"$'\342\201\246'"é"
+_lrepo="${_root}/locrepo"
+mkdir -p "${_lrepo}"
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_lrepo}" init -q -b trunk >/dev/null 2>&1
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_lrepo}" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init >/dev/null 2>&1
+env -i "PATH=${_root}/ok" "HOME=${_root}" git -C "${_lrepo}" checkout -q -b "x"$'\302\233'"31mY"$'\342\200\256'"Zжук" >/dev/null 2>&1
+jq -n --arg d "${_lrepo}" '{model:{display_name:"M"},workspace:{current_dir:$d}}' >"${_fx}"
+_locs="$(locale -a 2>/dev/null | grep -i -E '^(C|en_US|ru_RU)\.utf-?8$')"
+_opts=(-O)
+if bash +O globasciiranges -c : 2>/dev/null; then
+  _opts+=(+O)
+else
+  printf 'ПРОПУСК: у bash нет опции globasciiranges — режим диапазонов по сортировке не проверен\n'
+fi
+if [[ -z "${_locs}" ]]; then
+  printf 'ПРОПУСК: на машине нет UTF-8-локалей (C, en_US, ru_RU) — очистка в локалях не проверена\n'
+fi
+for _loc in ${_locs}; do
+  for _opt in "${_opts[@]}"; do
+    _o="$(env -i "PATH=${_root}/ok" "HOME=${_root}" "USER=${_dirty}" "HOSTNAME=${_dirty_host}" "LC_ALL=${_loc}" \
       bash "${_opt}" globasciiranges "${_tpl}" <"${_fx}" 2>&1)"
-    check "очистка в локали ${_loc}, ${_opt} globasciiranges" "${_o%%:*}" "${_g}ro[2JotX1жук@h${_z}"
+    check "очистка в локали ${_loc}, ${_opt} globasciiranges: имя и хост" "${_o%%:*}" "${_g}ro[2JotX1жук@h]0;pwnxé${_z}"
+    check "очистка в локали ${_loc}, ${_opt} globasciiranges: ветка" "${_o##* | }" $'\xee\x82\xa0 x31mYZжук'
     check "очистка в локали ${_loc}, ${_opt} globasciiranges: одна строка" "$(printf '%s\n' "${_o}" | grep -c '')" 1
   done
 done
@@ -667,6 +700,11 @@ _extra=()
 run ok - - nowait
 check 'папка: невидимые знаки убраны' "${_out%% | *}" "${_out%%:*}:"$'\033[01;34m'"/nodir/ab"$'\302\240'"c${_z}"
 check 'модель: невидимые знаки убраны' "${_out#* | }" "Opus"$'\342\200\220'"X"
+# Только невидимые знаки: модель — «?», папка показывается пустой.
+jq -n --arg d "${_hid}" --arg m "${_hid}" '{model:{display_name:$m},cwd:$d}' >"${_fx}"
+run ok - - nowait
+check 'папка из одних невидимых знаков — пусто' "${_out%% | *}" "${_out%%:*}:"$'\033[01;34m'"${_z}"
+check 'модель из одних невидимых знаков — «?»' "${_out#* | }" '?'
 _extra=()
 
 # --- git: один вызов; репозиторий без коммитов — ветки нет -------------------------
