@@ -72,7 +72,10 @@ bash plugins/dev-toolkit/tests/statusline/test-statusline-template.sh
 **Живой tmux не трогать.** Нельзя убивать или останавливать сервер tmux, в котором работает Claude:
 никаких `kill-server`/`kill-session`/`kill-window`/`kill-pane`, `respawn-*`, сигналов по pid сервера —
 ни самому, ни субагентам. Эксперименты с настоящим tmux — только на отдельном сервере и со снятыми
-`TMUX`/`TMUX_PANE`: `env -u TMUX -u TMUX_PANE TMUX_TMPDIR=<каталог> tmux -L <имя> …`. Одного `-L` или
+`TMUX`/`TMUX_PANE` и без конфигурации владельца: `env -u TMUX -u TMUX_PANE TMUX_TMPDIR=<каталог> tmux -L <имя> -f /dev/null …`.
+Без `-f /dev/null` тестовый сервер читает `~/.tmux.conf`: continuum восстанавливает в нём сессии владельца
+и через 10 минут перезаписал бы его снимок resurrect (так чуть не случилось 08.10.2026); `<каталог>` —
+короткий (`mktemp -d /tmp/x.XXXXXX`), иначе путь сокета длиннее предела. Одного `-L` или
 одного `TMUX_TMPDIR` мало: внутри tmux переменная `TMUX` унаследована и важнее `TMUX_TMPDIR`, так что
 «голый» `tmux kill-server` в тестовом скрипте убивает живой сервер вместе с сессией Claude (так
 случилось 03.10.2026). Тестовые скрипты начинать с `unset TMUX TMUX_PANE`; субагентам давать готовую
