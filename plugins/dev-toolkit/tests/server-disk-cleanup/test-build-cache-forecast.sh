@@ -45,8 +45,10 @@ chmod 555 "${_root}/ro/W"
 # полей шаблона и номера полей в awk — одна пара, заглушка её закрепляет.
 export STUB_TEMPLATE='{{range .BuildCache}}{{.ID}}|{{.Parent}}|{{.Shared}}|{{.InUse}}|{{.CacheType}}|{{.Size}}|{{.LastUsedAt}}\n{{end}}'
 
-# Заглушка docker: `buildx version` — по STUB_BUILDX: yes — код 0; no — код 1 и
-# сообщение Docker об отсутствующем плагине; broken — код 1 с другим текстом;
+# Заглушка docker: `buildx version` — по STUB_BUILDX: yes — код 0; no и old —
+# код 1 и сообщение docker CLI об отсутствующем плагине (новая и старая форма);
+# sub — код 1 и ошибка самого buildx «unknown command» (плагин есть, подкоманды
+# нет); любое другое значение — код 1 с посторонним текстом (сбой);
 # `buildx inspect` печатает драйвер из STUB_DRIVER (пусто — код 1 без вывода);
 # `system df` отдаёт STUB_FIXTURE с кодом STUB_DF_RC, только если аргументы —
 # ровно `-v --format <шаблон>`. Любой другой вызов — ошибка теста.
@@ -63,6 +65,10 @@ case "$1 $2" in
         ;;
       old)
         echo "docker: 'buildx' is not a docker command." >&2
+        exit 1
+        ;;
+      sub)
+        echo 'ERROR: unknown command: "version"' >&2
         exit 1
         ;;
       *)
@@ -152,7 +158,7 @@ rec() { printf '%s|%s|%s|%s|%s|%s|%s\n' "$@" >>"${_fx}"; }
 new_fixture() { : >"${_fx}"; }
 
 # run_block <каталог awk>: вывод блока — в _out. Переменные вектора: DRIVER
-# (драйвер builder'а), BUILDX (yes|no), DF_RC, CWD (каталог запуска), PRE
+# (драйвер builder'а), BUILDX (yes|no|old|sub|иное — см. заглушку), DF_RC, CWD (каталог запуска), PRE
 # (каталог с подменой date или awk, в PATH раньше остальных), LOC (локаль).
 # Пояс запуска — не UTC: потеря `-u` у date в блоке иначе не видна на UTC-машине.
 # stderr блока идёт в тот же вывод: постороннее сообщение роняет вектор.
@@ -407,6 +413,7 @@ rec old1 "" false false regular 100MB "${OLD}"
 DRIVER=docker-container check_undefined "текущий builder не с драйвером docker" "docker-container"
 DRIVER="" check_undefined "buildx есть, а inspect не назвал драйвер" "не назвал драйвер"
 BUILDX=broken check_undefined "docker buildx version упал не из-за отсутствия плагина" "не назвал драйвер"
+BUILDX=sub check_undefined "ошибка самого buildx со словами unknown command — не «плагина нет»" "не назвал драйвер"
 PRE="${_root}/timeout-127" check_undefined "нет утилиты timeout" "не назвал драйвер"
 DF_RC=1 check_undefined "docker system df завершился с ошибкой" "завершился с кодом 1"
 CWD="${_root}/now" check_undefined "каталога W нет" "W недоступен"
