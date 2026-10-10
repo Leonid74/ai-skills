@@ -73,6 +73,8 @@ bash plugins/dev-toolkit/tests/statusline/test-statusline-template.sh
 Для блока «прогноз для кеша сборки» (`# build-cache-forecast` в
 `plugins/dev-toolkit/skills/server-disk-cleanup/SKILL.md`) — тест на фикстурах с заглушкой `docker` в
 `PATH`, под всеми найденными awk (`gawk`, `mawk`, `busybox awk`); настоящий Docker он не вызывает.
+Вектору локали нужны `mawk` и `localedef` — без них тест падает (осознанный пропуск —
+`SKIP_LOCALE_VECTOR=1`); под root пропускается вектор «`W` только для чтения» — итоговая строка это называет.
 Мутационная проверка — `BUILD_CACHE_FORECAST=<копия блока>`. Проверки на живом кеше сборки — только
 в одноразовом dockerd (`docker:dind`), не на кеше хоста: он общий с деплоем.
 

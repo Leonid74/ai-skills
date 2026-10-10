@@ -45,17 +45,31 @@ chmod 555 "${_root}/ro/W"
 # полей шаблона и номера полей в awk — одна пара, заглушка её закрепляет.
 export STUB_TEMPLATE='{{range .BuildCache}}{{.ID}}|{{.Parent}}|{{.Shared}}|{{.InUse}}|{{.CacheType}}|{{.Size}}|{{.LastUsedAt}}\n{{end}}'
 
-# Заглушка docker: `buildx version` — код 0, если STUB_BUILDX=yes; `buildx
-# inspect` печатает драйвер из STUB_DRIVER (пусто — код 1 без вывода); `system
-# df` отдаёт STUB_FIXTURE с кодом STUB_DF_RC, только если аргументы — ровно
-# `-v --format <шаблон>`. Любой другой вызов — ошибка теста.
+# Заглушка docker: `buildx version` — по STUB_BUILDX: yes — код 0; no — код 1 и
+# сообщение Docker об отсутствующем плагине; broken — код 1 с другим текстом;
+# `buildx inspect` печатает драйвер из STUB_DRIVER (пусто — код 1 без вывода);
+# `system df` отдаёт STUB_FIXTURE с кодом STUB_DF_RC, только если аргументы —
+# ровно `-v --format <шаблон>`. Любой другой вызов — ошибка теста.
 mkdir -p "${_root}/stub"
 cat >"${_root}/stub/docker" <<'EOF'
 #!/usr/bin/env bash
 case "$1 $2" in
   "buildx version")
-    [[ "${STUB_BUILDX:-yes}" == yes ]] || exit 1
-    echo "github.com/docker/buildx v0.0.0"
+    case "${STUB_BUILDX:-yes}" in
+      yes) echo "github.com/docker/buildx v0.0.0" ;;
+      no)
+        echo "docker: unknown command: docker buildx" >&2
+        exit 1
+        ;;
+      old)
+        echo "docker: 'buildx' is not a docker command." >&2
+        exit 1
+        ;;
+      *)
+        echo "Killed" >&2
+        exit 1
+        ;;
+    esac
     ;;
   "buildx inspect")
     [[ -n "${STUB_DRIVER:-}" ]] || exit 1
@@ -94,18 +108,30 @@ if [[ ${#_awks[@]} -eq 0 ]]; then
   _awk_names=("системный awk")
 fi
 
-# Заглушки отказов. awk-fail: первый вызов блока (поиск строки Driver) отдаётся
-# настоящему awk, расчёт завершается кодом 3. date-*: `date +%s` — настоящий,
-# вызов с -u — пусто с кодом 1 либо строка другого формата.
-_real_awk="$(command -v awk)"
-_real_date="$(command -v date)"
-mkdir -p "${_root}/awk-fail" "${_root}/date-empty" "${_root}/date-junk"
-printf '#!/bin/sh\ncase "$*" in *Driver:*) exec %s "$@" ;; esac\nexit 3\n' "${_real_awk}" >"${_root}/awk-fail/awk"
-# shellcheck disable=SC2016  # `$1`, `$@` — текст заглушки, раскрываться не должны
-printf '#!/bin/sh\ncase "$1" in -u) exit 1 ;; esac\nexec %s "$@"\n' "${_real_date}" >"${_root}/date-empty/date"
-# shellcheck disable=SC2016
-printf '#!/bin/sh\ncase "$1" in -u) echo "Sat Oct  3 12:00:00 UTC 2026"; exit 0 ;; esac\nexec %s "$@"\n' "${_real_date}" >"${_root}/date-junk/date"
-chmod +x "${_root}/awk-fail/awk" "${_root}/date-empty/date" "${_root}/date-junk/date"
+# Заглушки отказов (каталог ставится в PATH раньше остальных через PRE). Путь к
+# настоящим утилитам они берут из окружения, а не из своего текста.
+#   awk-fail:  поиск строки Driver отдаёт настоящему awk; расчёт печатает одну
+#              строку с числом и завершается кодом 3;
+#   date-*:    `date +%s` — настоящий; вызов с -u — пусто с кодом 1 либо строка
+#              другого формата;
+#   date-fixed: `date +%s` — фиксированная эпоха FIXED_NOW, остальное — настоящий;
+#   timeout-*: команду не запускают, завершаются кодом 124 либо 127.
+export REAL_AWK REAL_DATE
+REAL_AWK="$(command -v awk)"
+REAL_DATE="$(command -v date)"
+mkdir -p "${_root}/awk-fail" "${_root}/date-empty" "${_root}/date-junk" "${_root}/date-fixed" \
+  "${_root}/timeout-124" "${_root}/timeout-127"
+# shellcheck disable=SC2016  # `$1`, `$@`, `${REAL_…}` — текст заглушек, раскрываются при их запуске
+{
+  printf '#!/bin/sh\ncase "$*" in *Driver:*) exec "${REAL_AWK}" "$@" ;; esac\n' >"${_root}/awk-fail/awk"
+  printf 'echo "прогноз: 500 МБ (записей: 1 из 1; всего в кеше 500 МБ)"\nexit 3\n' >>"${_root}/awk-fail/awk"
+  printf '#!/bin/sh\ncase "$1" in -u) exit 1 ;; esac\nexec "${REAL_DATE}" "$@"\n' >"${_root}/date-empty/date"
+  printf '#!/bin/sh\ncase "$1" in -u) echo "Sat Oct  3 12:00:00 UTC 2026"; exit 0 ;; esac\nexec "${REAL_DATE}" "$@"\n' >"${_root}/date-junk/date"
+  printf '#!/bin/sh\ncase "$1" in +%%s) echo "${FIXED_NOW}"; exit 0 ;; esac\nexec "${REAL_DATE}" "$@"\n' >"${_root}/date-fixed/date"
+  printf '#!/bin/sh\nexit 124\n' >"${_root}/timeout-124/timeout"
+  printf '#!/bin/sh\nexit 127\n' >"${_root}/timeout-127/timeout"
+}
+chmod +x "${_root}/awk-fail/awk" "${_root}"/date-*/date "${_root}"/timeout-*/timeout
 
 # Время записей: «старая» — 30 суток назад, «свежая» — час назад; порог блока —
 # 168 ч. Граница: на минуту старше и на минуту моложе порога. stamp вызывается
@@ -129,12 +155,13 @@ new_fixture() { : >"${_fx}"; }
 # (драйвер builder'а), BUILDX (yes|no), DF_RC, CWD (каталог запуска), PRE
 # (каталог с подменой date или awk, в PATH раньше остальных), LOC (локаль).
 # Пояс запуска — не UTC: потеря `-u` у date в блоке иначе не видна на UTC-машине.
+# stderr блока идёт в тот же вывод: постороннее сообщение роняет вектор.
 run_block() {
   local _path="${_root}/stub:$1:${PATH}"
   [[ -n "${PRE:-}" ]] && _path="${_root}/stub:${PRE}:$1:${PATH}"
   _out="$(cd "${CWD:-${_cwd}}" && TZ=XXX-3 STUB_DRIVER="${DRIVER-docker}" STUB_BUILDX="${BUILDX:-yes}" \
     STUB_FIXTURE="${_fx}" STUB_DF_RC="${DF_RC:-0}" LC_ALL="${LOC:-C}" LOCPATH="${LOCDIR:-}" \
-    PATH="${_path}" bash "${_blk}" 2>/dev/null)"
+    PATH="${_path}" bash "${_blk}" 2>&1)"
 }
 ok() { _pass=$((_pass + 1)); }
 bad() { # bad <каталог awk> <имя> <ожидалось>
@@ -142,7 +169,8 @@ bad() { # bad <каталог awk> <имя> <ожидалось>
   printf 'FAIL [%s] %s\n  ожидалось: %s\n  получено:  %s\n' "${1##*/}" "$2" "$3" "${_out}"
 }
 
-# check <имя> <первая строка> [<вторая строка> [<третья строка>]]
+# check <имя> <первая строка> [<вторая строка> [<третья строка>]]: названные
+# строки сверяются точно; вывод — ровно три строки, четвёртой быть не должно.
 check() {
   local _name="$1" _dir _i _want _all
   for _dir in "${_awks[@]}"; do
@@ -153,7 +181,8 @@ check() {
       [[ -z "${_want}" ]] && continue
       [[ "$(sed -n "${_i}p" <<<"${_out}")" == "${_want}" ]] || _all=0
     done
-    if [[ ${_all} -eq 1 ]]; then ok; else bad "${_dir}" "${_name}" "${*:2}"; fi
+    [[ "$(wc -l <<<"${_out}")" -eq 3 ]] || _all=0
+    if [[ ${_all} -eq 1 ]]; then ok; else bad "${_dir}" "${_name}" "${*:2} — ровно три строки"; fi
   done
 }
 # check_undefined <имя> <слово из причины>: вывод — ровно одна строка «прогноз:
@@ -179,7 +208,7 @@ rec new1 "" false false regular 50MB "${FRESH}"
 check "старая, необщая, без потомков — входит" \
   "прогноз: 100 МБ (записей: 1 из 2; всего в кеше 150 МБ)" \
   "остаются: свежие 50 МБ; общие с образами 0 МБ; занятые и служебные 0 МБ; предки остающихся 0 МБ" \
-  "необщая часть кеша: 150 МБ; в прогнозе записи без времени использования: 0 МБ"
+  "незанятые записи: необщие 150 МБ, все 150 МБ; в прогнозе записи без времени использования: 0 МБ"
 
 new_fixture
 rec base "" false false regular 100MB "${OLD}"
@@ -192,10 +221,10 @@ check "старые предки свежей (через поколение) �
 new_fixture
 rec sh1 "" true false regular 100MB "${OLD}"
 rec priv1 "" false false regular 7MB "${FRESH}"
-check "старая общая с образом — не входит; необщая часть считается отдельно" \
+check "старая общая с образом — не входит; необщие считаются отдельно" \
   "прогноз: 0 МБ (записей: 0 из 2; всего в кеше 107 МБ)" \
   "остаются: свежие 7 МБ; общие с образами 100 МБ; занятые и служебные 0 МБ; предки остающихся 0 МБ" \
-  "необщая часть кеша: 7 МБ; в прогнозе записи без времени использования: 0 МБ"
+  "незанятые записи: необщие 7 МБ, все 107 МБ; в прогнозе записи без времени использования: 0 МБ"
 
 # --- Граф ---------------------------------------------------------------------
 
@@ -257,7 +286,7 @@ rec nodate base false false regular 30MB ""
 check "запись без времени использования входит вместе с предком" \
   "прогноз: 130 МБ (записей: 2 из 2; всего в кеше 130 МБ)" \
   "остаются: свежие 0 МБ; общие с образами 0 МБ; занятые и служебные 0 МБ; предки остающихся 0 МБ" \
-  "необщая часть кеша: 130 МБ; в прогнозе записи без времени использования: 30 МБ"
+  "незанятые записи: необщие 130 МБ, все 130 МБ; в прогнозе записи без времени использования: 30 МБ"
 
 new_fixture
 rec base "" false false regular 100MB "${OLD}"
@@ -265,7 +294,37 @@ rec nodate base true false regular 30MB ""
 check "общая запись без времени использования остаётся и держит предка" \
   "прогноз: 0 МБ (записей: 0 из 2; всего в кеше 130 МБ)" \
   "остаются: свежие 0 МБ; общие с образами 30 МБ; занятые и служебные 0 МБ; предки остающихся 100 МБ" \
-  "необщая часть кеша: 100 МБ; в прогнозе записи без времени использования: 0 МБ"
+  "незанятые записи: необщие 100 МБ, все 130 МБ; в прогнозе записи без времени использования: 0 МБ"
+
+# Слой идущей сборки: занят и ещё без времени использования — остаётся и держит
+# старых предков; в «незанятые» не входит.
+new_fixture
+rec base "" false false regular 100MB "${OLD}"
+rec busy base false true regular 30MB ""
+check "занятая запись без времени использования остаётся и держит предка" \
+  "прогноз: 0 МБ (записей: 0 из 2; всего в кеше 130 МБ)" \
+  "остаются: свежие 0 МБ; общие с образами 0 МБ; занятые и служебные 30 МБ; предки остающихся 100 МБ" \
+  "незанятые записи: необщие 100 МБ, все 100 МБ; в прогнозе записи без времени использования: 0 МБ"
+
+new_fixture
+rec fs "" true false regular 10MB "${FRESH}"
+rec fb "" false true regular 20MB "${FRESH}"
+check "свежая запись остаётся «свежей», даже если она общая или занятая" \
+  "прогноз: 0 МБ (записей: 0 из 2; всего в кеше 30 МБ)" \
+  "остаются: свежие 30 МБ; общие с образами 0 МБ; занятые и служебные 0 МБ; предки остающихся 0 МБ" \
+  "незанятые записи: необщие 0 МБ, все 10 МБ; в прогнозе записи без времени использования: 0 МБ"
+
+# Точная граница: «сейчас» блока зафиксировано заглушкой date, секунды границы —
+# :30. Запись ровно на границе и на 10 с моложе — свежие, на секунду старше — нет.
+export FIXED_NOW=1800000030
+_cut_epoch=$((FIXED_NOW - 604800))
+tsx() { date -u -d "@$1" '+%Y-%m-%d %H:%M:%S.000000001 +0000 UTC'; }
+new_fixture
+rec at "" false false regular 10MB "$(tsx "${_cut_epoch}")"
+rec plus10 "" false false regular 20MB "$(tsx "$((_cut_epoch + 10))")"
+rec minus1 "" false false regular 40MB "$(tsx "$((_cut_epoch - 1))")"
+PRE="${_root}/date-fixed" check "граница до секунды: ровно на границе и +10 с — свежие, −1 с — старая" \
+  "прогноз: 40 МБ (записей: 1 из 3; всего в кеше 70 МБ)"
 
 stamp
 new_fixture
@@ -284,7 +343,8 @@ rec mnt "" false false exec.cachemount 80MB "${OLD}"
 rec src "" false false source.local 160MB "${OLD}"
 check "занятая (ID со звёздочкой), internal и frontend остаются; cachemount и source.local входят" \
   "прогноз: 240 МБ (записей: 2 из 5; всего в кеше 310 МБ)" \
-  "остаются: свежие 0 МБ; общие с образами 0 МБ; занятые и служебные 70 МБ; предки остающихся 0 МБ"
+  "остаются: свежие 0 МБ; общие с образами 0 МБ; занятые и служебные 70 МБ; предки остающихся 0 МБ" \
+  "незанятые записи: необщие 300 МБ, все 300 МБ; в прогнозе записи без времени использования: 0 МБ"
 
 new_fixture
 rec odd1 "" "<no value>" false regular 100MB "${OLD}"
@@ -319,17 +379,25 @@ new_fixture
 check "пустой кеш — прогноз 0" \
   "прогноз: 0 МБ (записей: 0 из 0; всего в кеше 0 МБ)"
 
-# Локаль с десятичной запятой: mawk без LC_ALL=C читает «1.5GB» как 1. Локаль
-# собирается во временный каталог; не собралась — вектор пропускается.
-_loc_note=""
+# Локаль с десятичной запятой: mawk без LC_ALL=C читает «1.5GB» как 1 (gawk и
+# busybox awk — нет, поэтому вектору нужен mawk). Локаль собирается во временный
+# каталог. Нет mawk или localedef не собрал локаль — это падение: без вектора
+# потеря LC_ALL=C пройдёт незамеченной. Осознанный пропуск — SKIP_LOCALE_VECTOR=1.
+_notes=""
 mkdir -p "${_root}/loc"
-if localedef -i ru_RU -f UTF-8 "${_root}/loc/ru_RU.UTF-8" >/dev/null 2>&1; then
+if [[ "${SKIP_LOCALE_VECTOR:-}" == 1 ]]; then
+  _notes+="; вектор локали пропущен (SKIP_LOCALE_VECTOR=1)"
+elif ! command -v mawk >/dev/null 2>&1; then
+  _fail=$((_fail + 1))
+  echo "FAIL вектор локали: нет mawk (осознанный пропуск — SKIP_LOCALE_VECTOR=1)"
+elif ! localedef -i ru_RU -f UTF-8 "${_root}/loc/ru_RU.UTF-8" >/dev/null 2>&1; then
+  _fail=$((_fail + 1))
+  echo "FAIL вектор локали: localedef не собрал ru_RU.UTF-8 (осознанный пропуск — SKIP_LOCALE_VECTOR=1)"
+else
   new_fixture
   rec u4 "" false false regular 1.5GB "${OLD}"
   LOC=ru_RU.UTF-8 LOCDIR="${_root}/loc" check "локаль с десятичной запятой не меняет разбор размера" \
     "прогноз: 1500 МБ (записей: 1 из 1; всего в кеше 1500 МБ)"
-else
-  _loc_note="; вектор локали пропущен — localedef не собрал ru_RU.UTF-8"
 fi
 
 # --- «Не определён» -----------------------------------------------------------
@@ -338,16 +406,42 @@ new_fixture
 rec old1 "" false false regular 100MB "${OLD}"
 DRIVER=docker-container check_undefined "текущий builder не с драйвером docker" "docker-container"
 DRIVER="" check_undefined "buildx есть, а inspect не назвал драйвер" "не назвал драйвер"
-DF_RC=1 check_undefined "docker system df завершился с ошибкой" "не отработал"
+BUILDX=broken check_undefined "docker buildx version упал не из-за отсутствия плагина" "не назвал драйвер"
+PRE="${_root}/timeout-127" check_undefined "нет утилиты timeout" "не назвал драйвер"
+DF_RC=1 check_undefined "docker system df завершился с ошибкой" "завершился с кодом 1"
 CWD="${_root}/now" check_undefined "каталога W нет" "W недоступен"
 if [[ "$(id -u)" -ne 0 ]]; then
   CWD="${_root}/ro" check_undefined "каталог W только для чтения" "W недоступен"
+else
+  _notes+="; вектор «W только для чтения» пропущен — запуск под root"
 fi
-PRE="${_root}/awk-fail" check_undefined "awk расчёта завершился с ошибкой" "awk не отработал"
+PRE="${_root}/awk-fail" check_undefined "awk напечатал строку с числом и упал — число не выводится" "awk не отработал"
 PRE="${_root}/date-empty" check_undefined "date не посчитал границу" "date не посчитал"
 PRE="${_root}/date-junk" check_undefined "date вернул строку другого формата" "граница возраста не разобрана"
-BUILDX=no DRIVER="" check "buildx нет — считается по кешу демона" \
+BUILDX=no DRIVER="" check "buildx нет (unknown command) — считается по кешу демона" \
   "прогноз: 100 МБ (записей: 1 из 1; всего в кеше 100 МБ)"
+BUILDX=old DRIVER="" check "buildx нет (is not a docker command) — считается по кешу демона" \
+  "прогноз: 100 МБ (записей: 1 из 1; всего в кеше 100 МБ)"
+
+# timeout у каждого из трёх вызовов Docker: заглушка timeout возвращает 124 для
+# одного названного вызова, не запуская его, остальные исполняет как есть. Блок
+# без timeout у этого вызова заглушку не заденет и напечатает число.
+# timeout_only <имя каталога> <подстрока командной строки>
+timeout_only() {
+  mkdir -p "${_root}/$1"
+  # shellcheck disable=SC2016  # `$*`, `$@` — текст заглушки
+  printf '#!/bin/sh\ncase "$*" in *"%s"*) exit 124 ;; esac\nshift\nexec "$@"\n' "$2" >"${_root}/$1/timeout"
+  chmod +x "${_root}/$1/timeout"
+}
+timeout_only tmo-df "system df"
+timeout_only tmo-inspect "buildx inspect"
+timeout_only tmo-version "buildx version"
+new_fixture
+rec old1 "" false false regular 100MB "${OLD}"
+PRE="${_root}/tmo-df" check_undefined "docker system df не уложился в таймаут" "не отработал за 60 с"
+PRE="${_root}/tmo-inspect" check_undefined "docker buildx inspect не уложился в таймаут" "не назвал драйвер"
+PRE="${_root}/tmo-version" check_undefined "docker buildx version не уложился в таймаут" "не назвал драйвер"
+PRE="${_root}/timeout-124" check_undefined "все вызовы Docker не уложились в таймаут" "не назвал драйвер"
 
 new_fixture
 rec old1 "" false false regular 100MB "${OLD/+0000 UTC/+0300 MSK}"
@@ -402,5 +496,5 @@ else
   printf 'FAIL порог: T=%s в блоке требует «%s», в тексте: %s\n' "${_t:-<нет>}" "${_want_until}" "${_untils:-<нет>}"
 fi
 
-echo "pass=${_pass} fail=${_fail} (awk: ${_awk_names[*]}${_loc_note})"
+echo "pass=${_pass} fail=${_fail} (awk: ${_awk_names[*]}${_notes})"
 [[ ${_fail} -eq 0 ]]
