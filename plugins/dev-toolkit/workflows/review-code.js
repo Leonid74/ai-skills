@@ -41,8 +41,8 @@ export const meta = {
 // SWEEP_CAP — потолок кандидатов sweep (фаза 2.5); MERGE_* и DEFAULT_WAVE — «Оркестрация фаз 1–2.5»;
 // NO_SELF_SUPPRESS — уровни, где finder не подавляет сам (пункт 1 skip-list); FINDER_FIELDS и
 // CHECK_FIELDS — обязательные поля кандидата («Формат кандидата») и дефекта правки; CHECKERS_MAX и
-// CHECKER_ROWS — число агентов проверки («Режим проверки»); FRAME_QUOTE_MIN — наименьшая длина
-// цитаты строки рамки («Рамка использования»).
+// CHECKER_ROWS — число агентов проверки, MAX_ROW_ID_LENGTH — длина id строки списка («Режим проверки
+// правок»); FRAME_QUOTE_MIN — наименьшая длина цитаты записи рамки («Рамка использования»).
 const LEVELS = {
   medium: { angles: 3, cap: 6, protocol: "skeptic", sweep: false },
   high: { angles: 5, cap: 6, protocol: "recall", sweep: false },
