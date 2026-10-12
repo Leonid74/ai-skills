@@ -125,7 +125,17 @@ function base(level, pass, split) {
  * @returns {object} кандидат по CANDIDATES_SCHEMA.
  */
 function cand(file, line, summary, security = false, category = "correctness") {
-  return { file, line, summary, failure_scenario: "fs", category, security };
+  return {
+    file,
+    line,
+    summary,
+    failure_scenario: "fs",
+    category,
+    security,
+    trigger: "src/a.php:1 — вход",
+    caller_checked: "потребителя нет",
+    base_compared: "внесено этим range",
+  };
 }
 
 /**
@@ -1047,7 +1057,7 @@ console.log("ok 6 проверка args");
   );
   assert.deepEqual(
     metaValue.phases.map((x) => x.title),
-    ["Поиск", "Верификация", "Sweep", "Сводка"],
+    ["Проверка правок", "Поиск", "Верификация", "Sweep", "Сводка"],
   );
   console.log("ok 14 ловушки артефакта");
 }
@@ -1395,3 +1405,880 @@ console.log("ok 22 сильная сессия: последняя линия б
   assert.equal(plain.result.opusSilent, false, "ответы без model — не sonnet");
 }
 console.log("ok 23 слабая сессия без доступа к opus: признак opusSilent");
+
+// 24. Обязательные поля кандидата (trigger, caller_checked, base_compared): кандидат без поля не
+//     принимается и оставляет след; security-кандидат без поля всё равно идёт на верификацию.
+{
+  const bare = (file, line, summary, security, category, drop) => {
+    const c = cand(file, line, summary, security, category);
+    for (const key of drop) c[key] = key === "trigger" ? "   " : undefined;
+    return c;
+  };
+  const { result, calls } = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o)) {
+      if (!o.label.startsWith("угол 1")) return EMPTY;
+      return {
+        candidates: [
+          cand("src/a.php", 1, "полный"),
+          bare("src/a.php", 2, "без триггера", false, "correctness", [
+            "trigger",
+          ]),
+          bare("src/a.php", 3, "без потребителя и базы", false, "tests", [
+            "caller_checked",
+            "base_compared",
+          ]),
+          bare("src/b.php", 4, "security по флагу", true, "security", [
+            "caller_checked",
+          ]),
+          bare("src/b.php", 5, "security по категории", false, "auth-bypass", [
+            "base_compared",
+          ]),
+        ],
+        suppressed: [],
+      };
+    }
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.deepEqual(
+    result.survivors.map((x) => x.summary).sort(),
+    ["security по категории", "security по флагу", "полный"].sort(),
+    "без полей прошли только security-кандидаты",
+  );
+  assert.deepEqual(
+    result.rejected.map((r) => [r.summary, r.reason]),
+    [
+      ["без триггера", "не заполнены обязательные поля: trigger"],
+      [
+        "без потребителя и базы",
+        "не заполнены обязательные поля: caller_checked, base_compared",
+      ],
+    ],
+    "отклонённые названы вместе с пропущенными полями",
+  );
+  assert.equal(
+    result.notes.filter((n) => n.includes("не принят — не заполнены")).length,
+    2,
+  );
+  assert.equal(
+    result.notes.filter((n) => n.includes("у security-кандидата")).length,
+    2,
+  );
+  const shown = calls
+    .filter((c) => !isFinder(c.opts))
+    .flatMap((c) => candidatesOf(c.prompt));
+  assert.ok(
+    shown.every(
+      (c) => !["без триггера", "без потребителя и базы"].includes(c.summary),
+    ),
+    "отклонённые до верификатора не дошли",
+  );
+  const full = shown.find((c) => c.summary === "полный");
+  assert.equal(full.trigger, "src/a.php:1 — вход", "поля видны верификатору");
+  assert.equal(full.caller_checked, "потребителя нет");
+  assert.equal(full.base_compared, "внесено этим range");
+  assert.equal(
+    result.mode,
+    "полный",
+    "отклонение по полям прогон не деградирует",
+  );
+  console.log("ok 24 обязательные поля кандидата");
+}
+
+const FRAME = [
+  "| поверхность | сценарий | статус |",
+  "|---|---|---|",
+  "| scripts/deploy.sh | ручной запуск оператором | вне рамки |",
+  "| scripts/deploy.sh | запуск из Actions | в рамке |",
+  "Принятые границы:",
+  "- правило ловит случайную ошибку, намеренно сконструированный код не ловим",
+].join("\n");
+const QUOTE_OUT =
+  "| scripts/deploy.sh | ручной запуск оператором | вне рамки |";
+const QUOTE_BOUNDARY =
+  "правило ловит случайную ошибку, намеренно сконструированный код не ловим";
+
+/**
+ * Вердикты с полями рамки по всем кандидатам промпта.
+ *
+ * @param {string} prompt промпт верификатора.
+ * @param {(c: object, i: number) => object} pick поля вердикта (verdict, frame_mark, frame_quote, security).
+ * @returns {object} ответ по схеме вердиктов с рамкой.
+ */
+function frameVerdicts(prompt, pick) {
+  return {
+    verdicts: candidatesOf(prompt).map((c, i) => ({
+      id: c.id,
+      evidence: "e",
+      security: false,
+      frame_mark: "none",
+      frame_quote: "",
+      ...pick(c, i),
+    })),
+  };
+}
+
+/**
+ * Прогон high с одним кандидатом угла 1 и заданным ответом верификатора.
+ *
+ * @param {object} candidate кандидат угла 1.
+ * @param {(c: object) => object} pick поля вердикта.
+ * @param {string|null} [frame] текст рамки; null — рамка не задана.
+ * @param {string} [level] уровень прогона.
+ * @param {(c: object, lens: string) => object} [byLens] поля вердикта по линзе (для max).
+ * @returns {Promise<object>} результат runScript.
+ */
+async function frameRun(
+  candidate,
+  pick,
+  frame = FRAME,
+  level = "high",
+  byLens,
+) {
+  const a = base(level, 1);
+  if (frame !== null) a.frame = frame;
+  return runScript(a, (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [candidate], suppressed: [] }
+        : EMPTY;
+    const lens = (o.label.match(/линза «([^»]+)»/) || [])[1];
+    return frameVerdicts(p, (c) => (byLens ? byLens(c, lens) : pick(c)));
+  });
+}
+
+// 25. Рамка использования: OUT_OF_FRAME снимает только не-security находку и только с дословной
+//     цитатой строки рамки; security-находке рамка даёт лишь пометку; без рамки ничего не меняется.
+{
+  const out = { verdict: "OUT_OF_FRAME", frame_quote: QUOTE_OUT };
+
+  // Без рамки: схема и промпты прежние, голос OUT_OF_FRAME не засчитывается.
+  const none = await frameRun(cand("src/a.php", 1, "x"), () => out, null);
+  const noneVerifier = none.calls.find((c) => !isFinder(c.opts));
+  assert.deepEqual(
+    noneVerifier.opts.schema.properties.verdicts.items.properties.verdict.enum,
+    ["CONFIRMED", "PLAUSIBLE", "REFUTED", "SUPPRESSED"],
+    "без рамки вердикта OUT_OF_FRAME в схеме нет",
+  );
+  assert.ok(
+    none.calls.every((c) => !c.prompt.includes("## Рамка использования")),
+    "без рамки раздела рамки в промптах нет",
+  );
+  assert.equal(none.result.frame, false);
+  assert.equal(none.result.survivors.length, 1, "без рамки находка не снята");
+  assert.equal(none.result.outOfFrame.length, 0);
+  assert.ok(none.result.notes.some((n) => n.includes("рамка не задана")));
+
+  // С рамкой: раздел рамки у каждой роли, расширенная схема у верификатора.
+  const plain = await frameRun(
+    cand("src/a.php", 1, "x"),
+    () => out,
+    FRAME,
+    "xhigh",
+  );
+  assert.ok(
+    plain.calls.every(
+      (c) =>
+        c.prompt.includes(`## Рамка использования`) &&
+        c.prompt.includes(QUOTE_OUT),
+    ),
+    "рамка дословно в промпте каждого агента (углы, верификатор, sweep)",
+  );
+  assert.ok(plain.calls.some((c) => isSweep(c.opts)));
+  assert.ok(
+    plain.calls
+      .find((c) => !isFinder(c.opts) && !isSweep(c.opts))
+      .opts.schema.properties.verdicts.items.properties.verdict.enum.includes(
+        "OUT_OF_FRAME",
+      ),
+  );
+  assert.equal(plain.result.frame, true);
+  assert.equal(plain.result.survivors.length, 0, "не-security снята рамкой");
+  assert.equal(plain.result.blocking, 0);
+  assert.deepEqual(
+    plain.result.outOfFrame.map((x) => [x.summary, x.frameQuote]),
+    [["x", QUOTE_OUT]],
+    "снятое рамкой возвращено отдельным списком с цитатой",
+  );
+  assert.ok(
+    plain.calls
+      .find((c) => isSweep(c.opts))
+      .prompt.includes('"outcome": "out_of_frame"'),
+    "sweep знает, что кандидат снят рамкой",
+  );
+
+  // Security — по любому из трёх признаков — OUT_OF_FRAME не получает никогда.
+  for (const [name, candidate, vote] of [
+    ["флаг искателя", cand("src/a.php", 1, "s", true, "security"), out],
+    [
+      "голос верификатора",
+      cand("src/a.php", 1, "s"),
+      { ...out, security: true },
+    ],
+    ["корень категории", cand("src/a.php", 1, "s", false, "auth-bypass"), out],
+  ]) {
+    const { result } = await frameRun(candidate, () => vote);
+    assert.equal(
+      result.outOfFrame.length,
+      0,
+      `security (${name}) не снят рамкой`,
+    );
+    assert.equal(result.survivors.length, 1, name);
+    assert.equal(result.survivors[0].verdict, "PLAUSIBLE", name);
+    assert.equal(
+      result.survivors[0].frameMark,
+      "security-trigger-out-of-frame",
+      `security (${name}): голос OUT_OF_FRAME стал пометкой`,
+    );
+    assert.equal(result.survivors[0].frameQuote, QUOTE_OUT, name);
+    assert.equal(result.blocking, 0, "помеченная находка не блокирует");
+  }
+
+  // Пометка «триггер вне рамки» при CONFIRMED: вердикт сохраняется.
+  const marked = await frameRun(
+    cand("src/a.php", 1, "s", true, "security"),
+    () => ({
+      verdict: "CONFIRMED",
+      frame_mark: "trigger_out_of_frame",
+      frame_quote: QUOTE_OUT,
+    }),
+  );
+  assert.equal(marked.result.survivors[0].verdict, "CONFIRMED");
+  assert.equal(
+    marked.result.survivors[0].frameMark,
+    "security-trigger-out-of-frame",
+  );
+
+  // Та же пометка у не-security находки не засчитывается: для неё есть вердикт OUT_OF_FRAME.
+  const wrongMark = await frameRun(cand("src/a.php", 1, "x"), () => ({
+    verdict: "CONFIRMED",
+    frame_mark: "trigger_out_of_frame",
+    frame_quote: QUOTE_OUT,
+  }));
+  assert.equal(wrongMark.result.survivors[0].frameMark, undefined);
+  assert.equal(wrongMark.result.blocking, 1, "находка осталась блокирующей");
+  assert.ok(
+    wrongMark.result.notes.some((n) => n.includes("осталась блокирующей")),
+  );
+
+  // Принятая граница — пометка, а не снятие; действует и для security.
+  for (const security of [false, true]) {
+    const { result } = await frameRun(
+      cand(
+        "src/a.php",
+        1,
+        "g",
+        security,
+        security ? "security" : "correctness",
+      ),
+      () => ({
+        verdict: "PLAUSIBLE",
+        frame_mark: "accepted_boundary",
+        frame_quote: QUOTE_BOUNDARY,
+      }),
+    );
+    assert.equal(result.survivors.length, 1, "принятая граница не снимает");
+    assert.equal(result.survivors[0].frameMark, "accepted-boundary");
+    assert.equal(result.survivors[0].frameQuote, QUOTE_BOUNDARY);
+    assert.equal(result.blocking, 0);
+  }
+
+  // Цитата обязана быть дословным фрагментом ОДНОЙ строки рамки не короче порога.
+  for (const [name, quote] of [
+    ["нет в рамке", "| scripts/deploy.sh | враждебный вход | вне рамки |"],
+    ["короче порога", "вне рамки"],
+    ["пусто", ""],
+    [
+      "склейка двух строк",
+      "ручной запуск оператором | вне рамки | | scripts/deploy.sh | запуск из Actions",
+    ],
+  ]) {
+    const { result } = await frameRun(cand("src/a.php", 1, "x"), () => ({
+      verdict: "OUT_OF_FRAME",
+      frame_quote: quote,
+    }));
+    assert.equal(result.outOfFrame.length, 0, `цитата «${name}» не засчитана`);
+    assert.equal(result.blocking, 1, name);
+    assert.ok(
+      result.notes.some((n) => n.includes("цитата не найдена в строках рамки")),
+      name,
+    );
+  }
+  // Пробелы и регистр цитаты не важны.
+  const loose = await frameRun(cand("src/a.php", 1, "x"), () => ({
+    verdict: "OUT_OF_FRAME",
+    frame_quote: "  РУЧНОЙ   запуск оператором |  вне рамки ",
+  }));
+  assert.equal(
+    loose.result.outOfFrame.length,
+    1,
+    "пробелы и регистр схлопнуты",
+  );
+
+  // max: снимает только большинство линз; голоса разных исходов не складываются.
+  const votesFor = (map) => (c, lens) => map[lens];
+  const oneLens = await frameRun(
+    cand("src/a.php", 1, "x"),
+    null,
+    FRAME,
+    "max",
+    votesFor({
+      корректность: out,
+      безопасность: { verdict: "CONFIRMED" },
+      воспроизводимость: { verdict: "PLAUSIBLE" },
+    }),
+  );
+  assert.equal(
+    oneLens.result.outOfFrame.length,
+    0,
+    "одна линза рамкой не снимает",
+  );
+  assert.equal(oneLens.result.blocking, 1);
+  const twoLenses = await frameRun(
+    cand("src/a.php", 1, "x"),
+    null,
+    FRAME,
+    "max",
+    votesFor({
+      корректность: out,
+      безопасность: out,
+      воспроизводимость: { verdict: "CONFIRMED" },
+    }),
+  );
+  assert.equal(twoLenses.result.outOfFrame.length, 1, "две линзы снимают");
+  const mixed = await frameRun(
+    cand("src/a.php", 1, "x"),
+    null,
+    FRAME,
+    "max",
+    votesFor({
+      корректность: out,
+      безопасность: { verdict: "REFUTED" },
+      воспроизводимость: { verdict: "SUPPRESSED" },
+    }),
+  );
+  assert.equal(
+    mixed.result.survivors.length,
+    1,
+    "OUT_OF_FRAME, REFUTED и SUPPRESSED не складываются",
+  );
+  assert.equal(mixed.result.outOfFrame.length, 0);
+  // Одна линза назвала находку security — две линзы OUT_OF_FRAME её уже не снимают.
+  const lateSecurity = await frameRun(
+    cand("src/a.php", 1, "x"),
+    null,
+    FRAME,
+    "max",
+    votesFor({
+      корректность: out,
+      безопасность: { verdict: "PLAUSIBLE", security: true },
+      воспроизводимость: out,
+    }),
+  );
+  assert.equal(lateSecurity.result.outOfFrame.length, 0);
+  assert.equal(
+    lateSecurity.result.survivors[0].frameMark,
+    "security-trigger-out-of-frame",
+  );
+
+  const bad = base("high", 1);
+  bad.frame = "  ";
+  await assert.rejects(
+    runScript(bad, () => null),
+    /args\.frame/,
+    "пустая рамка",
+  );
+  console.log("ok 25 рамка использования");
+}
+
+/**
+ * Строки закрытого списка.
+ *
+ * @param {number} n число строк.
+ * @returns {Array<object>} записи args.triage.
+ */
+function mkTriage(n) {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `T${i + 1}`,
+    location: `src/a.php:${i + 1}`,
+    finding: `находка ${i + 1}`,
+    class: "А",
+    done: `правка ${i + 1} (abc123${i})`,
+  }));
+}
+
+/**
+ * Базовые args режима проверки.
+ *
+ * @param {string} level уровень прогона.
+ * @param {number} rows число строк закрытого списка.
+ * @param {boolean} [security] добавить угол 5 по диффу правок.
+ * @returns {object} args скрипта.
+ */
+function checkBase(level, rows, security = false) {
+  const a = {
+    level,
+    pass: 2,
+    mode: "check",
+    sessionBelowOpus: false,
+    context: "DIFF",
+    verifyProtocol: "PROTO",
+    checkBrief: "CHECK-BRIEF",
+    files: ["src/a.php", "src/b.php"],
+    triage: mkTriage(rows),
+  };
+  if (security) {
+    a.angles = [{ n: 5, title: "security", brief: "brief" }];
+    a.finderRules = "RULES";
+  }
+  return a;
+}
+
+/**
+ * Вызов агента — агент проверки (включая его перезапуск)?
+ *
+ * @param {{label: string}} o параметры вызова agent().
+ * @returns {boolean} true для агентов проверки.
+ */
+function isChecker(o) {
+  return o.label.startsWith("проверка");
+}
+
+/**
+ * Строки закрытого списка из JSON-блока промпта агента проверки.
+ *
+ * @param {string} prompt промпт агента проверки.
+ * @returns {Array<object>} строки списка.
+ */
+function rowsOf(prompt) {
+  const m = prompt.match(
+    /## Твои строки закрытого списка\n[^\n]*\n```json\n([\s\S]*?)\n```/,
+  );
+  return m ? JSON.parse(m[1]) : [];
+}
+
+/**
+ * Ответ агента проверки по всем его строкам.
+ *
+ * @param {string} prompt промпт агента проверки.
+ * @param {(row: object) => object} [pick] поля записи (closed, defects и т. д.).
+ * @returns {object} ответ по схеме агента проверки.
+ */
+function checkReply(prompt, pick = () => ({})) {
+  return {
+    rows: rowsOf(prompt).map((row) => ({
+      id: row.id,
+      closed: "да",
+      closed_evidence: "цитата",
+      added: "ничего",
+      defects: [],
+      ...pick(row),
+    })),
+  };
+}
+
+/**
+ * Дефект правки.
+ *
+ * @param {number} line строка.
+ * @param {string} summary формулировка.
+ * @param {object} [extra] переопределения полей.
+ * @returns {object} запись defects.
+ */
+function defect(line, summary, extra = {}) {
+  return {
+    file: "src/a.php",
+    line,
+    summary,
+    failure_scenario: "fs",
+    trigger: "src/a.php:1 — вход",
+    category: "correctness",
+    security: false,
+    same_place: false,
+    ...extra,
+  };
+}
+
+// 26. Режим проверки: состав агентов, деление строк, модель, закрывающий проход, повтор места.
+{
+  // Деление строк: одна строка — один агент; до восьми — два; больше — три; без пересечения.
+  for (const [rows, agents] of [
+    [1, 1],
+    [2, 2],
+    [8, 2],
+    [9, 3],
+    [20, 3],
+  ]) {
+    const { result, calls } = await runScript(checkBase("xhigh", rows), (p) =>
+      checkReply(p),
+    );
+    const checkers = calls.filter((c) => isChecker(c.opts));
+    assert.equal(checkers.length, agents, `${rows} строк → ${agents} агент(а)`);
+    assert.equal(calls.length, agents, "углов, верификаторов и sweep нет");
+    const seenIds = checkers.flatMap((c) => rowsOf(c.prompt).map((r) => r.id));
+    assert.deepEqual(
+      seenIds,
+      mkTriage(rows).map((r) => r.id),
+      "строки розданы по порядку, каждая ровно одному агенту",
+    );
+    for (const c of checkers) {
+      assert.equal(c.opts.model, undefined, "модель — как у верификаторов");
+      assert.equal(c.opts.phase, "Проверка правок");
+      assert.ok(c.prompt.includes("CHECK-BRIEF"));
+      assert.equal(rowsOf(c.prompt)[0].done.startsWith("правка"), true);
+    }
+    assert.equal(result.run, "check");
+    assert.equal(result.sweep, "не предусмотрен режимом проверки");
+    assert.deepEqual(result.agents.byRole, {
+      checkers: agents,
+      angles: 0,
+      verifiers: 0,
+      sweep: 0,
+    });
+    assert.equal(result.agents.total, agents);
+    assert.equal(result.check.total, rows);
+    assert.equal(result.check.checked, rows);
+    assert.equal(result.check.closing, true, "все закрыты, дефектов нет");
+    assert.equal(result.mode, "полный");
+  }
+
+  // Слабая сессия: агенты проверки — на opus, как вся последняя линия.
+  const weakArgs = checkBase("high", 3);
+  weakArgs.sessionBelowOpus = true;
+  const weak = await runScript(weakArgs, (p) => checkReply(p));
+  assert.ok(weak.calls.every((c) => c.opts.model === "opus"));
+  assert.equal(weak.result.agents.byModel.opus.count, 2);
+
+  // Не закрыта либо закрыта частично — проход не закрывающий.
+  for (const closed of ["нет", "частично"]) {
+    const { result } = await runScript(checkBase("high", 3), (p) =>
+      checkReply(p, (row) => (row.id === "T2" ? { closed } : {})),
+    );
+    assert.equal(result.check.closing, false, `«${closed}» — не закрывающий`);
+    assert.equal(result.check.rows.find((r) => r.id === "T2").closed, closed);
+    assert.equal(result.check.checked, 3);
+  }
+
+  // Дефект правки идёт на верификацию; выживший — блокирует, опровергнутый — нет.
+  const withDefect = (verdict, extra) =>
+    runScript(checkBase("high", 3), (p, o) =>
+      isChecker(o)
+        ? checkReply(p, (row) =>
+            row.id === "T3"
+              ? { defects: [defect(30, "регрессия", extra)] }
+              : {},
+          )
+        : verdicts(p, () => verdict),
+    );
+  const alive = await withDefect("CONFIRMED", { same_place: true });
+  assert.equal(alive.calls.filter((c) => !isChecker(c.opts)).length, 1);
+  const shown = candidatesOf(
+    alive.calls.find((c) => !isChecker(c.opts)).prompt,
+  );
+  assert.equal(shown[0].summary, "регрессия");
+  assert.equal(shown[0].trigger, "src/a.php:1 — вход");
+  assert.equal(alive.result.survivors.length, 1);
+  assert.equal(
+    alive.result.survivors[0].row,
+    "T3",
+    "дефект привязан к строке списка",
+  );
+  assert.equal(alive.result.blocking, 1);
+  assert.equal(alive.result.check.closing, false, "выживший дефект правки");
+  assert.equal(alive.result.check.rows.find((r) => r.id === "T3").claimed, 1);
+  assert.deepEqual(
+    alive.result.check.repeats.map((r) => [r.row, r.file, r.line]),
+    [["T3", "src/a.php", 30]],
+    "повтор места назван вместе со строкой списка",
+  );
+  assert.deepEqual(alive.result.agents.byRole, {
+    checkers: 2,
+    angles: 0,
+    verifiers: 1,
+    sweep: 0,
+  });
+  const dead = await withDefect("REFUTED", { same_place: true });
+  assert.equal(
+    dead.result.check.closing,
+    true,
+    "опровергнутый дефект не блокирует",
+  );
+  assert.equal(
+    dead.result.check.repeats.length,
+    0,
+    "опровергнутый — не повтор места",
+  );
+  const elsewhere = await withDefect("CONFIRMED", {});
+  assert.equal(
+    elsewhere.result.check.repeats.length,
+    0,
+    "другое место — не повтор",
+  );
+
+  // Дефект правки, сценарий которого рамка исключает, проход не блокирует.
+  const framed = checkBase("high", 2);
+  framed.frame = FRAME;
+  const outside = await runScript(framed, (p, o) =>
+    isChecker(o)
+      ? checkReply(p, (row) =>
+          row.id === "T1" ? { defects: [defect(10, "вне рамки")] } : {},
+        )
+      : frameVerdicts(p, () => ({
+          verdict: "OUT_OF_FRAME",
+          frame_quote: QUOTE_OUT,
+        })),
+  );
+  assert.ok(
+    outside.calls.every((c) => c.prompt.includes("## Рамка использования")),
+    "рамка — и у агентов проверки",
+  );
+  assert.equal(outside.result.outOfFrame.length, 1);
+  assert.equal(outside.result.check.closing, true);
+
+  // Дефект без триггера не принимается; caller_checked и base_compared у дефекта правки не нужны.
+  const noTrigger = await runScript(checkBase("high", 2), (p, o) =>
+    isChecker(o)
+      ? checkReply(p, (row) =>
+          row.id === "T1"
+            ? { defects: [defect(10, "без входа", { trigger: "" })] }
+            : {},
+        )
+      : verdicts(p, () => "CONFIRMED"),
+  );
+  assert.equal(noTrigger.result.survivors.length, 0);
+  assert.equal(
+    noTrigger.result.rejected[0].reason,
+    "не заполнены обязательные поля: trigger",
+  );
+  console.log(
+    "ok 26 режим проверки: состав, деление строк, закрывающий проход",
+  );
+}
+
+// 27. Режим проверки: строка на каждый id — пропуск или повтор id перезапускает агента; второй
+//     отказ делает прогон деградированным, а строки — непроверенными.
+{
+  let first = true;
+  const retry = await runScript(checkBase("high", 4), (p, o) => {
+    const reply = checkReply(p);
+    if (o.label.startsWith("проверка 1") && first) {
+      first = false;
+      reply.rows.pop();
+    }
+    return reply;
+  });
+  assert.equal(
+    retry.calls.filter((c) => c.opts.label.endsWith("перезапуск")).length,
+    1,
+    "пропущенный id — перезапуск агента",
+  );
+  assert.deepEqual(retry.result.agents.restarts, {
+    checkers: 1,
+    angles: 0,
+    verifiers: 0,
+    sweep: 0,
+  });
+  assert.equal(retry.result.check.checked, 4);
+  assert.equal(retry.result.check.closing, true);
+  checkSumsFor(retry.result.agents, [
+    "checkers",
+    "angles",
+    "verifiers",
+    "sweep",
+  ]);
+
+  const twice = await runScript(checkBase("high", 4), (p, o) => {
+    const reply = checkReply(p);
+    // Повтор id — тоже неполный ответ: записей по T1 две.
+    if (o.label.startsWith("проверка 1")) reply.rows.push({ ...reply.rows[0] });
+    return reply;
+  });
+  assert.equal(twice.result.mode, "деградированный");
+  assert.deepEqual(twice.result.check.unchecked, ["T1", "T2"]);
+  assert.equal(twice.result.check.checked, 2, "список проверен: 2 из 4");
+  assert.equal(twice.result.check.total, 4);
+  assert.equal(twice.result.check.closing, false, "непроверенные строки");
+  assert.ok(
+    twice.result.degraded.some(
+      (d) => d.includes("агент проверки 1") && d.includes('"T1", "T2"'),
+    ),
+  );
+
+  // Запись с id не из своей части не учитывается, но ответ остаётся полным.
+  const foreign = await runScript(checkBase("high", 4), (p, o) => {
+    const reply = checkReply(p);
+    if (o.label.startsWith("проверка 1"))
+      reply.rows.push({ ...reply.rows[0], id: "T4", closed: "нет" });
+    return reply;
+  });
+  assert.equal(
+    foreign.result.check.rows.find((r) => r.id === "T4").closed,
+    "да",
+  );
+  assert.ok(foreign.result.notes.some((n) => n.includes("не из своей части")));
+  assert.equal(foreign.result.check.closing, true);
+
+  // Оба агента проверки молчат — это лимит, а не отказ: прогон прерван, строки ждут resume.
+  const silent = await runScript(checkBase("high", 4), () => null);
+  assert.equal(silent.result.mode, "прерван");
+  assert.deepEqual(silent.result.pending.rows, ["T1", "T2", "T3", "T4"]);
+  assert.equal(silent.result.check.closing, false);
+  assert.equal(silent.result.agents.limitHits, 2);
+  console.log("ok 27 режим проверки: полнота ответа и отказы");
+}
+
+/**
+ * Сверяет суммы разбивок агентов с общим числом для заданного состава ролей.
+ *
+ * @param {object} a поле agents результата.
+ * @param {Array<string>} roles роли прогона.
+ */
+function checkSumsFor(a, roles) {
+  assert.equal(
+    roles.reduce((s, r) => s + a.byRole[r] + a.restarts[r], 0),
+    a.total,
+    "сумма ролей",
+  );
+  assert.equal(
+    a.byModel.opus.count + a.byModel.sonnet.count + a.byModel.default.count,
+    a.total,
+    "сумма корзин",
+  );
+}
+
+// 28. Режим проверки с углом 5: security-угол идёт первым и по своим правилам; его находка блокирует.
+{
+  const secure = checkBase("max", 3, true);
+  secure.sessionBelowOpus = true;
+  const { result, calls } = await runScript(secure, (p, o) => {
+    if (isFinder(o))
+      return {
+        candidates: [
+          cand("src/b.php", 7, "утечка", true, "security"),
+          { ...cand("src/b.php", 8, "без полей"), caller_checked: "" },
+        ],
+        suppressed: [],
+      };
+    if (isChecker(o)) return checkReply(p);
+    return verdicts(p, () => "CONFIRMED");
+  });
+  assert.equal(
+    calls[0].opts.label.slice(0, 6),
+    "угол 5",
+    "security-угол первым",
+  );
+  assert.ok(calls[0].prompt.includes("RULES"), "углу 5 — правила finder'а");
+  assert.equal(calls[0].opts.model, "opus");
+  assert.equal(calls.filter((c) => isFinder(c.opts)).length, 1);
+  assert.equal(
+    calls.filter((c) => isSweep(c.opts)).length,
+    0,
+    "sweep не запускается",
+  );
+  assert.equal(
+    calls.filter((c) => c.opts.label.startsWith("линза")).length,
+    3,
+    "верификация — по протоколу уровня",
+  );
+  assert.equal(result.survivors.length, 1);
+  assert.equal(
+    result.rejected.length,
+    1,
+    "кандидат угла 5 без полей не принят",
+  );
+  assert.equal(result.check.closing, false, "находка security-угла блокирует");
+  assert.deepEqual(result.agents.byRole, {
+    checkers: 2,
+    angles: 1,
+    verifiers: 3,
+    sweep: 0,
+  });
+  checkSumsFor(result.agents, ["checkers", "angles", "verifiers", "sweep"]);
+
+  // Угол 5 не отработал дважды — прогон деградированный и закрывающим быть не может.
+  const failed = await runScript(checkBase("high", 3, true), (p, o) =>
+    isFinder(o) ? null : checkReply(p),
+  );
+  assert.equal(failed.result.mode, "деградированный");
+  assert.equal(failed.result.failedAngles.length, 1);
+  assert.equal(failed.result.check.closing, false);
+  console.log("ok 28 режим проверки с security-углом");
+}
+
+// 29. Проверка args режима проверки и обычного прогона.
+{
+  for (const [name, mut, re] of [
+    ["проверка на проходе 1", (a) => (a.pass = 1), /args\.mode.*pass ≥ 2/],
+    ["неизвестный режим", (a) => (a.mode = "verify"), /args\.mode/],
+    ["пустой список", (a) => (a.triage = []), /args\.triage/],
+    ["список не массив", (a) => (a.triage = "T1"), /args\.triage/],
+    ["повтор id", (a) => (a.triage[1].id = "T1"), /не уникальны/],
+    ["пустой id", (a) => (a.triage[0].id = ""), /args\.triage: id строки/],
+    [
+      "перевод строки в id",
+      (a) => (a.triage[0].id = "T1\nT9"),
+      /args\.triage: id строки/,
+    ],
+    [
+      "длинный id",
+      (a) => (a.triage[0].id = "T".repeat(41)),
+      /args\.triage: id строки/,
+    ],
+    ["нет правки", (a) => (a.triage[0].done = " "), /нет поля done/],
+    ["нет находки", (a) => delete a.triage[0].finding, /нет поля finding/],
+    ["нет брифа", (a) => (a.checkBrief = ""), /args\.checkBrief/],
+    [
+      "угол поиска в режиме проверки",
+      (a) => {
+        a.angles = [{ n: 1, title: "t", brief: "b" }];
+        a.finderRules = "R";
+      },
+      /args\.angles: в режиме проверки/,
+    ],
+    [
+      "два угла в режиме проверки",
+      (a) => {
+        a.angles = [
+          { n: 5, title: "t", brief: "b" },
+          { n: 5, title: "t", brief: "b" },
+        ];
+        a.finderRules = "R";
+      },
+      /args\.angles: в режиме проверки/,
+    ],
+    [
+      "угол 5 без правил finder'а",
+      (a) => (a.angles = [{ n: 5, title: "t", brief: "b" }]),
+      /args\.finderRules/,
+    ],
+  ]) {
+    const a = checkBase("high", 3);
+    mut(a);
+    await assert.rejects(
+      runScript(a, () => null),
+      re,
+      name,
+    );
+  }
+  // Закрытый список, переданный поиску, молча не игнорируется.
+  for (const key of ["triage", "checkBrief"]) {
+    const a = base("high", 2);
+    a[key] = key === "triage" ? mkTriage(2) : "B";
+    await assert.rejects(
+      runScript(a, () => null),
+      new RegExp(`args\\.${key}: допустим только при mode`),
+      key,
+    );
+  }
+  // mode: "search" на проходе 2 — прежний поиск: углы уровня, sonnet у дешёвых ролей.
+  const search = base("high", 2);
+  search.mode = "search";
+  const { result, calls } = await runScript(search, (p, o) =>
+    isFinder(o) ? EMPTY : verdicts(p, () => "PLAUSIBLE"),
+  );
+  assert.equal(calls.filter((c) => isFinder(c.opts)).length, 5);
+  assert.equal(result.run, "search");
+  assert.equal(result.check, null);
+  assert.deepEqual(result.agents.byRole, { angles: 5, verifiers: 0, sweep: 0 });
+  console.log("ok 29 проверка args режима проверки");
+}
