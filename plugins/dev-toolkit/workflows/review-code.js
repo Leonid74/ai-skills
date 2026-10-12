@@ -68,7 +68,7 @@ const CHECK_FIELDS = ["trigger"];
 // и не больше CHECKERS_MAX.
 const CHECKERS_MAX = 3;
 const CHECKER_ROWS = 4;
-// Цитата короче — не строка рамки, а слово из неё: голос «вне рамки» с такой цитатой не засчитывается.
+// Цитата короче — не запись рамки, а слово из неё: голос «вне рамки» с такой цитатой не засчитывается.
 const FRAME_QUOTE_MIN = 12;
 const MAX_ROW_ID_LENGTH = 40;
 
@@ -216,7 +216,7 @@ const FRAME_VERDICTS_SCHEMA = {
           frame_quote: {
             type: "string",
             description:
-              "дословная цитата одной строки рамки — для OUT_OF_FRAME и для любой пометки, иначе пусто",
+              "дословная цитата одной записи рамки (строки таблицы, пункта списка или абзаца) — для OUT_OF_FRAME и для любой пометки, иначе пусто",
           },
         },
         required: [
@@ -1084,14 +1084,39 @@ function accept(reply, source, cap, fields) {
 
 // ---------- верификация ----------
 
-// Строки рамки в виде для сверки цитат: пробелы схлопнуты, регистр снят.
-const frameLines =
-  frame === null
-    ? []
-    : frame
-        .split("\n")
-        .map(squash)
-        .filter((l) => l);
+/**
+ * Делит текст рамки на записи: строка таблицы, заголовок, пункт списка вместе со строками-
+ * продолжениями, абзац до пустой строки. Цитата сверяется с записью, а не с физической строкой:
+ * проза в файлах правил переносится по ширине, и длинная граница занимает несколько строк. Склеить
+ * цитатой две записи при этом нельзя — иначе поверхность бралась бы из одной, а «вне рамки» из другой.
+ *
+ * @param {string} text текст рамки.
+ * @returns {Array<string>} записи в виде для сверки (пробелы схлопнуты, регистр снят).
+ */
+function frameUnits(text) {
+  const units = [];
+  // open — к последней записи можно дописывать строку-продолжение (пункт списка, абзац).
+  let open = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) {
+      open = false;
+      continue;
+    }
+    const closed = line.startsWith("|") || line.startsWith("#");
+    const item = /^([-*+]|\d+[.)])\s/.test(line);
+    if (open && !closed && !item) {
+      units[units.length - 1] += ` ${line}`;
+    } else {
+      units.push(line);
+      open = !closed;
+    }
+  }
+  return units.map(squash).filter((u) => u);
+}
+
+// Записи рамки в виде для сверки цитат.
+const frameLines = frame === null ? [] : frameUnits(frame);
 
 /**
  * Приводит текст к виду для сверки цитаты с рамкой.
@@ -1108,7 +1133,7 @@ function squash(text) {
 
 /**
  * Что голос верификатора говорит о рамке использования. Засчитывается только голос с дословной
- * цитатой одной строки рамки: без неё «вне рамки» — мнение, а не ссылка на решение владельца.
+ * цитатой одной записи рамки: без неё «вне рамки» — мнение, а не ссылка на решение владельца.
  *
  * @param {{verdict: string, frame_mark: (string|undefined), frame_quote: (string|undefined)}} v вердикт верификатора.
  * @returns {{claim: (string|null), quote: string, valid: boolean}} claim: 'out' — вердикт OUT_OF_FRAME,
@@ -1263,7 +1288,7 @@ async function verifyAll(candidates, phaseTitle) {
             notes.push(
               frame === null
                 ? `${who}: утверждение о рамке по ${c.id} (${locKey(c)}) не засчитано — рамка не задана`
-                : `${who}: утверждение о рамке по ${c.id} (${locKey(c)}) не засчитано — цитата не найдена в строках рамки либо короче ${FRAME_QUOTE_MIN} знаков`,
+                : `${who}: утверждение о рамке по ${c.id} (${locKey(c)}) не засчитано — цитата не найдена ни в одной записи рамки либо короче ${FRAME_QUOTE_MIN} знаков`,
             );
           }
           votes.push({
