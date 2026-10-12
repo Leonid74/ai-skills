@@ -218,6 +218,11 @@ const FRAME_VERDICTS_SCHEMA = {
             description:
               "дословная цитата одной записи рамки (строки таблицы, пункта списка или абзаца) — для OUT_OF_FRAME и для любой пометки, иначе пусто",
           },
+          frame_conflict: {
+            type: "string",
+            description:
+              "путь:строка в репозитории, где есть сценарий или точка входа, существование которых запись рамки отрицает и сама не называет; противоречия нет — пусто",
+          },
         },
         required: [
           "id",
@@ -226,6 +231,7 @@ const FRAME_VERDICTS_SCHEMA = {
           "security",
           "frame_mark",
           "frame_quote",
+          "frame_conflict",
         ],
       },
     },
@@ -1163,14 +1169,18 @@ function frameClaim(v) {
  * Сводит голоса по одному кандидату в исход. Голоса SUPPRESSED, REFUTED и OUT_OF_FRAME не
  * складываются; для security-кандидата не засчитываются ни SUPPRESSED, ни OUT_OF_FRAME — рамка может
  * дать ему только пометку. При неполном составе голосов (часть линз не отработала) пороги снятия и
- * пометок не смягчаются, а CONFIRMED требует не меньше двух голосов CONFIRMED.
+ * пометок не смягчаются, а CONFIRMED требует не меньше двух голосов CONFIRMED. Рамка исключает
+ * сценарии, но не отрицает факты: если хотя бы один голос назвал место в репозитории, которое запись
+ * рамки отрицает, security-кандидат пометку не получает и остаётся блокирующим; не-security
+ * кандидату это исход не меняет.
  *
  * @param {object} c кандидат.
  * @param {Array<{lens: (string|null), verdict: string, evidence: string, security: boolean, duplicate_of: (string|undefined), frame: (string|null), frameQuote: string}>} votes голоса;
  *   frame — засчитанное утверждение о рамке ('out' | 'trigger' | 'boundary') либо null.
  * @param {number} expected сколько голосов ожидалось (1 либо 3).
  * @param {Set<string>} groupIds id кандидатов этой же группы.
- * @returns {object} исход: outcome, verdict, rule, security, partial, duplicateOf, frameMark, frameQuote.
+ * @returns {object} исход: outcome, verdict, rule, security, partial, duplicateOf, frameMark, frameQuote,
+ *   frameConflict (место в репозитории, противоречащее рамке) и markCancelled (пометка отменена им).
  */
 function tally(c, votes, expected, groupIds) {
   const security = isSecurity(c) || votes.some((v) => v.security);
@@ -1188,10 +1198,14 @@ function tally(c, votes, expected, groupIds) {
     };
   }
   const about = (name) => votes.filter((v) => v.frame === name);
+  // Достаточно одного голоса: ошибка в строгую сторону оставляет security-находку блокирующей.
+  const conflict = votes.find((v) => v.frameConflict);
+  const frameConflict = conflict ? conflict.frameConflict : "";
   if (!security && about("out").length >= majority) {
     return {
       outcome: "out_of_frame",
       frameQuote: about("out")[0].frameQuote,
+      frameConflict,
       security,
       partial,
     };
@@ -1200,7 +1214,7 @@ function tally(c, votes, expected, groupIds) {
   // голос OUT_OF_FRAME засчитывается как пометка «триггер вне рамки»: механизм верификатор признал.
   const trigger = security ? [...about("trigger"), ...about("out")] : [];
   const boundary = about("boundary");
-  const marked =
+  const earned =
     boundary.length >= majority
       ? { frameMark: "accepted-boundary", frameQuote: boundary[0].frameQuote }
       : trigger.length >= majority
@@ -1209,6 +1223,8 @@ function tally(c, votes, expected, groupIds) {
             frameQuote: trigger[0].frameQuote,
           }
         : {};
+  const markCancelled = Boolean(security && frameConflict && earned.frameMark);
+  const marked = markCancelled ? {} : earned;
   const targets = votes
     .map((v) => v.duplicate_of)
     .filter((id) => id && id !== c.id && groupIds.has(id));
@@ -1227,6 +1243,12 @@ function tally(c, votes, expected, groupIds) {
     partial,
     duplicateOf,
     ...marked,
+    frameConflict,
+    markCancelled,
+    // Запись рамки, с которой спорит репозиторий, — для первых строк сводки.
+    conflictQuote: frameConflict
+      ? conflict.frameQuote || earned.frameQuote || ""
+      : "",
   };
 }
 
@@ -1299,12 +1321,19 @@ async function verifyAll(candidates, phaseTitle) {
             duplicate_of: v.duplicate_of,
             frame: about.valid ? about.claim : null,
             frameQuote: about.valid ? about.quote : "",
+            // Противоречие — утверждение о самой рамке, а не о находке: учитывается и без пометки.
+            frameConflict:
+              frame === null ? "" : String(v.frame_conflict || "").trim(),
           });
         }
       }
       const result = tally(c, votes, lenses.length, groupIds);
       // Утверждение о рамке, не давшее исхода, не должно пропасть молча: находка осталась блокирующей.
-      if (
+      if (result.markCancelled) {
+        notes.push(
+          `${c.id} (${locKey(c)}): пометка рамки security-находке отменена — рамка противоречит репозиторию (${showPath(result.frameConflict)}); находка осталась блокирующей`,
+        );
+      } else if (
         result.outcome === "survived" &&
         !result.frameMark &&
         votes.some((v) => v.frame)
@@ -1582,6 +1611,22 @@ const outOfFrame = judged
   .map(({ id, outcome, rule, duplicateOf, ...rest }) => rest);
 // Блокирующие — выжившие без пометки рамки.
 const blocking = survivors.filter((c) => !c.frameMark).length;
+// Противоречия рамки и репозитория, названные верификаторами: печатаются в первых строках сводки.
+const frameConflicts = judged
+  .filter((c) => c.frameConflict)
+  .map((c) => ({
+    ...short(c),
+    conflict: showPath(c.frameConflict),
+    frameQuote: c.outcome === "out_of_frame" ? c.frameQuote : c.conflictQuote,
+    effect:
+      c.outcome === "out_of_frame"
+        ? "OUT_OF_FRAME сохранён (не security)"
+        : c.markCancelled
+          ? "пометка отменена — security-находка блокирующая"
+          : c.outcome === "survived" && c.frameMark
+            ? "пометка сохранена (не security)"
+            : "на исход не повлияло",
+  }));
 /**
  * Краткая форма кандидата для списков снятого.
  *
@@ -1679,6 +1724,7 @@ return {
   check,
   outOfFrame,
   blocking,
+  frameConflicts,
   halted,
   pending,
   degraded,
