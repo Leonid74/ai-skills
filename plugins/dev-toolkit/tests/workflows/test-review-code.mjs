@@ -1994,6 +1994,34 @@ async function frameRun(
   );
   assert.equal(bare.result.blocking, 1);
   assert.equal(bare.result.frameConflicts[0].effect, "на исход не повлияло");
+  // Опровергнутый и подавленный кандидат противоречие не теряют: оно о рамке, а не о находке.
+  for (const [name, verdict, list] of [
+    ["опровергнут", "REFUTED", "refuted"],
+    ["подавлен", "SUPPRESSED", "suppressed"],
+  ]) {
+    const { result } = await frameRun(cand("src/a.php", 1, "x"), () => ({
+      verdict,
+      frame_quote: QUOTE_OUT,
+      frame_conflict: CONFLICT,
+    }));
+    assert.equal(result.survivors.length, 0, name);
+    assert.equal(result[list].length, 1, `кандидат ${name}`);
+    assert.deepEqual(
+      result.frameConflicts.map((x) => [x.line, x.conflict, x.effect]),
+      [[1, '"Makefile:188"', "на исход не повлияло"]],
+      `${name}: противоречие рамки возвращено`,
+    );
+  }
+  // Служебные поля подсчёта в запись выжившего не выходят — её форма от рамки не зависит.
+  for (const frame of [FRAME, null]) {
+    const { result } = await frameRun(
+      cand("src/a.php", 1, "x"),
+      () => ({ verdict: "CONFIRMED", frame_conflict: CONFLICT }),
+      frame,
+    );
+    for (const key of ["frameConflict", "markCancelled", "conflictQuote"])
+      assert.ok(!(key in result.survivors[0]), `в выжившем нет поля ${key}`);
+  }
   // Без рамки поле противоречия не учитывается вовсе.
   const noFrame = await frameRun(
     cand("src/a.php", 1, "x"),

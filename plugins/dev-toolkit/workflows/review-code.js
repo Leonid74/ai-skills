@@ -986,20 +986,31 @@ function tally(c, votes, expected, groupIds) {
   const count = (name) => votes.filter((v) => v.verdict === name).length;
   const majority = expected > 1 ? 2 : 1;
   const partial = votes.length > 0 && votes.length < expected;
-  if (count("REFUTED") >= majority)
-    return { outcome: "refuted", security, partial };
+  // Противоречие рамки и репозитория — сведение о самой рамке: оно считается раньше любого исхода и
+  // возвращается и у опровергнутого, и у подавленного кандидата. Для отмены пометки достаточно
+  // одного голоса: ошибка в строгую сторону оставляет security-находку блокирующей.
+  const conflict = votes.find((v) => v.frameConflict);
+  const frameConflict = conflict ? conflict.frameConflict : "";
+  if (count("REFUTED") >= majority) {
+    return {
+      outcome: "refuted",
+      security,
+      partial,
+      frameConflict,
+      conflictQuote: conflict ? conflict.frameQuote : "",
+    };
+  }
   if (!security && count("SUPPRESSED") >= majority) {
     return {
       outcome: "suppressed",
       rule: votes.find((v) => v.verdict === "SUPPRESSED").evidence,
       security,
       partial,
+      frameConflict,
+      conflictQuote: conflict ? conflict.frameQuote : "",
     };
   }
   const about = (name) => votes.filter((v) => v.frame === name);
-  // Достаточно одного голоса: ошибка в строгую сторону оставляет security-находку блокирующей.
-  const conflict = votes.find((v) => v.frameConflict);
-  const frameConflict = conflict ? conflict.frameConflict : "";
   if (!security && about("out").length >= majority) {
     return {
       outcome: "out_of_frame",
@@ -1306,13 +1317,32 @@ if (maxAgents !== null && totalAgents() > maxAgents) {
     `потолок агентов ${maxAgents} превышен: запущено ${totalAgents()} (углы и sweep уровня запускаются всегда, верификация — не меньше одной группы)`,
   );
 }
+/**
+ * Кандидат в виде для итога: без служебных полей подсчёта (противоречия рамки возвращаются отдельным
+ * списком frameConflicts — форма записи выжившего от наличия рамки не зависит).
+ *
+ * @param {object} c кандидат с исходом.
+ * @returns {object} запись для survivors и outOfFrame.
+ */
+function publicView({
+  id,
+  outcome,
+  rule,
+  duplicateOf,
+  frameConflict,
+  markCancelled,
+  conflictQuote,
+  ...rest
+}) {
+  return rest;
+}
 const survivors = judged
   .filter((c) => c.outcome === "survived")
-  .map(({ id, outcome, rule, duplicateOf, ...rest }) => rest);
+  .map(publicView);
 // Сняты рамкой: механизм реален, сценарий рамка назвала «вне рамки». Не блокируют, но и не теряются.
 const outOfFrame = judged
   .filter((c) => c.outcome === "out_of_frame")
-  .map(({ id, outcome, rule, duplicateOf, ...rest }) => rest);
+  .map(publicView);
 // Блокирующие — выжившие без пометки рамки.
 const blocking = survivors.filter((c) => !c.frameMark).length;
 // Противоречия рамки и репозитория, названные верификаторами: печатаются в первых строках сводки.
