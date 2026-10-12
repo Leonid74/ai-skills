@@ -2189,8 +2189,10 @@ function defect(line, summary, extra = {}) {
   }
 
   // Дефект правки идёт на верификацию; выживший — блокирует, опровергнутый — нет.
-  const withDefect = (verdict, extra) =>
-    runScript(checkBase("high", 3), (p, o) =>
+  const withDefect = (verdict, extra, pass = 3) => {
+    const a = checkBase("high", 3);
+    a.pass = pass;
+    return runScript(a, (p, o) =>
       isChecker(o)
         ? checkReply(p, (row) =>
             row.id === "T3"
@@ -2199,6 +2201,32 @@ function defect(line, summary, extra = {}) {
           )
         : verdicts(p, () => verdict),
     );
+  };
+  // «Повтор места» — вторая регрессия подряд: на проходе 2 пометки нет, хотя признак агента стоит.
+  const second = await withDefect("CONFIRMED", { same_place: true }, 2);
+  assert.equal(
+    second.result.survivors[0].samePlace,
+    true,
+    "признак агента сохранён",
+  );
+  assert.deepEqual(
+    second.result.check.repeats,
+    [],
+    "проход 2: «повтор места» не ставится",
+  );
+  assert.equal(
+    second.result.check.closing,
+    false,
+    "дефект по-прежнему блокирует",
+  );
+  for (const later of [3, 4]) {
+    const again = await withDefect("CONFIRMED", { same_place: true }, later);
+    assert.equal(
+      again.result.check.repeats.length,
+      1,
+      `проход ${later}: «повтор места» ставится`,
+    );
+  }
   const alive = await withDefect("CONFIRMED", { same_place: true });
   assert.equal(alive.calls.filter((c) => !isChecker(c.opts)).length, 1);
   const shown = candidatesOf(

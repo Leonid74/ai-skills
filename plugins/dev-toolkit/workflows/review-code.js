@@ -41,7 +41,8 @@ export const meta = {
 // SWEEP_CAP — потолок кандидатов sweep (фаза 2.5); MERGE_* и DEFAULT_WAVE — «Оркестрация фаз 1–2.5»;
 // NO_SELF_SUPPRESS — уровни, где finder не подавляет сам (пункт 1 skip-list); FINDER_FIELDS и
 // CHECK_FIELDS — обязательные поля кандидата («Формат кандидата») и дефекта правки; CHECKERS_MAX и
-// CHECKER_ROWS — число агентов проверки, MAX_ROW_ID_LENGTH — длина id строки списка («Режим проверки
+// CHECKER_ROWS — число агентов проверки, REPEAT_FROM_PASS — с какого прохода ставится «повтор места»,
+// MAX_ROW_ID_LENGTH — длина id строки списка («Режим проверки
 // правок»); FRAME_QUOTE_MIN — наименьшая длина цитаты записи рамки («Рамка использования»).
 const LEVELS = {
   medium: { angles: 3, cap: 6, protocol: "skeptic", sweep: false },
@@ -71,6 +72,9 @@ const CHECKER_ROWS = 4;
 // Цитата короче — не запись рамки, а слово из неё: голос «вне рамки» с такой цитатой не засчитывается.
 const FRAME_QUOTE_MIN = 12;
 const MAX_ROW_ID_LENGTH = 40;
+// «Повтор места» — вторая регрессия подряд в одном месте: на проходе 2 дефект правки по построению
+// лежит в месте исходной находки, поэтому пометка ставится только с этого прохода.
+const REPEAT_FROM_PASS = 3;
 
 const CANDIDATES_SCHEMA = {
   type: "object",
@@ -1702,10 +1706,14 @@ const check = checking
       checked: checkRows.length,
       rows: checkRows,
       unchecked: uncheckedRows,
-      // Выживший дефект правки в том же месте, что и запись списка: правку не делать, варианты — владельцу.
-      repeats: judged
-        .filter((c) => c.outcome === "survived" && c.samePlace)
-        .map((c) => ({ row: c.row, ...short(c) })),
+      // Выживший дефект правки в том же месте, что и запись списка, начиная с прохода REPEAT_FROM_PASS:
+      // правку не делать, варианты — владельцу. На проходе 2 пометки нет.
+      repeats:
+        pass >= REPEAT_FROM_PASS
+          ? judged
+              .filter((c) => c.outcome === "survived" && c.samePlace)
+              .map((c) => ({ row: c.row, ...short(c) }))
+          : [],
       closing:
         runMode === "полный" &&
         checkRows.every((r) => r.closed === "да") &&

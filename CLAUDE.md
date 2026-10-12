@@ -114,8 +114,8 @@ tmux-команды при этом не было, так что запрет «
   `LENSES` (линзы `max`), `SECURITY_ANGLE`, `SWEEP_CAP` (фаза 2.5), `NO_SELF_SUPPRESS` (пункт 1
   skip-list), `MERGE_THRESHOLD`/`MERGE_MAX`, `DEFAULT_WAVE`/`MIN_WAVE`/`MAX_WAVE`, `MAX_PATH_LENGTH`
   и перечень корней security-категорий в `isSecurity` («Оркестрация фаз 1–2.5»), `FINDER_FIELDS`/
-  `CHECK_FIELDS` («Формат кандидата», бриф агента проверки), `CHECKERS_MAX`/`CHECKER_ROWS` и
-  `MAX_ROW_ID_LENGTH` («Режим проверки правок»), `FRAME_QUOTE_MIN` («Рамка использования»).
+  `CHECK_FIELDS` («Формат кандидата», бриф агента проверки), `CHECKERS_MAX`/`CHECKER_ROWS`,
+  `REPEAT_FROM_PASS` и `MAX_ROW_ID_LENGTH` («Режим проверки правок»), `FRAME_QUOTE_MIN` («Рамка использования»).
 - Рамка использования **не снимает security-находку** — это держит `tally`, а не проза: признак
   security там широкий (флаг finder'а, голос верификатора, корень категории). Голос о рамке
   засчитывается только с цитатой, найденной в одной **записи** рамки (`frameUnits`: строка
