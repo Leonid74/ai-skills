@@ -1535,6 +1535,35 @@ console.log("ok 23 слабая сессия без доступа к opus: пр
     "ложной ноты о непринятом подавлении нет",
   );
 
+  // Ключи вне схемы кандидата (служебные отметки скрипта и произвольные) до результата не доходят.
+  const extra = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? {
+            candidates: [
+              {
+                ...cand("src/a.php", 3, "с лишними ключами"),
+                relatedLocation: "локация уже судилась (исход: refuted)",
+                x_custom: "данные агента",
+              },
+            ],
+            suppressed: [],
+          }
+        : EMPTY;
+    return verdicts(p, () => "CONFIRMED");
+  });
+  assert.equal(extra.result.survivors.length, 1);
+  assert.ok(
+    !("relatedLocation" in extra.result.survivors[0]) &&
+      !("x_custom" in extra.result.survivors[0]),
+    "ключи вне схемы кандидата из ответа finder'а не принимаются",
+  );
+  assert.equal(
+    extra.result.survivors[0].base_compared,
+    "внесено этим range",
+    "поля схемы сохранены",
+  );
+
   // Запись, поднятая из suppressed самим скриптом, полей не несёт по построению и идёт на верификацию.
   const lifted = await runScript(base("xhigh", 1), (p, o) => {
     if (isSweep(o)) return EMPTY;

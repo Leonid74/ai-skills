@@ -55,6 +55,17 @@ const MAX_WAVE = 16;
 const MAX_PATH_LENGTH = 300;
 // Поля, без которых кандидат не принимается: finder обязан сам проверить триггер, потребителя и базу.
 const FINDER_FIELDS = ["trigger", "caller_checked", "base_compared"];
+// Поля кандидата по схеме ответа finder'а. Всё остальное в его записи — не данные конвейера.
+const CANDIDATE_FIELDS = [
+  "file",
+  "line",
+  "summary",
+  "failure_scenario",
+  "category",
+  "security",
+  ...FINDER_FIELDS,
+  "skip_note",
+];
 
 const CANDIDATES_SCHEMA = {
   type: "object",
@@ -747,10 +758,13 @@ function accept(reply, source, cap) {
   // верификации. Записи, поднятые из suppressed, потолок кандидатов не делят (у них свой, того же
   // размера): заполнив candidates до потолка, finder не может вытеснить ими подавленное.
   // Всё срезанное сохраняется в overflow и делает прогон деградированным.
-  // Ключ promoted — служебный, его ставит только скрипт поднятым записям: из ответа finder'а он
-  // не принимается, иначе finder сам отключил бы проверку обязательных полей.
-  const own = (reply.candidates || []).map(
-    ({ promoted: _fromFinder, ...c }) => c,
+  // Из записи finder'а берутся только поля схемы. Служебные ключи (promoted, relatedLocation и
+  // любые другие) ставит скрипт: принятые от агента, они отключили бы проверку обязательных
+  // полей или вернулись бы сессии как отметка скрипта.
+  const own = (reply.candidates || []).map((c) =>
+    Object.fromEntries(
+      CANDIDATE_FIELDS.filter((f) => f in c).map((f) => [f, c[f]]),
+    ),
   );
   const kept = [...own.slice(0, cap), ...promoted.slice(0, cap)];
   const cut = [...own.slice(cap), ...promoted.slice(cap)];
