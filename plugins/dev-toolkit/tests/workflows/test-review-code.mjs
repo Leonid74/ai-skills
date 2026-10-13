@@ -125,7 +125,17 @@ function base(level, pass, split) {
  * @returns {object} кандидат по CANDIDATES_SCHEMA.
  */
 function cand(file, line, summary, security = false, category = "correctness") {
-  return { file, line, summary, failure_scenario: "fs", category, security };
+  return {
+    file,
+    line,
+    summary,
+    failure_scenario: "fs",
+    category,
+    security,
+    trigger: "src/a.php:1 — вход",
+    caller_checked: "потребителя нет",
+    base_compared: "внесено этим range",
+  };
 }
 
 /**
@@ -1395,3 +1405,251 @@ console.log("ok 22 сильная сессия: последняя линия б
   assert.equal(plain.result.opusSilent, false, "ответы без model — не sonnet");
 }
 console.log("ok 23 слабая сессия без доступа к opus: признак opusSilent");
+
+// 24. Обязательные поля кандидата (trigger, caller_checked, base_compared): кандидат без поля не
+//     принимается и оставляет след; security-кандидат без поля всё равно идёт на верификацию.
+{
+  const bare = (file, line, summary, security, category, drop) => {
+    const c = cand(file, line, summary, security, category);
+    for (const key of drop) c[key] = key === "trigger" ? "   " : undefined;
+    return c;
+  };
+  const { result, calls } = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o)) {
+      if (!o.label.startsWith("угол 1")) return EMPTY;
+      return {
+        candidates: [
+          cand("src/a.php", 1, "полный"),
+          bare("src/a.php", 2, "без триггера", false, "correctness", [
+            "trigger",
+          ]),
+          bare("src/a.php", 3, "без потребителя и базы", false, "tests", [
+            "caller_checked",
+            "base_compared",
+          ]),
+          bare("src/b.php", 4, "security по флагу", true, "security", [
+            "caller_checked",
+          ]),
+          bare("src/b.php", 5, "security по категории", false, "auth-bypass", [
+            "base_compared",
+          ]),
+        ],
+        suppressed: [],
+      };
+    }
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.deepEqual(
+    result.survivors.map((x) => x.summary).sort(),
+    ["security по категории", "security по флагу", "полный"].sort(),
+    "без полей прошли только security-кандидаты",
+  );
+  assert.deepEqual(
+    result.rejected.map((r) => [r.summary, r.reason]),
+    [
+      ["без триггера", "не заполнены обязательные поля: trigger"],
+      [
+        "без потребителя и базы",
+        "не заполнены обязательные поля: caller_checked, base_compared",
+      ],
+    ],
+    "отклонённые названы вместе с пропущенными полями",
+  );
+  assert.equal(
+    result.notes.filter((n) => n.includes("не принят — не заполнены")).length,
+    2,
+  );
+  assert.equal(
+    result.notes.filter((n) => n.includes("у security-кандидата")).length,
+    2,
+  );
+  const shown = calls
+    .filter((c) => !isFinder(c.opts))
+    .flatMap((c) => candidatesOf(c.prompt));
+  assert.ok(
+    shown.every(
+      (c) => !["без триггера", "без потребителя и базы"].includes(c.summary),
+    ),
+    "отклонённые до верификатора не дошли",
+  );
+  const full = shown.find((c) => c.summary === "полный");
+  assert.equal(full.trigger, "src/a.php:1 — вход", "поля видны верификатору");
+  assert.equal(full.caller_checked, "потребителя нет");
+  assert.equal(full.base_compared, "внесено этим range");
+  assert.equal(
+    result.mode,
+    "деградированный",
+    "отклонение по полям деградирует прогон: часть вывода угла не дошла до верификации",
+  );
+  assert.ok(
+    result.degraded.some(
+      (d) => d.includes("угол1") && d.includes("2 кандидат(ов) не принято"),
+    ),
+    "причина деградации названа с числом отклонённых",
+  );
+  assert.ok(
+    calls
+      .find((c) => isFinder(c.opts))
+      .opts.schema.properties.candidates.items.required.includes(
+        "base_compared",
+      ) &&
+      ["trigger", "caller_checked"].every((f) =>
+        calls
+          .find((c) => isFinder(c.opts))
+          .opts.schema.properties.candidates.items.required.includes(f),
+      ),
+    "три поля обязательны в схеме ответа finder'а",
+  );
+  console.log("ok 24 обязательные поля кандидата");
+}
+
+// 25. Границы приёмки кандидатов: служебный ключ от finder'а не действует, проверка полей стоит после
+//     среза по потолку, отклонённая локация не считается подавленной; рамку скрипт не принимает.
+{
+  const noFields = (file, line, summary, extra = {}) => ({
+    ...cand(file, line, summary),
+    trigger: "  ",
+    ...extra,
+  });
+  // Ключ promoted ставит только скрипт: от finder'а он проверку полей не отключает и ноты не даёт.
+  const forged = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? {
+            candidates: [
+              noFields("src/a.php", 2, "с ключом promoted", { promoted: true }),
+            ],
+            suppressed: [],
+          }
+        : EMPTY;
+    return verdicts(p, () => "CONFIRMED");
+  });
+  assert.deepEqual(
+    forged.result.rejected.map((r) => r.summary),
+    ["с ключом promoted"],
+    "ключ promoted от finder'а проверку полей не отключает",
+  );
+  assert.equal(forged.result.survivors.length, 0);
+  assert.ok(
+    !forged.result.notes.some((n) => n.includes("finder'ом не принято")),
+    "ложной ноты о непринятом подавлении нет",
+  );
+
+  // Ключи вне схемы кандидата (служебные отметки скрипта и произвольные) до результата не доходят.
+  const extra = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? {
+            candidates: [
+              {
+                ...cand("src/a.php", 3, "с лишними ключами"),
+                relatedLocation: "локация уже судилась (исход: refuted)",
+                x_custom: "данные агента",
+              },
+            ],
+            suppressed: [],
+          }
+        : EMPTY;
+    return verdicts(p, () => "CONFIRMED");
+  });
+  assert.equal(extra.result.survivors.length, 1);
+  assert.ok(
+    !("relatedLocation" in extra.result.survivors[0]) &&
+      !("x_custom" in extra.result.survivors[0]),
+    "ключи вне схемы кандидата из ответа finder'а не принимаются",
+  );
+  assert.equal(
+    extra.result.survivors[0].base_compared,
+    "внесено этим range",
+    "поля схемы сохранены",
+  );
+
+  // Запись, поднятая из suppressed самим скриптом, полей не несёт по построению и идёт на верификацию.
+  const lifted = await runScript(base("xhigh", 1), (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [], suppressed: [sup("src/a.php", 7)] }
+        : EMPTY;
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.equal(
+    lifted.result.rejected.length,
+    0,
+    "поднятая запись не отклонена",
+  );
+  assert.equal(
+    lifted.result.survivors.length,
+    1,
+    "поднятую запись судит верификация",
+  );
+
+  // Проверка полей — после среза по потолку: неполный кандидат места не освобождает.
+  const capped = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? {
+            candidates: [1, 2, 3, 4, 5, 6, 7, 8].map((n) =>
+              n <= 3
+                ? noFields("src/a.php", n, `f${n}`)
+                : cand("src/a.php", n, `f${n}`),
+            ),
+            suppressed: [],
+          }
+        : EMPTY;
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.deepEqual(
+    capped.result.survivors.map((x) => x.summary).sort(),
+    ["f4", "f5", "f6"],
+    "до верификации дошли только полные кандидаты в пределах потолка",
+  );
+  assert.deepEqual(
+    capped.result.overflow.map((x) => x.summary),
+    ["f7", "f8"],
+    "срезанное сверх потолка не занимает место отклонённых",
+  );
+  assert.deepEqual(
+    capped.result.rejected.map((x) => x.summary),
+    ["f1", "f2", "f3"],
+  );
+
+  // Локацию, которую один finder подавил, а другой передал кандидатом без полей, подавленной не считать.
+  const mixed = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o)) {
+      if (o.label.startsWith("угол 1"))
+        return {
+          candidates: [noFields("src/a.php", 10, "без поля")],
+          suppressed: [],
+        };
+      if (o.label.startsWith("угол 2"))
+        return {
+          candidates: [],
+          suppressed: [sup("src/a.php", 10), sup("src/b.php", 5)],
+        };
+      return EMPTY;
+    }
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.deepEqual(
+    mixed.result.suppressed.map((x) => `${x.file}:${x.line}`),
+    ["src/b.php:5"],
+    "локация отклонённого кандидата не выдана за подавленную по skip-list",
+  );
+  assert.deepEqual(
+    mixed.result.rejected.map((x) => `${x.file}:${x.line}`),
+    ["src/a.php:10"],
+  );
+
+  // Рамка использования в 2.12.0 — только режим Agent: скрипт поле не принимает.
+  for (const frame of ["| a | b | вне рамки |", "", null]) {
+    const a = base("high", 1);
+    a.frame = frame;
+    await assert.rejects(
+      runScript(a, () => null),
+      /args\.frame: рамка использования в режиме Workflow не поддерживается/,
+      "args.frame отвергается при любом значении",
+    );
+  }
+  console.log("ok 25 границы приёмки кандидатов и отказ при рамке");
+}

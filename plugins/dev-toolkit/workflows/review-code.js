@@ -34,7 +34,8 @@ export const meta = {
 // Зеркала величин SKILL.md — менять обе стороны синхронно (перечень — в CLAUDE.md репозитория):
 // LEVELS — «Таблица уровней»; LENSES — линзы max (фаза 2); SECURITY_ANGLE — номер security-угла;
 // SWEEP_CAP — потолок кандидатов sweep (фаза 2.5); MERGE_* и DEFAULT_WAVE — «Оркестрация фаз 1–2.5»;
-// NO_SELF_SUPPRESS — уровни, где finder не подавляет сам (пункт 1 skip-list).
+// NO_SELF_SUPPRESS — уровни, где finder не подавляет сам (пункт 1 skip-list); FINDER_FIELDS —
+// обязательные поля кандидата («Формат кандидата»).
 const LEVELS = {
   medium: { angles: 3, cap: 6, protocol: "skeptic", sweep: false },
   high: { angles: 5, cap: 6, protocol: "recall", sweep: false },
@@ -52,6 +53,19 @@ const DEFAULT_WAVE = 5;
 const MIN_WAVE = 2;
 const MAX_WAVE = 16;
 const MAX_PATH_LENGTH = 300;
+// Поля, без которых кандидат не принимается: finder обязан сам проверить триггер, потребителя и базу.
+const FINDER_FIELDS = ["trigger", "caller_checked", "base_compared"];
+// Поля кандидата по схеме ответа finder'а. Всё остальное в его записи — не данные конвейера.
+const CANDIDATE_FIELDS = [
+  "file",
+  "line",
+  "summary",
+  "failure_scenario",
+  "category",
+  "security",
+  ...FINDER_FIELDS,
+  "skip_note",
+];
 
 const CANDIDATES_SCHEMA = {
   type: "object",
@@ -77,6 +91,21 @@ const CANDIDATES_SCHEMA = {
             description: "kebab-case слаг категории",
           },
           security: { type: "boolean" },
+          trigger: {
+            type: "string",
+            description:
+              "строка кода (путь:строка) или вход, который порождает состояние отказа; не «если значение окажется…»",
+          },
+          caller_checked: {
+            type: "string",
+            description:
+              "вызывающий либо компенсатор, который НЕ ловит эту форму (путь:строка), либо «потребителя нет»",
+          },
+          base_compared: {
+            type: "string",
+            description:
+              "«внесено этим range» либо «было до»; дифф не по range — «не range»",
+          },
           skip_note: {
             type: "string",
             description:
@@ -90,6 +119,7 @@ const CANDIDATES_SCHEMA = {
           "failure_scenario",
           "category",
           "security",
+          ...FINDER_FIELDS,
         ],
       },
     },
@@ -193,6 +223,13 @@ if (
   (typeof input.sweepBrief !== "string" || !input.sweepBrief.trim())
 ) {
   throw new Error("args.sweepBrief: обязателен на xhigh/max");
+}
+// Рамку использования скрипт не применяет: прогон с рамкой ведёт режим Agent. Молча принять поле
+// нельзя — рамка осталась бы без исполнителя, а прогон выглядел бы прогоном с рамкой.
+if (input.frame !== undefined) {
+  throw new Error(
+    "args.frame: рамка использования в режиме Workflow не поддерживается — прогон с рамкой ведёт режим Agent",
+  );
 }
 const files = Array.isArray(input.files) ? input.files : [];
 if (!files.length || files.some((f) => typeof f !== "string" || !f)) {
@@ -442,14 +479,15 @@ function locKey(c) {
 }
 
 /**
- * Считается ли кандидат security-находкой для пункта 4 skip-list: по флагу либо по категории.
- * Признак влияет ТОЛЬКО на то, может ли skip-list снять кандидата, — ошибка в широкую сторону
- * безопасна (находка остаётся в выводе), поэтому перечень корней намеренно щедрый. На порядок и
- * срез кандидатов признак не влияет: иначе содержимое диффа управляло бы тем, что дойдёт до
- * верификации.
+ * Считается ли кандидат security-находкой по сведениям finder'а: по флагу либо по категории.
+ * От признака зависит: может ли skip-list снять кандидата (пункт 4), поднимается ли запись
+ * suppressed на medium/high и идёт ли на верификацию кандидат без обязательных полей. Во всех трёх
+ * случаях признак только добавляет верификацию — ошибка в широкую сторону безопасна, поэтому
+ * перечень корней намеренно щедрый. На порядок и срез кандидатов признак не влияет: иначе
+ * содержимое диффа управляло бы тем, кого вытеснить из верификации.
  *
  * @param {{security?: boolean, category?: string}} c кандидат.
- * @returns {boolean} true — skip-list такого кандидата не подавляет.
+ * @returns {boolean} true — кандидат считается security-находкой.
  */
 function isSecurity(c) {
   return (
@@ -600,7 +638,7 @@ function verifierPrompt(group, lens) {
     `## Протокол верификации\n${input.verifyProtocol}`,
     "Верни вердикт по КАЖДОМУ кандидату из списка (по его id), ровно один на id, с доказательством-цитатой из кода, а не мнением. " +
       "Если два кандидата описывают один механизм — у менее конкретного заполни `duplicate_of` id более конкретного.",
-    `## Кандидаты\n${DATA_RULE}\n${jsonBlock(group.candidates, ["id", "file", "line", "summary", "failure_scenario", "skip_note"])}`,
+    `## Кандидаты\n${DATA_RULE}\n${jsonBlock(group.candidates, ["id", "file", "line", "summary", "failure_scenario", ...FINDER_FIELDS, "skip_note"])}`,
     `## Входные данные\n${input.context}`,
   ].join("\n\n");
 }
@@ -630,6 +668,9 @@ function sweepPrompt(survivors, removed) {
 // Ключ «локация|summary» → источник первого принятого кандидата (общий для фазы 1 и sweep).
 const seen = new Map();
 const rejected = [];
+// Локации кандидатов, отклонённых из-за незаполненных полей: finder передал их в обычный список,
+// поэтому подавленными по skip-list они не считаются (пункт 1), хотя до верификации не дошли.
+const fieldRejected = new Set();
 const overflow = [];
 let suppressedRaw = [];
 
@@ -664,10 +705,26 @@ function reject(item, source) {
 }
 
 /**
+ * Обязательные поля, которые агент оставил пустыми.
+ *
+ * @param {object} c кандидат.
+ * @returns {Array<string>} имена незаполненных полей из FINDER_FIELDS.
+ */
+function missingFields(c) {
+  return FINDER_FIELDS.filter((f) => typeof c[f] !== "string" || !c[f].trim());
+}
+
+/**
  * Принимает ответ finder'а: потолок (в порядке возврата), нормализация путей, id, отсев точных дублей.
  * Подавление finder'ом не принимается на веру: на xhigh и max (пункт 1 skip-list) и для
  * security-записей (пункт 4) запись suppressed превращается в обычного кандидата с пометкой — снять
  * его могут только верификаторы.
+ *
+ * Кандидат без обязательных полей не принимается: он уходит в rejected с нотой, а прогон становится
+ * деградированным — часть вывода угла до верификации не дошла. Исключение — security-кандидат: он
+ * идёт на верификацию с нотой, потому что потерять его дороже лишнего голоса. Проверка стоит после
+ * среза по потолку, так что признак security чужого места не занимает. У записи, поднятой из
+ * suppressed, этих полей нет по построению — её судит верификация.
  *
  * @param {object} reply ответ по CANDIDATES_SCHEMA.
  * @param {string} source метка источника (угол/sweep) — попадает в находку и в id.
@@ -701,7 +758,14 @@ function accept(reply, source, cap) {
   // верификации. Записи, поднятые из suppressed, потолок кандидатов не делят (у них свой, того же
   // размера): заполнив candidates до потолка, finder не может вытеснить ими подавленное.
   // Всё срезанное сохраняется в overflow и делает прогон деградированным.
-  const own = reply.candidates || [];
+  // Из записи finder'а берутся только поля схемы. Служебные ключи (promoted, relatedLocation и
+  // любые другие) ставит скрипт: принятые от агента, они отключили бы проверку обязательных
+  // полей или вернулись бы сессии как отметка скрипта.
+  const own = (reply.candidates || []).map((c) =>
+    Object.fromEntries(
+      CANDIDATE_FIELDS.filter((f) => f in c).map((f) => [f, c[f]]),
+    ),
+  );
   const kept = [...own.slice(0, cap), ...promoted.slice(0, cap)];
   const cut = [...own.slice(cap), ...promoted.slice(cap)];
   if (cut.length) {
@@ -720,6 +784,7 @@ function accept(reply, source, cap) {
     }
   }
   const out = [];
+  let withoutFields = 0;
   kept.forEach((c, i) => {
     const norm = normalizePath(c.file);
     if (norm.status === "unsafe") {
@@ -734,6 +799,26 @@ function accept(reply, source, cap) {
       notes.push(
         `${source}: подавление ${norm.path}:${c.line} finder'ом не принято (${NO_SELF_SUPPRESS.includes(level) ? `уровень ${level}` : "security"}) — кандидат отправлен на верификацию`,
       );
+    const missing = c.promoted ? [] : missingFields(c);
+    if (missing.length && !isSecurity(c)) {
+      rejected.push({
+        file: norm.path,
+        line: c.line,
+        summary: c.summary,
+        source,
+        reason: `не заполнены обязательные поля: ${missing.join(", ")}`,
+      });
+      fieldRejected.add(locKey({ file: norm.path, line: c.line }));
+      withoutFields += 1;
+      notes.push(
+        `${source}: кандидат ${norm.path}:${c.line} не принят — не заполнены обязательные поля (${missing.join(", ")})`,
+      );
+      return;
+    }
+    if (missing.length)
+      notes.push(
+        `${source}: у security-кандидата ${norm.path}:${c.line} не заполнены обязательные поля (${missing.join(", ")}) — отправлен на верификацию`,
+      );
     const cand = { ...c, file: norm.path, source, id: `${source}#${i + 1}` };
     const k = `${locKey(cand)}|${cand.summary.trim().toLowerCase()}`;
     if (seen.has(k)) {
@@ -745,6 +830,10 @@ function accept(reply, source, cap) {
     seen.set(k, source);
     out.push(cand);
   });
+  if (withoutFields)
+    degraded.push(
+      `${source}: ${withoutFields} кандидат(ов) не принято из-за незаполненных обязательных полей — см. rejected`,
+    );
   return out;
 }
 
@@ -1041,8 +1130,9 @@ const duplicates = judged
   .map((c) => ({ ...short(c), duplicateOf: c.duplicateOf }));
 
 // Подавленное считается по локациям; локация, которую хоть один finder передал в обычный список, —
-// не подавлена (пункт 1 skip-list): её судьбу решила верификация.
-const poolLocations = new Set(judged.map(locKey));
+// не подавлена (пункт 1 skip-list): её судьбу решила верификация либо отклонение по обязательным
+// полям (тогда она видна в rejected).
+const poolLocations = new Set([...judged.map(locKey), ...fieldRejected]);
 const suppressedMap = new Map();
 for (const s of suppressedRaw) {
   const k = locKey(s);
