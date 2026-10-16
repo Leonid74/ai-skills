@@ -22,7 +22,7 @@ ai-skills/
         ├── .claude-plugin/plugin.json
         ├── commands/      ← /dev-toolkit:pr, /dev-toolkit:cppr, /dev-toolkit:review-quick, /dev-toolkit:review-last
         ├── skills/        ← review-code, todo-ship, statusline-setup, optimize-project-docs,
-        │                     server-disk-cleanup, debug
+        │                     server-disk-cleanup, debug, deepen-prompt
         ├── workflows/     ← review-code.js — конвейер review-code (dev-toolkit:review-code-pipeline)
         ├── tests/workflows/ ← стенд-заглушка для workflow-скрипта (моки agent/parallel/pipeline)
         ├── tests/statusline/ ← тест шаблона statusline.sh из SKILL.md скилла statusline-setup
@@ -95,7 +95,13 @@ bash plugins/dev-toolkit/tests/server-disk-cleanup/test-build-cache-forecast.sh
 обёртку и это объяснение в брифе.
 
 **Опытные прогоны — под потолком памяти и времени.** Любой проверочный запуск, свой и субагента (тест,
-копия блока, `awk`, свой скрипт), — в форме `( ulimit -v 1048576; timeout 120 <команда> )`. Файлом на
+копия блока, `awk`, свой скрипт), — в форме `( ulimit -v 1048576; timeout 120 <команда> )`.
+Исключения: headless `claude -p` (опыты со скиллами) — `( ulimit -v 2097152; timeout 300 claude -p … </dev/null )`,
+`node` (стенд workflow-скрипта) — `( ulimit -v 2097152; timeout 120 node … )`. Оба рантайма резервируют
+адресное пространство сверх RSS: под 1 ГБ `node` v24 падает уже на `node -e`, а `claude -p` — segfault
+(пик RSS — 300–430 МБ); разведка скилла по большому файлу идёт до двух минут: 5 сбоев `claude -p` из 20
+прогонов 17.10.2026, под 2 ГБ и 300 с — 0 из 16. `</dev/null` обязателен: в цикле `while read`
+`claude -p` съедает stdin цикла. Файлом на
 вход не давать `/dev/full`, `/dev/zero`, `/dev/urandom` и симлинки на них: чтение оттуда бесконечно;
 «диск полон» имитировать только каталогом без прав на запись. Причина: Claude работает внутри tmux, и
 если ядро убивает по нехватке памяти процесс в `tmux.service` с `OOMPolicy=stop` (умолчание systemd),
