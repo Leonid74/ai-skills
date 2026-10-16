@@ -20,7 +20,7 @@
     `optimize-project-docs` — оптимизация и реконсиляция `CLAUDE.md` / `README` / памяти проекта;
     `server-disk-cleanup` — анализ места на диске Linux-сервера и очистка только выбранных пунктов;
     `debug` — систематическая отладка: сначала корневая причина, потом одна проверенная правка;
-    `be-ambitious` — переписывает задачу в более глубокую версию её самой (проверка постановки,
+    `deepen-prompt` — переписывает задачу в более глубокую версию её самой (проверка постановки,
     сырой материал, методы, внешняя проверка) и отдаёт готовый промпт, не выполняя задачу
   - *Хук защиты:* блокирует деструктивные Bash-команды (`rm -rf`,
     `git reset --hard`, `git push --force`, `git branch -D`, чтение `.env`,
@@ -432,7 +432,7 @@ CLAUDE.md», «убери устаревшее из памяти проекта�
 `systematic-debugging` из [obra/superpowers](https://github.com/obra/superpowers) (MIT) — см.
 `skills/debug/THIRD_PARTY_NOTICES.md`.
 
-#### Skill: be-ambitious
+#### Skill: deepen-prompt
 
 Переписывает задачу или промпт в **более глубокую версию той же задачи, а не в более крупную**: цель
 и объём сохраняются, новых результатов и попутных задач не прибавляется. Сначала проверяет саму
@@ -447,12 +447,12 @@ CLAUDE.md», «убери устаревшее из памяти проекта�
 предположений, кончается внешней проверкой, отчёт исполнителя разделяет факты, выводы и
 предположения. Саму задачу не выполняет — предлагает запустить промпт одной строкой.
 
-Вызов — `/dev-toolkit:be-ambitious <задача>` (без аргумента — последний запрос в диалоге); по
+Вызов — `/dev-toolkit:deepen-prompt <задача>` (без аргумента — последний запрос в диалоге); по
 описанию срабатывает на «подними планку», «сделай промпт глубже», «как бы это сделал эксперт»,
 «be ambitious». Не срабатывает на расширение объёма, полировку тона и длины и на просьбу выполнить
 саму задачу (отладка, ревью, пункт TODO — их скиллы). Основано на `be-ambitious` из
 [DannyMac180/skills](https://github.com/DannyMac180/skills) (MIT), который адаптирует промпт
-Феликса Ризеберга (Anthropic), — см. `skills/be-ambitious/THIRD_PARTY_NOTICES.md`.
+Феликса Ризеберга (Anthropic), — см. `skills/deepen-prompt/THIRD_PARTY_NOTICES.md`.
 
 #### Хук: защита от деструктивных команд
 
@@ -660,7 +660,7 @@ ai-skills/
         │   ├── cppr.md
         │   ├── review-quick.md
         │   └── review-last.md
-        ├── skills/                   ← review-code, todo-ship, statusline-setup, optimize-project-docs, server-disk-cleanup, debug, be-ambitious
+        ├── skills/                   ← review-code, todo-ship, statusline-setup, optimize-project-docs, server-disk-cleanup, debug, deepen-prompt
         │   ├── review-code/SKILL.md
         │   ├── todo-ship/SKILL.md
         │   ├── statusline-setup/SKILL.md
@@ -672,7 +672,7 @@ ai-skills/
         │   │   ├── SKILL.md
         │   │   ├── references/techniques.md  ← приёмы: трассировка, ожидание по условию, слои проверок
         │   │   └── THIRD_PARTY_NOTICES.md    ← лицензия MIT оригинала (obra/superpowers)
-        │   └── be-ambitious/
+        │   └── deepen-prompt/
         │       ├── SKILL.md
         │       └── THIRD_PARTY_NOTICES.md    ← лицензия MIT оригинала (DannyMac180/skills)
         ├── workflows/
