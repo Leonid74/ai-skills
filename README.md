@@ -21,7 +21,9 @@
     `server-disk-cleanup` — анализ места на диске Linux-сервера и очистка только выбранных пунктов;
     `debug` — систематическая отладка: сначала корневая причина, потом одна проверенная правка;
     `deepen-prompt` — переписывает задачу в более глубокую версию её самой (проверка постановки,
-    сырой материал, методы, внешняя проверка) и отдаёт готовый промпт, не выполняя задачу
+    сырой материал, методы, внешняя проверка) и отдаёт готовый промпт, не выполняя задачу;
+    `todo` — список задач проекта в формате «### №N.» (заведение, закрытие с переносом в архив,
+    проверка формата) скриптом плагина, с проверкой совместимости списка до любой записи
   - *Хук защиты:* блокирует деструктивные Bash-команды (`rm -rf`,
     `git reset --hard`, `git push --force`, `git branch -D`, чтение `.env`,
     вывод окружения) и случайную передачу значений секретов/токенов
@@ -456,6 +458,29 @@ CLAUDE.md», «убери устаревшее из памяти проекта�
 [DannyMac180/skills](https://github.com/DannyMac180/skills) (MIT), который адаптирует промпт
 Феликса Ризеберга (Anthropic), — см. `skills/deepen-prompt/THIRD_PARTY_NOTICES.md`.
 
+#### Skill: todo
+
+Ведёт список задач проекта в формате «### №N.»: открытые задачи — `doc/TODO.md`, закрытые — архив
+`doc/TODO-DONE.md`, следующий номер — `doc/.todo-next`. Записи заводит, переносит в архив и проверяет
+скрипт плагина `scripts/todo.sh`, а не модель: номер берётся из счётчика, закрытая запись переезжает в
+архив без перепечатывания (меняется только строка статуса, добавляются «Закрыто» и «Итог»), до записи
+файлов скрипт сверяет, что текст не изменился. Режимы: `new`, `close N`, `check`, `refs N`, `next`,
+`compat`, `version` (описание — в начале скрипта).
+
+**Первым шагом — проверка совместимости** (`todo.sh compat`, только чтение): каких файлов нет, сколько
+записей формата, ошибки структуры и полей, строки другого вида списка (чекбоксы, нумерованные пункты,
+строки таблиц) и наибольший номер в них. Несовместимый список скилл не трогает: называет причины и
+предлагает перевести список в формат отдельным PR (план — на согласование) либо не применять скилл в
+проекте. Без проверки скрипт на чужом списке дописал бы «### №1.» после прежних пунктов.
+
+Если у проекта свой скилл `.claude/skills/todo/SKILL.md`, работает он. Копию скрипта в проекте
+(`scripts/todo.sh`, её гоняет CI проекта) скилл сверяет с плагинной по `todo.sh version` и при
+расхождении говорит об этом. Скрипт перенесён из проекта `apps-b24-platform` (задачи №96, №97).
+
+Вызов — по описанию: «заведи задачу», «добавь пункт в TODO», «закрой пункт N», «перенеси №N в
+выполненные», «проверь формат TODO», «подходит ли наш TODO к формату». Не срабатывает на строку
+сводного пункта, реализацию задачи (`todo-ship`) и чек-листы `.dev/PLAN-…`.
+
 #### Хук: защита от деструктивных команд
 
 `PreToolUse` на `Bash` — срабатывает автоматически на каждой Bash-команде,
@@ -662,7 +687,7 @@ ai-skills/
         │   ├── cppr.md
         │   ├── review-quick.md
         │   └── review-last.md
-        ├── skills/                   ← review-code, todo-ship, statusline-setup, optimize-project-docs, server-disk-cleanup, debug, deepen-prompt
+        ├── skills/                   ← review-code, todo-ship, statusline-setup, optimize-project-docs, server-disk-cleanup, debug, deepen-prompt, todo
         │   ├── review-code/SKILL.md
         │   ├── todo-ship/SKILL.md
         │   ├── statusline-setup/SKILL.md
@@ -674,9 +699,12 @@ ai-skills/
         │   │   ├── SKILL.md
         │   │   ├── references/techniques.md  ← приёмы: трассировка, ожидание по условию, слои проверок
         │   │   └── THIRD_PARTY_NOTICES.md    ← лицензия MIT оригинала (obra/superpowers)
-        │   └── deepen-prompt/
-        │       ├── SKILL.md
-        │       └── THIRD_PARTY_NOTICES.md    ← лицензия MIT оригинала (DannyMac180/skills)
+        │   ├── deepen-prompt/
+        │   │   ├── SKILL.md
+        │   │   └── THIRD_PARTY_NOTICES.md    ← лицензия MIT оригинала (DannyMac180/skills)
+        │   └── todo/SKILL.md
+        ├── scripts/
+        │   └── todo.sh               ← список задач «### №N.»: new, close, check, refs, next, compat, version
         ├── workflows/
         │   └── review-code.js        ← конвейер review-code (dev-toolkit:review-code-pipeline)
         ├── tests/workflows/
@@ -685,6 +713,9 @@ ai-skills/
         │   └── test-statusline-template.sh ← тест шаблона statusline.sh скилла statusline-setup
         ├── tests/server-disk-cleanup/
         │   └── test-build-cache-forecast.sh ← тест блока «прогноз для кеша сборки» скилла server-disk-cleanup
+        ├── tests/todo/
+        │   ├── test-todo.sh          ← стенд scripts/todo.sh (перенос TodoScriptTest apps-b24-platform)
+        │   └── test-todo-compat.sh   ← тест режимов compat и version
         └── hooks/
             ├── hooks.json            ← регистрация хуков (PreToolUse, SessionStart, Notification, Stop)
             ├── guard-bash.sh         ← PreToolUse: деструктивные команды + секреты
