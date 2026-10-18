@@ -166,7 +166,8 @@ archive_head >"${s_unread}/doc/TODO-DONE.md"
 printf '3 # выдан №2 — Одна\n' >"${s_unread}/doc/.todo-next"
 chmod 000 "${s_unread}/doc/TODO.md"
 _root_user=0
-[[ "$(id -u)" -eq 0 ]] && _root_user=1
+_uid="$(id -u)"
+[[ "${_uid}" -eq 0 ]] && _root_user=1
 
 # --- проверки ---
 
