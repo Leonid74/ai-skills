@@ -159,6 +159,15 @@ s_warn="$(sample s11)"
 archive_head >"${s_warn}/doc/TODO-DONE.md"
 printf '6 # выдан №5 — Задача\n' >"${s_warn}/doc/.todo-next"
 
+# 12. Список не читается (под root проверка прав не работает — случай пропускается и называется).
+s_unread="$(sample s12)"
+record 2 'Одна' >"${s_unread}/doc/TODO.md"
+archive_head >"${s_unread}/doc/TODO-DONE.md"
+printf '3 # выдан №2 — Одна\n' >"${s_unread}/doc/.todo-next"
+chmod 000 "${s_unread}/doc/TODO.md"
+_root_user=0
+[[ "$(id -u)" -eq 0 ]] && _root_user=1
+
 # --- проверки ---
 
 for _a in "${_awks[@]}"; do
@@ -269,7 +278,20 @@ for _a in "${_awks[@]}"; do
   ok "[${_a}] шапка с шагами: код 0" "$?"
   has 'предупреждение' && has 'нумерованные пункты — 2'
   ok "[${_a}] шапка с шагами: предупреждение, пунктов 2" "$?"
+
+  # 12. нечитаемый список — несовместим с причиной, а не падение разбора
+  if [[ "${_root_user}" -eq 0 ]]; then
+    run_compat "${s_unread}" "${_a}"
+    [[ ${rc} -eq 1 ]]
+    ok "[${_a}] нечитаемый список: код 1" "$?"
+    has 'список ./doc/TODO.md: не читается'
+    ok "[${_a}] нечитаемый список: причина названа" "$?"
+  fi
 done
+chmod 644 "${s_unread}/doc/TODO.md"
+if [[ "${_root_user}" -eq 1 ]]; then
+  _skipped+=('нечитаемый список (под root)')
+fi
 
 # version: одна строка «todo.sh <версия>», версия — semver, код 0.
 _v="$(bash "${_sh}" version 2>&1)" || true

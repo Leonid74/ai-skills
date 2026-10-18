@@ -54,6 +54,14 @@
 # Зависимости: bash, POSIX awk (проверено с gawk и mawk), cat, cp, mv, rm, mktemp, head, tail, sed, tr,
 # wc, cmp, sort, uniq, grep, dirname, basename; для refs без путей — git.
 
+# Функции-проверки (has_ctrl, file_has_ctrl, structure_ok, validate_fields, parse_counter, compute_next)
+# зовутся в условиях намеренно: их код возврата и есть результат проверки, отказ идёт через die. Под set -e
+# сбой утилиты внутри такой функции и в подстановке внутри условия скрипт не останавливает — так устроен
+# исходный скрипт, перенос в плагин его не меняет. Опыт с нечитаемыми файлами: check,
+# close и compat кончаются кодом ≠ 0; new при нечитаемом архиве заводит запись с кодом 0, а номера архива
+# не учитывает — номер берётся из счётчика.
+# shellcheck disable=SC2310,SC2312
+
 set -euo pipefail
 export LC_ALL=C
 
@@ -74,12 +82,12 @@ die() {
 cleanup() {
     local f
     for f in "${STAGED[@]:-}"; do
-        if [[ -n "$f" && -e "$f" ]]; then
-            rm -f -- "$f"
+        if [[ -n "${f}" && -e "${f}" ]]; then
+            rm -f -- "${f}"
         fi
     done
-    if [[ -n "$WORK" && -d "$WORK" ]]; then
-        rm -rf -- "$WORK"
+    if [[ -n "${WORK}" && -d "${WORK}" ]]; then
+        rm -rf -- "${WORK}"
     fi
 }
 trap cleanup EXIT
@@ -139,7 +147,7 @@ function maxref(line,   mark, i, v, best) {
 # конце файла; внутри блока кода (```) заголовки не ищутся.
 scan() {
     # shellcheck disable=SC2016
-    MODE=$1 awk "$AWK_LIB"'
+    MODE=$1 awk "${AWK_LIB}"'
     function flush(endline) {
         if (cur) print "R", cur, start, endline, (type == "" ? "?" : type)
         cur = 0
@@ -211,9 +219,9 @@ scan() {
 # Печатает ошибки структуры файла в stderr; код 1, если они есть.
 structure_ok() {
     local mode=$1 file=$2 label=${3:-$2} errors
-    errors=$(scan "$mode" "$file" | LABEL=$label awk '$1 == "E" { line = $2; sub(/^E [0-9]+ /, ""); printf "%s:%d: %s\n", ENVIRON["LABEL"], line, $0 }')
-    if [[ -n "$errors" ]]; then
-        printf '%s\n' "$errors" >&2
+    errors=$(scan "${mode}" "${file}" | LABEL=${label} awk '$1 == "E" { line = $2; sub(/^E [0-9]+ /, ""); printf "%s:%d: %s\n", ENVIRON["LABEL"], line, $0 }')
+    if [[ -n "${errors}" ]]; then
+        printf '%s\n' "${errors}" >&2
         return 1
     fi
 }
@@ -221,8 +229,8 @@ structure_ok() {
 # Наибольший занятый номер: записи нового формата обоих файлов и номера прежних записей архива.
 max_number() {
     {
-        scan list "$TODO_FILE"
-        scan archive "$DONE_FILE"
+        scan list "${TODO_FILE}"
+        scan archive "${DONE_FILE}"
     } | awk '$1 == "R" || $1 == "L" { if ($2 + 0 > max) max = $2 + 0 } END { print max + 0 }'
 }
 
@@ -231,7 +239,7 @@ max_number() {
 validate_fields() {
     local mode=$1 file=$2 label=${3:-$2}
     # shellcheck disable=SC2016
-    MODE=$mode FILE_LABEL=$label awk "$AWK_LIB"'
+    MODE=${mode} FILE_LABEL=${label} awk "${AWK_LIB}"'
     function fail(msg) {
         printf "%s:%d: №%d: %s\n", ENVIRON["FILE_LABEL"], NR, cur, msg > "/dev/stderr"
         bad = 1
@@ -322,7 +330,7 @@ validate_fields() {
         }
     }
     END { finish(); exit bad }
-    ' "$file"
+    ' "${file}"
 }
 
 # Открытые места сводных пунктов файла: по строке вывода на каждое — «метка:номер_строки: №N: причина: начало
@@ -339,7 +347,7 @@ validate_fields() {
 # Прочие абзацы не судятся.
 open_lines() {
     # shellcheck disable=SC2016
-    FILE_LABEL=$2 OFFSET=${3:-0} awk "$AWK_LIB"'
+    FILE_LABEL=$2 OFFSET=${3:-0} awk "${AWK_LIB}"'
     # Начало строки для сообщения: табуляция — словом (отказы называют строки с табуляцией), прочие управляющие
     # символы — знаком вопроса (текст задачи на них не проверяется, а печатается в терминал); не длиннее
     # 100 байт, без разрыва многобайтового символа.
@@ -405,19 +413,19 @@ open_lines() {
 # Три файла — не символические ссылки, список и архив на месте.
 require_files() {
     local f
-    for f in "$TODO_FILE" "$DONE_FILE" "$COUNTER_FILE"; do
-        [[ ! -L "$f" ]] || die "символическая ссылка вместо файла: $f — по ссылке скрипт не пишет"
+    for f in "${TODO_FILE}" "${DONE_FILE}" "${COUNTER_FILE}"; do
+        [[ ! -L "${f}" ]] || die "символическая ссылка вместо файла: ${f} — по ссылке скрипт не пишет"
     done
-    [[ -f "$TODO_FILE" ]] || die "нет файла списка: $TODO_FILE"
-    [[ -f "$DONE_FILE" ]] || die "нет файла архива: $DONE_FILE"
+    [[ -f "${TODO_FILE}" ]] || die "нет файла списка: ${TODO_FILE}"
+    [[ -f "${DONE_FILE}" ]] || die "нет файла архива: ${DONE_FILE}"
 }
 
 # Список и архив разбираются целиком — иначе скрипт ничего не меняет.
 require_structure() {
     local bad=0
-    structure_ok list "$TODO_FILE" || bad=1
-    structure_ok archive "$DONE_FILE" || bad=1
-    [[ "$bad" -eq 0 ]] || die 'структура файлов не разобрана (строки выше) — файлы не изменены; исправьте и проверьте: check'
+    structure_ok list "${TODO_FILE}" || bad=1
+    structure_ok archive "${DONE_FILE}" || bad=1
+    [[ "${bad}" -eq 0 ]] || die 'структура файлов не разобрана (строки выше) — файлы не изменены; исправьте и проверьте: check'
 }
 
 # Файл непуст и кончается переводом строки — иначе перенос по номерам строк исказил бы последнюю запись.
@@ -428,37 +436,37 @@ require_final_newline() {
 # Название записи с данным номером в файле (пусто, если записи нет).
 record_title() {
     local n=$1 mode=$2 file=$3 start
-    start=$(scan "$mode" "$file" | awk -v n="$n" '$1 == "R" && $2 == n { print $3; exit }')
-    [[ -n "$start" ]] || return 0
-    sed -n "${start}p" "$file" | sed "s/^### №${n}\\. //"
+    start=$(scan "${mode}" "${file}" | awk -v n="${n}" '$1 == "R" && $2 == n { print $3; exit }')
+    [[ -n "${start}" ]] || return 0
+    sed -n "${start}p" "${file}" | sed "s/^### №${n}\\. //"
 }
 
 # Разбор строки счётчика: печатает «следующий выданный». Формат — «N # выдан №M — название», N = M + 1.
 parse_counter() {
     local line next issued
-    [[ "$(wc -l < "$COUNTER_FILE")" -eq 1 ]] || die "счётчик $COUNTER_FILE — не одна строка"
-    line=$(cat -- "$COUNTER_FILE")
-    if has_ctrl "$line" || [[ ! "$line" =~ ^([1-9][0-9]*)\ \#\ выдан\ №(0|[1-9][0-9]*)\ —\ .+$ ]]; then
-        die "счётчик $COUNTER_FILE не в формате «N # выдан №M — название»"
+    [[ "$(wc -l < "${COUNTER_FILE}")" -eq 1 ]] || die "счётчик ${COUNTER_FILE} — не одна строка"
+    line=$(cat -- "${COUNTER_FILE}")
+    if has_ctrl "${line}" || [[ ! "${line}" =~ ^([1-9][0-9]*)\ \#\ выдан\ №(0|[1-9][0-9]*)\ —\ .+$ ]]; then
+        die "счётчик ${COUNTER_FILE} не в формате «N # выдан №M — название»"
     fi
     next=${BASH_REMATCH[1]}
     issued=${BASH_REMATCH[2]}
-    [[ "$next" -eq $((issued + 1)) ]] || die "счётчик $COUNTER_FILE: следующий номер $next не равен выданному $issued плюс один"
-    printf '%s %s\n' "$next" "$issued"
+    [[ "${next}" -eq $((issued + 1)) ]] || die "счётчик ${COUNTER_FILE}: следующий номер ${next} не равен выданному ${issued} плюс один"
+    printf '%s %s\n' "${next}" "${issued}"
 }
 
 # Следующий номер без записи в файлы. Файла счётчика нет — наибольший номер в обоих файлах плюс один.
 compute_next() {
     local max next
     max=$(max_number)
-    if [[ ! -e "$COUNTER_FILE" ]]; then
+    if [[ ! -e "${COUNTER_FILE}" ]]; then
         printf '%s\n' "$((max + 1))"
         return 0
     fi
     next=$(parse_counter) || exit 1
     next=${next%% *}
-    [[ "$next" -gt "$max" ]] || die "счётчик $COUNTER_FILE ($next) не больше наибольшего занятого номера ($max)"
-    printf '%s\n' "$next"
+    [[ "${next}" -gt "${max}" ]] || die "счётчик ${COUNTER_FILE} (${next}) не больше наибольшего занятого номера (${max})"
+    printf '%s\n' "${next}"
 }
 
 # Готовит замену файла: временный файл рядом с целевым — имя выдаёт mktemp (по предсказуемому имени можно
@@ -466,20 +474,20 @@ compute_next() {
 # — commit_staged, когда готовы все файлы.
 stage() {
     local target=$1 source=$2 tmp like
-    tmp=$(mktemp "$(dirname -- "$target")/.$(basename -- "$target").tmp.XXXXXX" 2> /dev/null) \
-        || die "не удалось подготовить замену $target (каталог недоступен на запись?) — файлы не изменены"
-    STAGED+=("$tmp")
-    like=$target
-    [[ -e "$target" ]] || like=$TODO_FILE
-    cp -p -- "$like" "$tmp" 2> /dev/null || die "не удалось подготовить замену $target (каталог недоступен на запись?) — файлы не изменены"
-    cat -- "$source" > "$tmp" || die "не удалось записать замену $target — файлы не изменены"
+    tmp=$(mktemp "$(dirname -- "${target}")/.$(basename -- "${target}").tmp.XXXXXX" 2> /dev/null) \
+        || die "не удалось подготовить замену ${target} (каталог недоступен на запись?) — файлы не изменены"
+    STAGED+=("${tmp}")
+    like=${target}
+    [[ -e "${target}" ]] || like=${TODO_FILE}
+    cp -p -- "${like}" "${tmp}" 2> /dev/null || die "не удалось подготовить замену ${target} (каталог недоступен на запись?) — файлы не изменены"
+    cat -- "${source}" > "${tmp}" || die "не удалось записать замену ${target} — файлы не изменены"
 }
 
 # Переименовывает подготовленные файлы на место: цели — в порядке вызовов stage.
 commit_staged() {
     local i=0 tmp
     for tmp in "${STAGED[@]}"; do
-        mv -f -- "$tmp" "$1" || die "не удалось заменить $1 (заменено файлов до сбоя: $i)"
+        mv -f -- "${tmp}" "$1" || die "не удалось заменить $1 (заменено файлов до сбоя: ${i})"
         i=$((i + 1))
         shift
     done
@@ -490,21 +498,21 @@ cmd_next() {
     local max n title
     require_files
     require_structure
-    if [[ ! -e "$COUNTER_FILE" ]]; then
+    if [[ ! -e "${COUNTER_FILE}" ]]; then
         max=$(max_number)
-        title=$(record_title "$max" list "$TODO_FILE")
-        [[ -n "$title" ]] || title=$(record_title "$max" archive "$DONE_FILE")
-        if [[ -z "$title" ]] || has_ctrl "$title"; then
+        title=$(record_title "${max}" list "${TODO_FILE}")
+        [[ -n "${title}" ]] || title=$(record_title "${max}" archive "${DONE_FILE}")
+        if [[ -z "${title}" ]] || has_ctrl "${title}"; then
             title='восстановлено по наибольшему номеру'
         fi
         WORK=$(mktemp -d)
-        printf '%s # выдан №%s — %s\n' "$((max + 1))" "$max" "$title" > "$WORK/counter"
-        stage "$COUNTER_FILE" "$WORK/counter"
-        commit_staged "$COUNTER_FILE"
-        printf 'todo: счётчик %s восстановлен: следующий номер %s\n' "$COUNTER_FILE" "$((max + 1))" >&2
+        printf '%s # выдан №%s — %s\n' "$((max + 1))" "${max}" "${title}" > "${WORK}/counter"
+        stage "${COUNTER_FILE}" "${WORK}/counter"
+        commit_staged "${COUNTER_FILE}"
+        printf 'todo: счётчик %s восстановлен: следующий номер %s\n' "${COUNTER_FILE}" "$((max + 1))" >&2
     fi
     n=$(compute_next) || exit 1
-    printf '%s\n' "$n"
+    printf '%s\n' "${n}"
 }
 
 cmd_new() {
@@ -526,79 +534,79 @@ cmd_new() {
         shift 2
     done
     require_files
-    require_final_newline "$TODO_FILE"
+    require_final_newline "${TODO_FILE}"
     require_structure
-    [[ -f "$title_file" ]] || die 'нужен --title-file с названием задачи'
-    [[ -f "$body_file" && -s "$body_file" ]] || die 'нужен непустой --body-file с текстом задачи'
+    [[ -f "${title_file}" ]] || die 'нужен --title-file с названием задачи'
+    [[ -f "${body_file}" && -s "${body_file}" ]] || die 'нужен непустой --body-file с текстом задачи'
 
     local value
-    for value in "$priority" "$status" "$type" "$created" "$triage" "$review" "$related"; do
-        ! has_ctrl "$value" || die 'значение поля — одна строка без управляющих символов'
+    for value in "${priority}" "${status}" "${type}" "${created}" "${triage}" "${review}" "${related}"; do
+        ! has_ctrl "${value}" || die 'значение поля — одна строка без управляющих символов'
     done
-    [[ "$triage" != 'не указан' ]] || die '«Триаж v2»: «не указан» — только у записей, заведённых до формата; у новой задачи не ставится'
+    [[ "${triage}" != 'не указан' ]] || die '«Триаж v2»: «не указан» — только у записей, заведённых до формата; у новой задачи не ставится'
 
     local title
-    [[ "$(wc -l < "$title_file")" -le 1 ]] || die 'название — одна строка'
-    ! file_has_ctrl "$title_file" || die 'в названии управляющий символ (в том числе возврат каретки из файла с CRLF)'
-    title=$(cat -- "$title_file")
-    [[ -n "$title" && "$title" == "${title# }" && "$title" == "${title% }" ]] || die 'название пусто либо начинается или кончается пробелом'
+    [[ "$(wc -l < "${title_file}")" -le 1 ]] || die 'название — одна строка'
+    ! file_has_ctrl "${title_file}" || die 'в названии управляющий символ (в том числе возврат каретки из файла с CRLF)'
+    title=$(cat -- "${title_file}")
+    [[ -n "${title}" && "${title}" == "${title# }" && "${title}" == "${title% }" ]] || die 'название пусто либо начинается или кончается пробелом'
 
     # В тексте задачи заголовки первого–третьего уровня запрещены: заголовок «### №N.» — граница записи.
     if ! awk '
         { if (substr($0, 1, 3) == "```") fence = !fence; else if (!fence && $0 ~ /^(#|##|###)( |$)/) bad = 1 }
         END { exit bad }
-    ' "$body_file"; then
+    ' "${body_file}"; then
         die 'в тексте задачи есть заголовок первого–третьего уровня'
     fi
 
     local n restored=0
-    [[ -e "$COUNTER_FILE" ]] || restored=1
+    [[ -e "${COUNTER_FILE}" ]] || restored=1
     n=$(compute_next) || exit 1
     WORK=$(mktemp -d)
     {
-        printf '### №%s. %s\n' "$n" "$title"
-        printf -- '- **Приоритет:** %s\n' "$priority"
-        printf -- '- **Статус:** %s\n' "$status"
-        printf -- '- **Тип:** %s\n' "$type"
-        printf -- '- **Заведено:** %s\n' "$created"
-        printf -- '- **Триаж v2:** %s\n' "$triage"
-        printf -- '- **Ревью:** %s\n' "$review"
-        if [[ -n "$related" ]]; then
-            printf -- '- **Связано:** %s\n' "$related"
+        printf '### №%s. %s\n' "${n}" "${title}"
+        printf -- '- **Приоритет:** %s\n' "${priority}"
+        printf -- '- **Статус:** %s\n' "${status}"
+        printf -- '- **Тип:** %s\n' "${type}"
+        printf -- '- **Заведено:** %s\n' "${created}"
+        printf -- '- **Триаж v2:** %s\n' "${triage}"
+        printf -- '- **Ревью:** %s\n' "${review}"
+        if [[ -n "${related}" ]]; then
+            printf -- '- **Связано:** %s\n' "${related}"
         fi
         printf '\n'
-        cat -- "$body_file"
-        if [[ -n "$(tail -c 1 "$body_file")" ]]; then
+        cat -- "${body_file}"
+        if [[ -n "$(tail -c 1 "${body_file}")" ]]; then
             printf '\n'
         fi
-    } > "$WORK/record"
-    validate_fields todo "$WORK/record" 'новая запись' || die 'запись не заведена: поля не прошли проверку'
+    } > "${WORK}/record"
+    validate_fields todo "${WORK}/record" 'новая запись' || die 'запись не заведена: поля не прошли проверку'
 
     {
-        cat -- "$TODO_FILE"
-        if [[ -n "$(tail -n 1 "$TODO_FILE")" ]]; then
+        cat -- "${TODO_FILE}"
+        if [[ -n "$(tail -n 1 "${TODO_FILE}")" ]]; then
             printf '\n'
         fi
-        cat "$WORK/record"
-    } > "$WORK/todo"
-    printf '%s # выдан №%s — %s\n' "$((n + 1))" "$n" "$title" > "$WORK/counter"
+        cat "${WORK}/record"
+    } > "${WORK}/todo"
+    printf '%s # выдан №%s — %s\n' "$((n + 1))" "${n}" "${title}" > "${WORK}/counter"
 
     # Собранный список проверяется до записи: новая запись не должна сломать разбор (незакрытый блок кода).
-    structure_ok list "$WORK/todo" 'список с новой записью' \
+    structure_ok list "${WORK}/todo" 'список с новой записью' \
         || die 'запись не заведена: с ней список не разбирается — файлы не изменены'
 
-    stage "$TODO_FILE" "$WORK/todo"
-    stage "$COUNTER_FILE" "$WORK/counter"
-    commit_staged "$TODO_FILE" "$COUNTER_FILE"
-    if [[ "$restored" -eq 1 ]]; then
-        printf 'todo: файла счётчика не было — создан %s по наибольшему номеру в обоих файлах\n' "$COUNTER_FILE" >&2
+    stage "${TODO_FILE}" "${WORK}/todo"
+    stage "${COUNTER_FILE}" "${WORK}/counter"
+    commit_staged "${TODO_FILE}" "${COUNTER_FILE}"
+    if [[ "${restored}" -eq 1 ]]; then
+        printf 'todo: файла счётчика не было — создан %s по наибольшему номеру в обоих файлах\n' "${COUNTER_FILE}" >&2
     fi
-    printf '№%s\n' "$n"
+    printf '№%s\n' "${n}"
 }
 
 cmd_close() {
     local n=${1:-} closed='' summary_file=''
-    [[ "$n" =~ ^[1-9][0-9]*$ ]] || die 'close: первым аргументом нужен номер задачи'
+    [[ "${n}" =~ ^[1-9][0-9]*$ ]] || die 'close: первым аргументом нужен номер задачи'
     shift
     while [[ $# -gt 0 ]]; do
         [[ $# -ge 2 ]] || die "у параметра $1 нет значения"
@@ -610,175 +618,175 @@ cmd_close() {
         shift 2
     done
     require_files
-    require_final_newline "$TODO_FILE"
-    require_final_newline "$DONE_FILE"
+    require_final_newline "${TODO_FILE}"
+    require_final_newline "${DONE_FILE}"
     require_structure
-    [[ -n "$closed" ]] || die 'нужен --closed: «ГГГГ-ММ-ДД, PR #N» либо «без реализации — …»'
-    ! has_ctrl "$closed" || die '--closed — одна строка без управляющих символов'
-    [[ -f "$summary_file" && -s "$summary_file" ]] || die 'нужен непустой --summary-file с итогом'
-    ! file_has_ctrl "$summary_file" || die 'в итоге управляющий символ (в том числе возврат каретки из файла с CRLF)'
+    [[ -n "${closed}" ]] || die 'нужен --closed: «ГГГГ-ММ-ДД, PR #N» либо «без реализации — …»'
+    ! has_ctrl "${closed}" || die '--closed — одна строка без управляющих символов'
+    [[ -f "${summary_file}" && -s "${summary_file}" ]] || die 'нужен непустой --summary-file с итогом'
+    ! file_has_ctrl "${summary_file}" || die 'в итоге управляющий символ (в том числе возврат каретки из файла с CRLF)'
 
     local summary
-    summary=$(tr '\n' ' ' < "$summary_file" | sed 's/^ *//; s/ *$//')
-    [[ -n "$summary" ]] || die 'итог пуст'
+    summary=$(tr '\n' ' ' < "${summary_file}" | sed 's/^ *//; s/ *$//')
+    [[ -n "${summary}" ]] || die 'итог пуст'
 
     local range start end type
-    range=$(scan list "$TODO_FILE" | awk -v n="$n" '$1 == "R" && $2 == n { print $3, $4, $5 }')
-    [[ -n "$range" ]] || die "записи №$n нет в $TODO_FILE"
-    [[ "$(printf '%s\n' "$range" | wc -l)" -eq 1 ]] || die "запись №$n встречается в $TODO_FILE больше одного раза"
-    read -r start end type <<< "$range"
-    if scan archive "$DONE_FILE" | awk -v n="$n" '$1 == "R" && $2 == n { found = 1 } END { exit !found }'; then
-        die "запись №$n уже есть в $DONE_FILE"
+    range=$(scan list "${TODO_FILE}" | awk -v n="${n}" '$1 == "R" && $2 == n { print $3, $4, $5 }')
+    [[ -n "${range}" ]] || die "записи №${n} нет в ${TODO_FILE}"
+    [[ "$(printf '%s\n' "${range}" | wc -l)" -eq 1 ]] || die "запись №${n} встречается в ${TODO_FILE} больше одного раза"
+    read -r start end type <<< "${range}"
+    if scan archive "${DONE_FILE}" | awk -v n="${n}" '$1 == "R" && $2 == n { found = 1 } END { exit !found }'; then
+        die "запись №${n} уже есть в ${DONE_FILE}"
     fi
 
     WORK=$(mktemp -d)
-    sed -n "${start},$((end - 1))p" "$TODO_FILE" > "$WORK/record"
-    validate_fields todo "$WORK/record" "запись №$n" || die "запись №$n не в формате — закрытие отменено"
+    sed -n "${start},$((end - 1))p" "${TODO_FILE}" > "${WORK}/record"
+    validate_fields todo "${WORK}/record" "запись №${n}" || die "запись №${n} не в формате — закрытие отменено"
     # Сводный пункт уходит в архив только целиком закрытым: открытые строки называются все.
     local open
-    open=$(open_lines "$WORK/record" "$TODO_FILE" "$((start - 1))")
-    if [[ -n "$open" ]]; then
-        printf '%s\n' "$open" >&2
-        die "№$n — сводный пункт, незакрытых строк: $(printf '%s\n' "$open" | wc -l | tr -d ' ') — файлы не изменены. Сводный пункт закрывается только по решению владельца после сверки с ним всего текста пункта. Открытую находку записывают строкой «- [ ] …»; закрытую строку — «- [x] **✅ Сделано …**» (или «**❌ Снято …**») сразу после флажка. Находка это, пометка или перенос абзаца — решается в сверке с владельцем, до правки текста"
+    open=$(open_lines "${WORK}/record" "${TODO_FILE}" "$((start - 1))")
+    if [[ -n "${open}" ]]; then
+        printf '%s\n' "${open}" >&2
+        die "№${n} — сводный пункт, незакрытых строк: $(printf '%s\n' "${open}" | wc -l | tr -d ' ') — файлы не изменены. Сводный пункт закрывается только по решению владельца после сверки с ним всего текста пункта. Открытую находку записывают строкой «- [ ] …»; закрытую строку — «- [x] **✅ Сделано …**» (или «**❌ Снято …**») сразу после флажка. Находка это, пометка или перенос абзаца — решается в сверке с владельцем, до правки текста"
     fi
 
     # Место вставки — после первого заголовка второго уровня архива и пустой строки за ним.
     local heading ins
     heading=$(awk '
         { if (substr($0, 1, 3) == "```") fence = !fence; else if (!fence && substr($0, 1, 3) == "## ") { print NR; exit } }
-    ' "$DONE_FILE")
-    [[ -n "$heading" ]] || die "в $DONE_FILE нет заголовка раздела (## …) — некуда вставлять запись"
+    ' "${DONE_FILE}")
+    [[ -n "${heading}" ]] || die "в ${DONE_FILE} нет заголовка раздела (## …) — некуда вставлять запись"
     # Пустая — в том же смысле, что в scan: без символов либо из пробелов и табуляции.
     local after_heading
-    after_heading=$(sed -n "$((heading + 1))p" "$DONE_FILE")
-    [[ -z "${after_heading//[ $'\t']/}" ]] || die "в $DONE_FILE после заголовка раздела нет пустой строки"
+    after_heading=$(sed -n "$((heading + 1))p" "${DONE_FILE}")
+    [[ -z "${after_heading//[ $'\t']/}" ]] || die "в ${DONE_FILE} после заголовка раздела нет пустой строки"
     ins=$((heading + 2))
 
     # Запись ложится в архив как есть, кроме одной строки: статус (третья строка записи — её место
     # закреплено проверкой полей выше) заменяется на «закрыта».
-    [[ "$(sed -n '3p' "$WORK/record")" == '- **Статус:** '* ]] || die "запись №$n: третьей строкой ожидается поле «Статус» — закрытие отменено"
+    [[ "$(sed -n '3p' "${WORK}/record")" == '- **Статус:** '* ]] || die "запись №${n}: третьей строкой ожидается поле «Статус» — закрытие отменено"
     local sep=0
     {
-        head -n 1 "$WORK/record"
-        printf -- '- **Закрыто:** %s\n' "$closed"
-        printf -- '- **Итог:** %s\n' "$summary"
-        sed -n '2p' "$WORK/record"
+        head -n 1 "${WORK}/record"
+        printf -- '- **Закрыто:** %s\n' "${closed}"
+        printf -- '- **Итог:** %s\n' "${summary}"
+        sed -n '2p' "${WORK}/record"
         printf -- '- **Статус:** закрыта\n'
-        tail -n +4 "$WORK/record"
-        if [[ -n "$(tail -n 1 "$WORK/record")" ]]; then
+        tail -n +4 "${WORK}/record"
+        if [[ -n "$(tail -n 1 "${WORK}/record")" ]]; then
             printf '\n'
         fi
-    } > "$WORK/block"
-    if [[ -n "$(tail -n 1 "$WORK/record")" ]]; then
+    } > "${WORK}/block"
+    if [[ -n "$(tail -n 1 "${WORK}/record")" ]]; then
         sep=1
     fi
     local block_len
-    block_len=$(wc -l < "$WORK/block")
+    block_len=$(wc -l < "${WORK}/block")
 
     {
-        head -n "$((ins - 1))" "$DONE_FILE"
-        cat "$WORK/block"
-        tail -n "+$ins" "$DONE_FILE"
-    } > "$WORK/done"
+        head -n "$((ins - 1))" "${DONE_FILE}"
+        cat "${WORK}/block"
+        tail -n "+${ins}" "${DONE_FILE}"
+    } > "${WORK}/done"
     {
-        head -n "$((start - 1))" "$TODO_FILE"
-        tail -n "+$end" "$TODO_FILE"
-    } > "$WORK/todo"
+        head -n "$((start - 1))" "${TODO_FILE}"
+        tail -n "+${end}" "${TODO_FILE}"
+    } > "${WORK}/todo"
 
     # Самопроверка до записи: текст не потерян и не изменён, оба собранных файла разбираются.
     {
-        head -n "$((start - 1))" "$WORK/todo"
-        cat "$WORK/record"
-        tail -n "+$start" "$WORK/todo"
-    } | cmp -s - "$TODO_FILE" || die 'самопроверка: список без записи плюс запись не равен прежнему списку — файлы не изменены'
+        head -n "$((start - 1))" "${WORK}/todo"
+        cat "${WORK}/record"
+        tail -n "+${start}" "${WORK}/todo"
+    } | cmp -s - "${TODO_FILE}" || die 'самопроверка: список без записи плюс запись не равен прежнему списку — файлы не изменены'
     {
-        head -n "$((ins - 1))" "$WORK/done"
-        tail -n "+$((ins + block_len))" "$WORK/done"
-    } | cmp -s - "$DONE_FILE" || die 'самопроверка: архив без вставки не равен прежнему архиву — файлы не изменены'
-    sed -n "${ins},$((ins + block_len - 1 - sep))p" "$WORK/done" | sed '2,3d' > "$WORK/back"
-    sed '3d' "$WORK/record" > "$WORK/record.rest"
-    [[ "$(sed -n '3p' "$WORK/back")" == '- **Статус:** закрыта' ]] \
+        head -n "$((ins - 1))" "${WORK}/done"
+        tail -n "+$((ins + block_len))" "${WORK}/done"
+    } | cmp -s - "${DONE_FILE}" || die 'самопроверка: архив без вставки не равен прежнему архиву — файлы не изменены'
+    sed -n "${ins},$((ins + block_len - 1 - sep))p" "${WORK}/done" | sed '2,3d' > "${WORK}/back"
+    sed '3d' "${WORK}/record" > "${WORK}/record.rest"
+    [[ "$(sed -n '3p' "${WORK}/back")" == '- **Статус:** закрыта' ]] \
         || die 'самопроверка: в записи архива нет строки статуса «закрыта» — файлы не изменены'
-    sed '3d' "$WORK/back" | cmp -s - "$WORK/record.rest" \
+    sed '3d' "${WORK}/back" | cmp -s - "${WORK}/record.rest" \
         || die 'самопроверка: запись в архиве отличается от записи списка не только строкой статуса — файлы не изменены'
-    validate_fields archive "$WORK/block" "запись №$n для архива" || die 'запись архива не прошла проверку формата — файлы не изменены'
-    structure_ok archive "$WORK/done" 'архив с записью' || die 'самопроверка: архив с записью не разбирается — файлы не изменены'
-    structure_ok list "$WORK/todo" 'список без записи' || die 'самопроверка: список без записи не разбирается — файлы не изменены'
+    validate_fields archive "${WORK}/block" "запись №${n} для архива" || die 'запись архива не прошла проверку формата — файлы не изменены'
+    structure_ok archive "${WORK}/done" 'архив с записью' || die 'самопроверка: архив с записью не разбирается — файлы не изменены'
+    structure_ok list "${WORK}/todo" 'список без записи' || die 'самопроверка: список без записи не разбирается — файлы не изменены'
 
-    stage "$DONE_FILE" "$WORK/done"
-    stage "$TODO_FILE" "$WORK/todo"
-    commit_staged "$DONE_FILE" "$TODO_FILE"
-    printf '№%s перенесена в %s\n' "$n" "$DONE_FILE"
-    if [[ "$type" == 'сводный' ]]; then
-        printf 'todo: №%s был сводным пунктом — уберите его из перечня сводных пунктов в шапке списка и разберите упоминания: refs %s по репозиторию и refs %s <каталог> по заметкам вне репозитория (новые находки подсистемы — новым сводным пунктом)\n' "$n" "$n" "$n" >&2
+    stage "${DONE_FILE}" "${WORK}/done"
+    stage "${TODO_FILE}" "${WORK}/todo"
+    commit_staged "${DONE_FILE}" "${TODO_FILE}"
+    printf '№%s перенесена в %s\n' "${n}" "${DONE_FILE}"
+    if [[ "${type}" == 'сводный' ]]; then
+        printf 'todo: №%s был сводным пунктом — уберите его из перечня сводных пунктов в шапке списка и разберите упоминания: refs %s по репозиторию и refs %s <каталог> по заметкам вне репозитория (новые находки подсистемы — новым сводным пунктом)\n' "${n}" "${n}" "${n}" >&2
     fi
 }
 
 cmd_check() {
     local bad=0 dup opened legacy n max counter next
     require_files
-    structure_ok list "$TODO_FILE" || bad=1
-    structure_ok archive "$DONE_FILE" || bad=1
-    validate_fields todo "$TODO_FILE" || bad=1
-    validate_fields archive "$DONE_FILE" || bad=1
+    structure_ok list "${TODO_FILE}" || bad=1
+    structure_ok archive "${DONE_FILE}" || bad=1
+    validate_fields todo "${TODO_FILE}" || bad=1
+    validate_fields archive "${DONE_FILE}" || bad=1
 
     # Сводный пункт в архиве — только без открытых строк (то же правило, что у close).
     local open
-    open=$(open_lines "$DONE_FILE" "$DONE_FILE")
-    if [[ -n "$open" ]]; then
-        printf '%s\n' "$open" >&2
+    open=$(open_lines "${DONE_FILE}" "${DONE_FILE}")
+    if [[ -n "${open}" ]]; then
+        printf '%s\n' "${open}" >&2
         bad=1
     fi
 
-    dup=$({ scan list "$TODO_FILE"; scan archive "$DONE_FILE"; } | awk '$1 == "R" { print $2 }' | sort -n | uniq -d)
-    for n in $dup; do
-        printf '%s: №%s: номер встречается больше одного раза в заголовках записей\n' "$TODO_FILE" "$n" >&2
+    dup=$({ scan list "${TODO_FILE}"; scan archive "${DONE_FILE}"; } | awk '$1 == "R" { print $2 }' | sort -n | uniq -d)
+    for n in ${dup}; do
+        printf '%s: №%s: номер встречается больше одного раза в заголовках записей\n' "${TODO_FILE}" "${n}" >&2
         bad=1
     done
 
     # Номер открытой задачи не должен стоять в записи архива прежнего формата «- **Задача №N…».
-    opened=$(scan list "$TODO_FILE" | awk '$1 == "R" { print $2 }')
-    legacy=$(scan archive "$DONE_FILE" | awk '$1 == "T" { print $2 }')
-    for n in $opened; do
-        if printf '%s\n' "$legacy" | grep -q -x -e "$n"; then
-            printf '%s: №%s: открытая задача числится закрытой в %s\n' "$TODO_FILE" "$n" "$DONE_FILE" >&2
+    opened=$(scan list "${TODO_FILE}" | awk '$1 == "R" { print $2 }')
+    legacy=$(scan archive "${DONE_FILE}" | awk '$1 == "T" { print $2 }')
+    for n in ${opened}; do
+        if printf '%s\n' "${legacy}" | grep -q -x -e "${n}"; then
+            printf '%s: №%s: открытая задача числится закрытой в %s\n' "${TODO_FILE}" "${n}" "${DONE_FILE}" >&2
             bad=1
         fi
     done
 
     max=$(max_number)
-    if [[ ! -e "$COUNTER_FILE" ]]; then
-        printf '%s: файла счётчика нет\n' "$COUNTER_FILE" >&2
+    if [[ ! -e "${COUNTER_FILE}" ]]; then
+        printf '%s: файла счётчика нет\n' "${COUNTER_FILE}" >&2
         bad=1
     elif counter=$(parse_counter); then
         next=${counter%% *}
-        if [[ "$next" -le "$max" ]]; then
-            printf '%s: следующий номер %s не больше наибольшего занятого (%s)\n' "$COUNTER_FILE" "$next" "$max" >&2
+        if [[ "${next}" -le "${max}" ]]; then
+            printf '%s: следующий номер %s не больше наибольшего занятого (%s)\n' "${COUNTER_FILE}" "${next}" "${max}" >&2
             bad=1
         fi
     else
         bad=1
     fi
 
-    if [[ "$bad" -ne 0 ]]; then
+    if [[ "${bad}" -ne 0 ]]; then
         exit 1
     fi
-    printf 'todo: структура, формат, номера и счётчик в порядке (наибольший номер — %s)\n' "$max"
+    printf 'todo: структура, формат, номера и счётчик в порядке (наибольший номер — %s)\n' "${max}"
 }
 
 cmd_refs() {
     local n=${1:-}
-    [[ "$n" =~ ^[1-9][0-9]*$ ]] || die 'refs: нужен номер задачи'
+    [[ "${n}" =~ ^[1-9][0-9]*$ ]] || die 'refs: нужен номер задачи'
     shift
     local pattern="№${n}([^0-9]|\$)"
     if [[ $# -eq 0 ]] && git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
         # «:/» — от корня репозитория: из подкаталога поиск иначе молча сузился бы до него.
-        git grep -n -I -E -e "$pattern" -- ':/' || true
+        git grep -n -I -E -e "${pattern}" -- ':/' || true
     else
         if [[ $# -eq 0 ]]; then
             set -- .
         fi
-        grep -r -n -I -E -e "$pattern" -- "$@" || true
+        grep -r -n -I -E -e "${pattern}" -- "$@" || true
     fi
 }
 
@@ -787,7 +795,7 @@ cmd_refs() {
 # «N наибольший_номер» — наибольшее из чисел пунктов («12. …»), «**N**» и «№N» в этих строках.
 foreign_lines() {
     # shellcheck disable=SC2016
-    awk "$AWK_LIB"'
+    awk "${AWK_LIB}"'
     function num(s,   v, best, t) {
         best = 0
         if (match(s, /^[0-9]+[.)] /)) { v = substr(s, 1, RLENGTH - 2) + 0; if (v > best) best = v }
@@ -819,61 +827,64 @@ foreign_lines() {
 cmd_compat() {
     local bad=0 f label out records lines kinds max errors
     printf 'todo compat: проверка списка задач на формат скрипта (файлы не меняются)\n'
-    for f in "$TODO_FILE" "$DONE_FILE" "$COUNTER_FILE"; do
-        case "$f" in
-            "$TODO_FILE") label='список' ;;
-            "$DONE_FILE") label='архив' ;;
+    for f in "${TODO_FILE}" "${DONE_FILE}" "${COUNTER_FILE}"; do
+        case "${f}" in
+            "${TODO_FILE}") label='список' ;;
+            "${DONE_FILE}") label='архив' ;;
             *) label='счётчик' ;;
         esac
-        if [[ -L "$f" ]]; then
-            printf 'todo compat: %s %s: символическая ссылка — по ссылке скрипт не пишет\n' "$label" "$f"
+        if [[ -L "${f}" ]]; then
+            printf 'todo compat: %s %s: символическая ссылка — по ссылке скрипт не пишет\n' "${label}" "${f}"
             bad=1
-        elif [[ ! -e "$f" ]]; then
-            if [[ "$label" == 'счётчик' ]]; then
-                printf 'todo compat: %s %s: нет файла — next восстановит его по наибольшему номеру записей формата; номера прежнего вида (ниже) он не учитывает\n' "$label" "$f"
+        elif [[ ! -e "${f}" ]]; then
+            if [[ "${label}" == 'счётчик' ]]; then
+                printf 'todo compat: %s %s: нет файла — next восстановит его по наибольшему номеру записей формата; номера прежнего вида (ниже) он не учитывает\n' "${label}" "${f}"
             else
-                printf 'todo compat: %s %s: нет файла\n' "$label" "$f"
+                printf 'todo compat: %s %s: нет файла\n' "${label}" "${f}"
             fi
+            bad=1
+        elif [[ ! -r "${f}" ]]; then
+            printf 'todo compat: %s %s: не читается — нет прав на чтение\n' "${label}" "${f}"
             bad=1
         fi
     done
-    if [[ -f "$TODO_FILE" && ! -L "$TODO_FILE" ]]; then
-        records=$(scan list "$TODO_FILE" | awk '$1 == "R"' | wc -l | tr -d ' ')
-        printf 'todo compat: список %s: есть, записей формата: %s\n' "$TODO_FILE" "$records"
-        errors=$(structure_ok list "$TODO_FILE" 2>&1) || { printf '%s\n' "$errors"; bad=1; }
-        errors=$(validate_fields todo "$TODO_FILE" 2>&1) || { printf '%s\n' "$errors"; bad=1; }
-        out=$(foreign_lines "$TODO_FILE")
-        max=$(printf '%s\n' "$out" | awk '$1 == "N" { print $2 }')
-        lines=$(printf '%s\n' "$out" | awk -v F="$TODO_FILE" '$1 != "N" { k = $1; n = $2; sub(/^[^ ]+ [0-9]+ /, ""); printf "%s:%d: %s: %s\n", F, n, k, $0 }')
-        if [[ -n "$lines" ]]; then
-            kinds=$(printf '%s\n' "$out" | awk '$1 != "N" { c[$1]++ } END { s = ""; for (k in c) { if (s != "") s = s ", "; s = s (k == "нумерованные" ? "нумерованные пункты" : (k == "таблицы" ? "строки таблиц" : k)) " — " c[k] } print s }')
-            if [[ "$bad" -eq 0 ]]; then
-                printf 'todo compat: предупреждение: вне записей есть строки другого вида списка задач (%s) — если это задачи, а не текст шапки, переведите их в записи до new/close:\n' "$kinds"
+    if [[ -f "${TODO_FILE}" && ! -L "${TODO_FILE}" && -r "${TODO_FILE}" ]]; then
+        records=$(scan list "${TODO_FILE}" | awk '$1 == "R"' | wc -l | tr -d ' ')
+        printf 'todo compat: список %s: есть, записей формата: %s\n' "${TODO_FILE}" "${records}"
+        errors=$(structure_ok list "${TODO_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
+        errors=$(validate_fields todo "${TODO_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
+        out=$(foreign_lines "${TODO_FILE}")
+        max=$(printf '%s\n' "${out}" | awk '$1 == "N" { print $2 }')
+        lines=$(printf '%s\n' "${out}" | awk -v F="${TODO_FILE}" '$1 != "N" { k = $1; n = $2; sub(/^[^ ]+ [0-9]+ /, ""); printf "%s:%d: %s: %s\n", F, n, k, $0 }')
+        if [[ -n "${lines}" ]]; then
+            kinds=$(printf '%s\n' "${out}" | awk '$1 != "N" { c[$1]++ } END { s = ""; for (k in c) { if (s != "") s = s ", "; s = s (k == "нумерованные" ? "нумерованные пункты" : (k == "таблицы" ? "строки таблиц" : k)) " — " c[k] } print s }')
+            if [[ "${bad}" -eq 0 ]]; then
+                printf 'todo compat: предупреждение: вне записей есть строки другого вида списка задач (%s) — если это задачи, а не текст шапки, переведите их в записи до new/close:\n' "${kinds}"
             else
-                printf 'todo compat: вне записей — строки другого вида списка задач (%s):\n' "$kinds"
+                printf 'todo compat: вне записей — строки другого вида списка задач (%s):\n' "${kinds}"
             fi
-            printf '%s\n' "$lines" | head -n 5
-            [[ "$(printf '%s\n' "$lines" | wc -l)" -le 5 ]] || printf 'todo compat: … всего таких строк: %s\n' "$(printf '%s\n' "$lines" | wc -l | tr -d ' ')"
+            printf '%s\n' "${lines}" | head -n 5
+            [[ "$(printf '%s\n' "${lines}" | wc -l)" -le 5 ]] || printf 'todo compat: … всего таких строк: %s\n' "$(printf '%s\n' "${lines}" | wc -l | tr -d ' ')"
             if [[ "${max:-0}" -gt 0 ]]; then
-                printf 'todo compat: наибольший номер в строках вне записей: %s — при переводе списка счётчик ставить не меньше %s\n' "$max" "$((max + 1))"
+                printf 'todo compat: наибольший номер в строках вне записей: %s — при переводе списка счётчик ставить не меньше %s\n' "${max}" "$((max + 1))"
             fi
         fi
     fi
-    if [[ -f "$DONE_FILE" && ! -L "$DONE_FILE" ]]; then
-        records=$(scan archive "$DONE_FILE" | awk '$1 == "R"' | wc -l | tr -d ' ')
-        printf 'todo compat: архив %s: есть, записей формата: %s\n' "$DONE_FILE" "$records"
-        errors=$(structure_ok archive "$DONE_FILE" 2>&1) || { printf '%s\n' "$errors"; bad=1; }
-        errors=$(validate_fields archive "$DONE_FILE" 2>&1) || { printf '%s\n' "$errors"; bad=1; }
+    if [[ -f "${DONE_FILE}" && ! -L "${DONE_FILE}" && -r "${DONE_FILE}" ]]; then
+        records=$(scan archive "${DONE_FILE}" | awk '$1 == "R"' | wc -l | tr -d ' ')
+        printf 'todo compat: архив %s: есть, записей формата: %s\n' "${DONE_FILE}" "${records}"
+        errors=$(structure_ok archive "${DONE_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
+        errors=$(validate_fields archive "${DONE_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
     fi
-    if [[ -f "$COUNTER_FILE" && ! -L "$COUNTER_FILE" ]]; then
+    if [[ -f "${COUNTER_FILE}" && ! -L "${COUNTER_FILE}" && -r "${COUNTER_FILE}" ]]; then
         if errors=$( (parse_counter) 2>&1); then
-            printf 'todo compat: счётчик %s: есть, следующий номер %s\n' "$COUNTER_FILE" "${errors%% *}"
+            printf 'todo compat: счётчик %s: есть, следующий номер %s\n' "${COUNTER_FILE}" "${errors%% *}"
         else
-            printf '%s\n' "$errors"
+            printf '%s\n' "${errors}"
             bad=1
         fi
     fi
-    if [[ "$bad" -ne 0 ]]; then
+    if [[ "${bad}" -ne 0 ]]; then
         printf 'todo compat: несовместим — new и close на этих файлах не запускать; варианты: перевести список в формат (записи «### №N.», архив, счётчик) либо не применять скрипт в этом проекте\n'
         exit 1
     fi
@@ -888,22 +899,22 @@ while [[ $# -gt 0 ]]; do
         *) break ;;
     esac
 done
-[[ -n "$TODO_FILE" && -n "$DONE_FILE" && -n "$COUNTER_FILE" ]] || die 'путь списка, архива или счётчика пуст'
-TODO_FILE=$(norm_path "$TODO_FILE")
-DONE_FILE=$(norm_path "$DONE_FILE")
-COUNTER_FILE=$(norm_path "$COUNTER_FILE")
+[[ -n "${TODO_FILE}" && -n "${DONE_FILE}" && -n "${COUNTER_FILE}" ]] || die 'путь списка, архива или счётчика пуст'
+TODO_FILE=$(norm_path "${TODO_FILE}")
+DONE_FILE=$(norm_path "${DONE_FILE}")
+COUNTER_FILE=$(norm_path "${COUNTER_FILE}")
 
 command=${1:-}
 if [[ $# -gt 0 ]]; then
     shift
 fi
-case "$command" in
+case "${command}" in
     next) cmd_next "$@" ;;
     new) cmd_new "$@" ;;
     close) cmd_close "$@" ;;
     check) cmd_check "$@" ;;
     refs) cmd_refs "$@" ;;
     compat) cmd_compat "$@" ;;
-    version) printf 'todo.sh %s\n' "$TODO_SH_VERSION" ;;
+    version) printf 'todo.sh %s\n' "${TODO_SH_VERSION}" ;;
     *) die 'команды: next | new | close N | check | refs N | compat | version (описание — в начале файла скрипта)' ;;
 esac
