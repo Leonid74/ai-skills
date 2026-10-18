@@ -1538,6 +1538,64 @@ t_ci_mawk() {
 once ciRunsScriptUnderMawk t_ci_mawk
 
 # ---------------------------------------------------------------------------------------------
+# Дополнения плагина — случаи, которых нет в PHP (пробелы R1 и Q4 со стороны close). В учёт
+# 187 случаев PHP они не входят: имя начинается с «plugin:».
+
+_extra=0
+
+# plugin_case <имя> <функция> — случай под каждым выбранным вариантом awk, вне учёта PHP.
+plugin_case() {
+  local _i
+  for _i in "${!_sel_names[@]}"; do
+    _awk="${_sel_names[_i]}"
+    _awkpath="${_sel_paths[_i]}"
+    _case="plugin:$1"
+    _extra=$((_extra + 1))
+    begin
+    "$2"
+    finish
+  done
+}
+
+# R1 для close: заранее подложенные ссылки на предсказуемых именах временных файлов списка и архива
+# (прежняя редакция брала имя от $$) не должны вести запись в чужой файл.
+t_planted_tmp_close() {
+  put summary $'Итог.\n'
+  put victim $'ЧУЖОЙ ФАЙЛ\n'
+  # $1, $2, $$ раскрывает обёртка, а не стенд.
+  local _wrapper='ln -s "$1" "$2/.DONE.md.tmp.$$" && ln -s "$1" "$2/.TODO.md.tmp.$$" && shift 2 && exec bash "$@"'
+  (
+    cd "${_d}" || exit 99
+    exec timeout 60 bash -c "${_wrapper}" wrapper "${_d}/victim" "${_d}" "${TODO_SH}" \
+      --todo "${_d}/TODO.md" --done "${_d}/DONE.md" --counter "${_d}/next" \
+      close 3 --closed '2026-02-01, PR #10' --summary-file "${_d}/summary"
+  ) >"${_io}/out" 2>"${_io}/err"
+  _code=$?
+  slurp _err "${_io}/err"
+  code_is 0
+  eq_file victim $'ЧУЖОЙ ФАЙЛ\n'
+  _asserts=$((_asserts + 2))
+  [[ -L "${_d}/TODO.md" ]] && bad 'TODO.md стал символической ссылкой'
+  [[ -L "${_d}/DONE.md" ]] && bad 'DONE.md стал символической ссылкой'
+  file_has DONE.md '### №3. Первая задача'
+}
+plugin_case closePlantedTempSymlinkIsNotFollowed t_planted_tmp_close
+
+# Q4 для close: запись, в тексте которой строка «- **Задач…» (её не заведёт new и назовёт check), close
+# тоже не переносит — отказ с названием строки, файлы не меняются.
+t_close_legacy_line_in_record() {
+  sr "${R3}" '**Первая задача.**' $'**Первая задача.**\n- **Задача-минимум:** сделать.'
+  put TODO.md "${TODO_HEAD}${_r}${R5}${R7}"$'\n'
+  put summary $'Итог.\n'
+  snap TODO.md DONE.md next
+  T close 3 --closed '2026-02-01, PR #10' --summary-file "${_d}/summary"
+  code_is 1
+  has_err 'переформулируйте строку'
+  unchanged
+}
+plugin_case closeRefusesLegacyLineInRecordText t_close_legacy_line_in_record
+
+# ---------------------------------------------------------------------------------------------
 # Итог. Полный набор (без TODO_AWKS) обязан учесть все 187 случаев и 38 методов PHP: потерянный
 # или задвоенный случай — падение стенда, а не расхождение в таблице.
 
