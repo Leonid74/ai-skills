@@ -20,6 +20,9 @@
 #                            и статусом «закрыта»; сводный пункт — только без открытых строк
 #   check                    проверить структуру файлов, формат записей, номера и счётчик (код 1 — нарушения)
 #   refs N [ПУТЬ…]           показать упоминания №N (без путей — по всем файлам git-репозитория)
+#   compat                   проверить, подходит ли список проекта к формату скрипта (только чтение; код 1 —
+#                            несовместим, причины и строки другого вида списка названы)
+#   version                  напечатать версию скрипта
 #
 # Название, текст задачи и итог читаются из файлов: так символы «\», «&», «/» доходят без искажений.
 # Файлы по умолчанию — doc/TODO.md, doc/TODO-DONE.md, doc/.todo-next от текущего каталога (обычная
@@ -53,6 +56,9 @@
 
 set -euo pipefail
 export LC_ALL=C
+
+# Версия скрипта: по ней сверяется копия скрипта в проекте с копией в плагине dev-toolkit.
+TODO_SH_VERSION='1.0.0'
 
 TODO_FILE=${TODO_FILE:-doc/TODO.md}
 DONE_FILE=${TODO_DONE_FILE:-doc/TODO-DONE.md}
@@ -776,6 +782,104 @@ cmd_refs() {
     fi
 }
 
+# Строки списка вне записей, похожие на пункты другого вида списка задач: чекбоксы, нумерованные пункты,
+# строки таблиц (вне блоков кода). Печатает «вид номер_строки начало_строки» на каждую строку и в конце
+# «N наибольший_номер» — наибольшее из чисел пунктов («12. …»), «**N**» и «№N» в этих строках.
+foreign_lines() {
+    # shellcheck disable=SC2016
+    awk "$AWK_LIB"'
+    function num(s,   v, best, t) {
+        best = 0
+        if (match(s, /^[0-9]+[.)] /)) { v = substr(s, 1, RLENGTH - 2) + 0; if (v > best) best = v }
+        t = s
+        while (match(t, /\*\*[0-9]+\*\*/)) { v = substr(t, RSTART + 2, RLENGTH - 4) + 0; if (v > best) best = v; t = substr(t, RSTART + RLENGTH) }
+        v = maxref(s); if (v > best) best = v
+        return best
+    }
+    {
+        if (substr($0, 1, 3) == "```") { fence = !fence; next }
+        if (fence) next
+        if (recnum($0) > 0) { inrec = 1; next }
+        if (substr($0, 1, 2) == "# " || substr($0, 1, 3) == "## ") { inrec = 0; next }
+        if (inrec) next
+        kind = ""
+        if ($0 ~ /^- \[[ xX]\] /) kind = "чекбоксы"
+        else if ($0 ~ /^[0-9]+[.)] /) kind = "нумерованные"
+        else if (substr($0, 1, 1) == "|") kind = "таблицы"
+        if (kind == "") next
+        print kind, NR, substr($0, 1, 80)
+        v = num($0); if (v > max) max = v
+    }
+    END { print "N", max + 0 }
+    ' "$1"
+}
+
+# Совместимость списка с форматом скрипта — только чтение, файлы не меняются ни при каком исходе. Отчёт —
+# в stdout; код 0 — совместим (предупреждения возможны), 1 — несовместим (причины названы).
+cmd_compat() {
+    local bad=0 f label out records lines kinds max errors
+    printf 'todo compat: проверка списка задач на формат скрипта (файлы не меняются)\n'
+    for f in "$TODO_FILE" "$DONE_FILE" "$COUNTER_FILE"; do
+        case "$f" in
+            "$TODO_FILE") label='список' ;;
+            "$DONE_FILE") label='архив' ;;
+            *) label='счётчик' ;;
+        esac
+        if [[ -L "$f" ]]; then
+            printf 'todo compat: %s %s: символическая ссылка — по ссылке скрипт не пишет\n' "$label" "$f"
+            bad=1
+        elif [[ ! -e "$f" ]]; then
+            if [[ "$label" == 'счётчик' ]]; then
+                printf 'todo compat: %s %s: нет файла — next восстановит его по наибольшему номеру записей формата; номера прежнего вида (ниже) он не учитывает\n' "$label" "$f"
+            else
+                printf 'todo compat: %s %s: нет файла\n' "$label" "$f"
+            fi
+            bad=1
+        fi
+    done
+    if [[ -f "$TODO_FILE" && ! -L "$TODO_FILE" ]]; then
+        records=$(scan list "$TODO_FILE" | awk '$1 == "R"' | wc -l | tr -d ' ')
+        printf 'todo compat: список %s: есть, записей формата: %s\n' "$TODO_FILE" "$records"
+        errors=$(structure_ok list "$TODO_FILE" 2>&1) || { printf '%s\n' "$errors"; bad=1; }
+        errors=$(validate_fields todo "$TODO_FILE" 2>&1) || { printf '%s\n' "$errors"; bad=1; }
+        out=$(foreign_lines "$TODO_FILE")
+        max=$(printf '%s\n' "$out" | awk '$1 == "N" { print $2 }')
+        lines=$(printf '%s\n' "$out" | awk -v F="$TODO_FILE" '$1 != "N" { k = $1; n = $2; sub(/^[^ ]+ [0-9]+ /, ""); printf "%s:%d: %s: %s\n", F, n, k, $0 }')
+        if [[ -n "$lines" ]]; then
+            kinds=$(printf '%s\n' "$out" | awk '$1 != "N" { c[$1]++ } END { s = ""; for (k in c) { if (s != "") s = s ", "; s = s (k == "нумерованные" ? "нумерованные пункты" : (k == "таблицы" ? "строки таблиц" : k)) " — " c[k] } print s }')
+            if [[ "$bad" -eq 0 ]]; then
+                printf 'todo compat: предупреждение: вне записей есть строки другого вида списка задач (%s) — если это задачи, а не текст шапки, переведите их в записи до new/close:\n' "$kinds"
+            else
+                printf 'todo compat: вне записей — строки другого вида списка задач (%s):\n' "$kinds"
+            fi
+            printf '%s\n' "$lines" | head -n 5
+            [[ "$(printf '%s\n' "$lines" | wc -l)" -le 5 ]] || printf 'todo compat: … всего таких строк: %s\n' "$(printf '%s\n' "$lines" | wc -l | tr -d ' ')"
+            if [[ "${max:-0}" -gt 0 ]]; then
+                printf 'todo compat: наибольший номер в строках вне записей: %s — при переводе списка счётчик ставить не меньше %s\n' "$max" "$((max + 1))"
+            fi
+        fi
+    fi
+    if [[ -f "$DONE_FILE" && ! -L "$DONE_FILE" ]]; then
+        records=$(scan archive "$DONE_FILE" | awk '$1 == "R"' | wc -l | tr -d ' ')
+        printf 'todo compat: архив %s: есть, записей формата: %s\n' "$DONE_FILE" "$records"
+        errors=$(structure_ok archive "$DONE_FILE" 2>&1) || { printf '%s\n' "$errors"; bad=1; }
+        errors=$(validate_fields archive "$DONE_FILE" 2>&1) || { printf '%s\n' "$errors"; bad=1; }
+    fi
+    if [[ -f "$COUNTER_FILE" && ! -L "$COUNTER_FILE" ]]; then
+        if errors=$( (parse_counter) 2>&1); then
+            printf 'todo compat: счётчик %s: есть, следующий номер %s\n' "$COUNTER_FILE" "${errors%% *}"
+        else
+            printf '%s\n' "$errors"
+            bad=1
+        fi
+    fi
+    if [[ "$bad" -ne 0 ]]; then
+        printf 'todo compat: несовместим — new и close на этих файлах не запускать; варианты: перевести список в формат (записи «### №N.», архив, счётчик) либо не применять скрипт в этом проекте\n'
+        exit 1
+    fi
+    printf 'todo compat: совместим\n'
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --todo) [[ $# -ge 2 ]] || die 'у --todo нет значения'; TODO_FILE=$2; shift 2 ;;
@@ -799,5 +903,7 @@ case "$command" in
     close) cmd_close "$@" ;;
     check) cmd_check "$@" ;;
     refs) cmd_refs "$@" ;;
-    *) die 'команды: next | new | close N | check | refs N (описание — в начале файла скрипта)' ;;
+    compat) cmd_compat "$@" ;;
+    version) printf 'todo.sh %s\n' "$TODO_SH_VERSION" ;;
+    *) die 'команды: next | new | close N | check | refs N | compat | version (описание — в начале файла скрипта)' ;;
 esac
