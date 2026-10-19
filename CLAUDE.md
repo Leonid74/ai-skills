@@ -22,11 +22,13 @@ ai-skills/
         ├── .claude-plugin/plugin.json
         ├── commands/      ← /dev-toolkit:pr, /dev-toolkit:cppr, /dev-toolkit:review-quick, /dev-toolkit:review-last
         ├── skills/        ← review-code, todo-ship, statusline-setup, optimize-project-docs,
-        │                     server-disk-cleanup, debug, deepen-prompt
+        │                     server-disk-cleanup, debug, deepen-prompt, todo
+        ├── scripts/       ← todo.sh — список задач «### №N.» (скилл todo; вызов через ${CLAUDE_PLUGIN_ROOT})
         ├── workflows/     ← review-code.js — конвейер review-code (dev-toolkit:review-code-pipeline)
         ├── tests/workflows/ ← стенд-заглушка для workflow-скрипта (моки agent/parallel/pipeline)
         ├── tests/statusline/ ← тест шаблона statusline.sh из SKILL.md скилла statusline-setup
         ├── tests/server-disk-cleanup/ ← тест блока «прогноз для кеша сборки» из SKILL.md скилла server-disk-cleanup
+        ├── tests/todo/    ← стенд scripts/todo.sh (перенос TodoScriptTest apps-b24-platform) и тест compat/version
         └── hooks/
             ├── hooks.json       ← регистрация PreToolUse/SessionStart/Notification/Stop
             ├── guard-bash.sh    ← PreToolUse: блокирует деструктивные Bash-команды + секреты
@@ -80,6 +82,20 @@ bash plugins/dev-toolkit/tests/statusline/test-statusline-template.sh
 
 ```bash
 bash plugins/dev-toolkit/tests/server-disk-cleanup/test-build-cache-forecast.sh
+```
+
+Для `plugins/dev-toolkit/scripts/todo.sh` — `shellcheck` и два стенда под всеми найденными awk (системный,
+`mawk`, `gawk`, `busybox awk`; `TODO_AWKS="системный"` — быстрый прогон одним awk). Стенд `test-todo.sh` — перенос
+`TodoScriptTest` проекта `apps-b24-platform`: при полном наборе сам падает, если учтёт не 187 случаев PHP и не 38
+методов; число случаев плагина (`plugin_case`) сверяется всегда — новый случай плагина требует правки этого числа
+в итоге стенда. Мутационная проверка — `TODO_SH=<копия скрипта>`. Скрипт не называет проект
+(`apps-b24`, `artisan`, `php ` в его тексте — падение стенда). Копия скрипта живёт и в проекте-источнике
+(`scripts/todo.sh`, её гоняет CI проекта): при смене поведения — поднять `TODO_SH_VERSION` в скрипте.
+
+```bash
+shellcheck -S style -o all plugins/dev-toolkit/scripts/todo.sh plugins/dev-toolkit/tests/todo/*.sh
+bash plugins/dev-toolkit/tests/todo/test-todo.sh
+bash plugins/dev-toolkit/tests/todo/test-todo-compat.sh
 ```
 
 **Живой tmux не трогать.** Нельзя убивать или останавливать сервер tmux, в котором работает Claude:
