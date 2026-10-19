@@ -1642,23 +1642,38 @@ console.log("ok 23 слабая сессия без доступа к opus: пр
   );
 
   // Рамка использования в 2.12.0 — только режим Agent: скрипт поле не принимает.
+  // Отказ args — до запуска агентов: счётчик в заглушке обязан остаться нулём.
   for (const frame of ["| a | b | вне рамки |", "", null]) {
     const a = base("high", 1);
     a.frame = frame;
+    let launched = 0;
     await assert.rejects(
-      runScript(a, () => null),
+      runScript(a, () => {
+        launched++;
+        return null;
+      }),
       /args\.frame: рамка использования в режиме Workflow не поддерживается/,
       "args.frame отвергается при любом значении",
     );
+    assert.equal(launched, 0, "до отказа args.frame не запущен ни один агент");
   }
   // Добавочные углы (+angles) в 2.15.0 — только режим Agent: при корректном angles отказ именно по полю.
   for (const extraAngles of [[7], "7", [], null]) {
     const a = base("high", 1);
     a.extraAngles = extraAngles;
+    let launched = 0;
     await assert.rejects(
-      runScript(a, () => null),
+      runScript(a, () => {
+        launched++;
+        return null;
+      }),
       /args\.extraAngles: добавочные углы \(\+angles\) в режиме Workflow не поддерживаются/,
       "args.extraAngles отвергается при любом значении",
+    );
+    assert.equal(
+      launched,
+      0,
+      "до отказа args.extraAngles не запущен ни один агент",
     );
   }
   console.log(
