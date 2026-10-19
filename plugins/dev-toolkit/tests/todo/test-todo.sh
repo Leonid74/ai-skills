@@ -1117,7 +1117,10 @@ t_inline_fence() {
   put DONE.md "${DONE_HEAD}"$'```x```\n\n'"${DONE_LEGACY}"$'\n- **Задача №50: старая запись — ВЫПОЛНЕНА** (2026-01-01).\n'
   T check
   code_is 1
-  same "${_err}" "${_d}/DONE.md:7: ${FIRST_SECTION_MSG}"$'\n'"${_d}/next: следующий номер 8 не больше наибольшего занятого (50)"$'\n' \
+  # Плагин (todo.sh 1.2.0): отказ называет строку, где стоит наибольший занятый номер, — здесь строка «№50» архива.
+  local _ln
+  _ln="$(grep -n -F 'Задача №50' "${_d}/DONE.md" | cut -d: -f1)"
+  same "${_err}" "${_d}/DONE.md:7: ${FIRST_SECTION_MSG}"$'\n'"${_d}/next: следующий номер 8 не больше наибольшего занятого (50) — номер стоит в ${_d}/DONE.md:${_ln}"$'\n' \
     'stderr целиком'
 }
 each_awk inlineFenceLineUnderFirstArchiveHeadingDoesNotOpenBlock '' t_inline_fence
@@ -1677,6 +1680,29 @@ t_refs_ctrl() {
 }
 plugin_case refsReplacesControlCharacters t_refs_ctrl
 
+# Отказ «счётчик не больше наибольшего занятого» (next, check) называет строку, где стоит номер: «№N» в строке «- **…»
+# архива бывает ссылкой из текста закрытого пункта (пилот server-morning-check, 19.10.2026), заголовок записи — свой номер.
+t_counter_source() {
+  local _ln
+  put DONE.md "${DONE_HEAD}${DONE_LEGACY}"$'- **Задача №1: старая** — сделано, см. №12–14.\n'
+  _ln="$(grep -n -F 'см. №12' "${_d}/DONE.md" | cut -d: -f1)"
+  snap TODO.md DONE.md next
+  T next
+  code_is 1 'next: номер из строки архива'
+  has_err "не больше наибольшего занятого номера (12) — номер стоит в ${_d}/DONE.md:${_ln}"
+  T check
+  code_is 1 'check: номер из строки архива'
+  has_err "не больше наибольшего занятого (12) — номер стоит в ${_d}/DONE.md:${_ln}"
+  unchanged
+  reset_fixture
+  put next $'7 # выдан №6 — Старая\n'
+  _ln="$(grep -n -F '### №7.' "${_d}/TODO.md" | cut -d: -f1)"
+  T next
+  code_is 1 'next: номер записи списка'
+  has_err "не больше наибольшего занятого номера (7) — номер стоит в ${_d}/TODO.md:${_ln}"
+}
+plugin_case counterRefusalNamesNumberSource t_counter_source
+
 # ---------------------------------------------------------------------------------------------
 # Итог. Полный набор (без TODO_AWKS) обязан учесть все 187 случаев и 38 методов PHP: потерянный
 # или задвоенный случай — падение стенда, а не расхождение в таблице.
@@ -1690,10 +1716,10 @@ if [[ -z "${TODO_AWKS:-}" ]]; then
     printf 'FAIL учёт: случаев PHP %s (нужно 187), методов %s (нужно 38)\n' "${_cases}" "${_methods}"
   fi
 fi
-# Случаи плагина: 5 методов под каждым выбранным вариантом awk — выпавший случай виден и здесь.
-if [[ "${_extra}" -ne $((5 * ${#_sel_names[@]})) ]]; then
+# Случаи плагина: 6 методов под каждым выбранным вариантом awk — выпавший случай виден и здесь.
+if [[ "${_extra}" -ne $((6 * ${#_sel_names[@]})) ]]; then
   _fail=$((_fail + 1))
-  printf 'FAIL учёт: проверок плагина %s (нужно %s: 5 методов × %s awk)\n' "${_extra}" "$((5 * ${#_sel_names[@]}))" "${#_sel_names[@]}"
+  printf 'FAIL учёт: проверок плагина %s (нужно %s: 6 методов × %s awk)\n' "${_extra}" "$((6 * ${#_sel_names[@]}))" "${#_sel_names[@]}"
 fi
 if [[ ${#_failed[@]} -gt 0 ]]; then
   printf 'Упавшие проверки (%s):\n' "${#_failed[@]}"
