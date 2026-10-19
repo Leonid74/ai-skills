@@ -1538,7 +1538,8 @@ t_ci_mawk() {
 once ciRunsScriptUnderMawk t_ci_mawk
 
 # ---------------------------------------------------------------------------------------------
-# Дополнения плагина — случаи, которых нет в PHP (пробелы R1 и Q4 со стороны close). В учёт
+# Дополнения плагина — случаи, которых нет в PHP (пробелы R1 и Q4 со стороны close, ранний выход поиска в check,
+# управляющие символы в выводе refs). В учёт
 # 187 случаев PHP они не входят: имя начинается с «plugin:».
 
 _extra=0
@@ -1590,10 +1591,48 @@ t_close_legacy_line_in_record() {
   snap TODO.md DONE.md next
   T close 3 --closed '2026-02-01, PR #10' --summary-file "${_d}/summary"
   code_is 1
-  has_err 'переформулируйте строку'
+  # Отказ — от разбора списка до сборки архива, а не от самопроверки собранного архива.
+  has_err 'в тексте задачи выглядит как запись прежнего формата архива'
+  lacks_err 'самопроверка'
   unchanged
 }
 plugin_case closeRefusesLegacyLineInRecordText t_close_legacy_line_in_record
+
+# check при большом разделе прежних записей: номер открытой задачи среди них (первой строкой раздела, дальше —
+# больше буфера канала) называется, а не теряется из-за раннего выхода поиска.
+t_check_large_legacy() {
+  local _k _legacy=$'## Закрытые до формата (прежний вид)\n\n- **Задача №3: тоже открыта** (2026-01-01).\n'
+  for ((_k = 0; _k < 60000; _k++)); do
+    _legacy+=$'- **Задача №1: старая** (2026-01-01).\n'
+  done
+  put DONE.md "${DONE_HEAD}${_legacy}"
+  T check
+  code_is 1
+  has_err '№3: открытая задача числится закрытой'
+}
+plugin_case checkFindsOpenTaskInLargeLegacySection t_check_large_legacy
+
+# refs не выводит управляющие символы из найденных строк (ESC, BEL) — они меняли бы вывод терминала: ни при
+# поиске по путям, ни при поиске по git-репозиторию (без путей).
+t_refs_ctrl() {
+  mkdir "${_d}/notes"
+  printf 'см. №3 \033]0;окно\007 и \033[31mкрасный\033[0m\n' >"${_d}/notes/n.md"
+  T refs 3 "${_d}/notes"
+  code_is 0 'по путям'
+  has "${_out}" 'см. №3' 'по путям'
+  lacks "${_out}" $'\033' 'ESC в выводе refs по путям'
+  lacks "${_out}" $'\007' 'BEL в выводе refs по путям'
+  if ! git -C "${_d}" init -q 2>/dev/null || ! git -C "${_d}" add notes/n.md 2>/dev/null; then
+    bad 'не удалось создать git-репозиторий фикстуры'
+    return
+  fi
+  T refs 3
+  code_is 0 'по git'
+  has "${_out}" 'см. №3' 'по git'
+  lacks "${_out}" $'\033' 'ESC в выводе refs по git'
+  lacks "${_out}" $'\007' 'BEL в выводе refs по git'
+}
+plugin_case refsReplacesControlCharacters t_refs_ctrl
 
 # ---------------------------------------------------------------------------------------------
 # Итог. Полный набор (без TODO_AWKS) обязан учесть все 187 случаев и 38 методов PHP: потерянный
@@ -1608,6 +1647,11 @@ if [[ -z "${TODO_AWKS:-}" ]]; then
     printf 'FAIL учёт: случаев PHP %s (нужно 187), методов %s (нужно 38)\n' "${_cases}" "${_methods}"
   fi
 fi
+# Случаи плагина: 4 метода под каждым выбранным вариантом awk — выпавший случай виден и здесь.
+if [[ "${_extra}" -ne $((4 * ${#_sel_names[@]})) ]]; then
+  _fail=$((_fail + 1))
+  printf 'FAIL учёт: проверок плагина %s (нужно %s: 4 метода × %s awk)\n' "${_extra}" "$((4 * ${#_sel_names[@]}))" "${#_sel_names[@]}"
+fi
 if [[ ${#_failed[@]} -gt 0 ]]; then
   printf 'Упавшие проверки (%s):\n' "${#_failed[@]}"
   printf '  %s\n' "${_failed[@]}"
@@ -1617,6 +1661,6 @@ if [[ ${#_skips[@]} -gt 0 ]]; then
   _skip_text="$(printf '%s; ' "${_skips[@]}")"
   _skip_text="${_skip_text%; }"
 fi
-printf 'pass=%s fail=%s (проверок: %s; случаев PHP: %s; методов: %s; ассертов: %s; awk: %s; пропуски: %s)\n' \
-  "${_pass}" "${_fail}" "$((_pass + _fail))" "${_cases}" "${_methods}" "${_asserts}" "${_sel_names[*]}" "${_skip_text}"
+printf 'pass=%s fail=%s (проверок: %s; случаев PHP: %s; методов: %s; проверок плагина: %s; ассертов: %s; awk: %s; пропуски: %s)\n' \
+  "${_pass}" "${_fail}" "$((_pass + _fail))" "${_cases}" "${_methods}" "${_extra}" "${_asserts}" "${_sel_names[*]}" "${_skip_text}"
 [[ "${_fail}" -eq 0 ]]

@@ -54,19 +54,21 @@
 # Зависимости: bash, POSIX awk (проверено с gawk и mawk), cat, cp, mv, rm, mktemp, head, tail, sed, tr,
 # wc, cmp, sort, uniq, grep, dirname, basename; для refs без путей — git.
 
-# Функции-проверки (has_ctrl, file_has_ctrl, structure_ok, validate_fields, parse_counter, compute_next)
-# зовутся в условиях намеренно: их код возврата и есть результат проверки, отказ идёт через die. Под set -e
-# сбой утилиты внутри такой функции и в подстановке внутри условия скрипт не останавливает — так устроен
-# исходный скрипт, перенос в плагин его не меняет. Опыт с нечитаемыми файлами: check,
-# close и compat кончаются кодом ≠ 0; new при нечитаемом архиве заводит запись с кодом 0, а номера архива
-# не учитывает — номер берётся из счётчика.
+# Функции-проверки (has_ctrl, file_has_ctrl, structure_ok, validate_fields, parse_counter, compute_next,
+# check_violations) зовутся в условиях намеренно: их код возврата и есть результат проверки, отказ идёт через die.
+# Под set -e сбой утилиты внутри такой функции и в подстановке внутри условия скрипт не останавливает — так устроен
+# исходный скрипт; режим compat и check_violations, добавленные в плагине, держатся того же приёма. Директива ниже
+# глушит только эти два вида замечаний (SC2310 — функция в условии, SC2312 — подстановка «$(tail -c 1 …)» в
+# проверке перевода строки); новый код сверен прогоном shellcheck без директивы — иных замечаний в нём нет.
+# Опыт с нечитаемыми файлами: check и close кончаются кодом ≠ 0, compat называет файл; new при нечитаемом архиве
+# заводит запись с кодом 0, а номера архива не учитывает — номер берётся из счётчика.
 # shellcheck disable=SC2310,SC2312
 
 set -euo pipefail
 export LC_ALL=C
 
 # Версия скрипта: по ней сверяется копия скрипта в проекте с копией в плагине dev-toolkit.
-TODO_SH_VERSION='1.0.0'
+TODO_SH_VERSION='1.1.0'
 
 TODO_FILE=${TODO_FILE:-doc/TODO.md}
 DONE_FILE=${TODO_DONE_FILE:-doc/TODO-DONE.md}
@@ -113,9 +115,21 @@ file_has_ctrl() {
     awk '/[\001-\037\177]|\302[\200-\237]/ { bad = 1 } END { exit !bad }' "$1"
 }
 
-# Общие функции awk: начало строки, номер записи по строке заголовка и наибольший номер в строке.
+# Общие функции awk: начало строки, номер записи по строке заголовка, наибольший номер в строке и начало
+# строки для сообщения.
 # shellcheck disable=SC2016
 AWK_LIB='
+# Начало строки для сообщения: табуляция — словом (отказы называют строки с табуляцией), прочие управляющие
+# символы — знаком вопроса (текст задачи на них не проверяется, а печатается в терминал); не длиннее
+# 100 байт, без разрыва многобайтового символа.
+function head(s) {
+    gsub(/\t/, "<TAB>", s)
+    gsub(/[\001-\037\177]|\302[\200-\237]/, "?", s)
+    if (length(s) <= 100) return s
+    s = substr(s, 1, 100)
+    sub(/[\300-\367][\200-\277]*$/, "", s)
+    return s "…"
+}
 function starts(s, prefix) { return substr(s, 1, length(prefix)) == prefix }
 function recnum(line,   p, rest) {
     p = "### №"
@@ -348,17 +362,6 @@ validate_fields() {
 open_lines() {
     # shellcheck disable=SC2016
     FILE_LABEL=$2 OFFSET=${3:-0} awk "${AWK_LIB}"'
-    # Начало строки для сообщения: табуляция — словом (отказы называют строки с табуляцией), прочие управляющие
-    # символы — знаком вопроса (текст задачи на них не проверяется, а печатается в терминал); не длиннее
-    # 100 байт, без разрыва многобайтового символа.
-    function head(s) {
-        gsub(/\t/, "<TAB>", s)
-        gsub(/[\001-\037\177]|\302[\200-\237]/, "?", s)
-        if (length(s) <= 100) return s
-        s = substr(s, 1, 100)
-        sub(/[\300-\367][\200-\277]*$/, "", s)
-        return s "…"
-    }
     function report(line, reason, text) {
         printf "%s:%d: №%d: %s: %s\n", ENVIRON["FILE_LABEL"], line + ENVIRON["OFFSET"], cur, reason, head(text)
     }
@@ -439,6 +442,13 @@ record_title() {
     start=$(scan "${mode}" "${file}" | awk -v n="${n}" '$1 == "R" && $2 == n { print $3; exit }')
     [[ -n "${start}" ]] || return 0
     sed -n "${start}p" "${file}" | sed "s/^### №${n}\\. //"
+}
+
+# Номер строки первого заголовка второго уровня архива вне блоков кода (пусто, если его нет) — место вставки close.
+archive_heading() {
+    awk '
+        { if (substr($0, 1, 3) == "```") fence = !fence; else if (!fence && substr($0, 1, 3) == "## ") { print NR; exit } }
+    ' "${DONE_FILE}"
 }
 
 # Разбор строки счётчика: печатает «следующий выданный». Формат — «N # выдан №M — название», N = M + 1.
@@ -652,9 +662,7 @@ cmd_close() {
 
     # Место вставки — после первого заголовка второго уровня архива и пустой строки за ним.
     local heading ins
-    heading=$(awk '
-        { if (substr($0, 1, 3) == "```") fence = !fence; else if (!fence && substr($0, 1, 3) == "## ") { print NR; exit } }
-    ' "${DONE_FILE}")
+    heading=$(archive_heading)
     [[ -n "${heading}" ]] || die "в ${DONE_FILE} нет заголовка раздела (## …) — некуда вставлять запись"
     # Пустая — в том же смысле, что в scan: без символов либо из пробелов и табуляции.
     local after_heading
@@ -722,9 +730,11 @@ cmd_close() {
     fi
 }
 
-cmd_check() {
-    local bad=0 dup opened legacy n max counter next
-    require_files
+# Нарушения, которые судит check: структура и поля обоих файлов, открытые строки сводных пунктов архива, повторы
+# номеров, открытая задача среди прежних записей архива, счётчик (аргумент «без-счётчика» — счётчик не
+# проверяется). Сообщения — в stderr, код 1, если нарушения есть. Список и архив — на месте (require_files).
+check_violations() {
+    local counter_mode=${1:-} bad=0 dup opened legacy n max counter next
     structure_ok list "${TODO_FILE}" || bad=1
     structure_ok archive "${DONE_FILE}" || bad=1
     validate_fields todo "${TODO_FILE}" || bad=1
@@ -748,14 +758,18 @@ cmd_check() {
     opened=$(scan list "${TODO_FILE}" | awk '$1 == "R" { print $2 }')
     legacy=$(scan archive "${DONE_FILE}" | awk '$1 == "T" { print $2 }')
     for n in ${opened}; do
-        if printf '%s\n' "${legacy}" | grep -q -x -e "${n}"; then
+        # Here-string, не конвейер: ранний выход grep -q оборвал бы printf (SIGPIPE), и под pipefail условие
+        # стало бы ложным на большом разделе прежних записей.
+        if grep -q -x -e "${n}" <<< "${legacy}"; then
             printf '%s: №%s: открытая задача числится закрытой в %s\n' "${TODO_FILE}" "${n}" "${DONE_FILE}" >&2
             bad=1
         fi
     done
 
     max=$(max_number)
-    if [[ ! -e "${COUNTER_FILE}" ]]; then
+    if [[ "${counter_mode}" == 'без-счётчика' ]]; then
+        :
+    elif [[ ! -e "${COUNTER_FILE}" ]]; then
         printf '%s: файла счётчика нет\n' "${COUNTER_FILE}" >&2
         bad=1
     elif counter=$(parse_counter); then
@@ -767,10 +781,14 @@ cmd_check() {
     else
         bad=1
     fi
+    [[ "${bad}" -eq 0 ]]
+}
 
-    if [[ "${bad}" -ne 0 ]]; then
-        exit 1
-    fi
+cmd_check() {
+    local max
+    require_files
+    check_violations || exit 1
+    max=$(max_number)
     printf 'todo: структура, формат, номера и счётчик в порядке (наибольший номер — %s)\n' "${max}"
 }
 
@@ -779,30 +797,38 @@ cmd_refs() {
     [[ "${n}" =~ ^[1-9][0-9]*$ ]] || die 'refs: нужен номер задачи'
     shift
     local pattern="№${n}([^0-9]|\$)"
+    # Управляющие символы найденных строк (кроме табуляции) — знаком вопроса: ESC и BEL меняли бы вывод терминала.
     if [[ $# -eq 0 ]] && git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
         # «:/» — от корня репозитория: из подкаталога поиск иначе молча сузился бы до него.
-        git grep -n -I -E -e "${pattern}" -- ':/' || true
+        { git grep -n -I -E -e "${pattern}" -- ':/' || true; } | sanitize_lines
     else
         if [[ $# -eq 0 ]]; then
             set -- .
         fi
-        grep -r -n -I -E -e "${pattern}" -- "$@" || true
+        { grep -r -n -I -E -e "${pattern}" -- "$@" || true; } | sanitize_lines
     fi
 }
 
-# Строки списка вне записей, похожие на пункты другого вида списка задач: чекбоксы, нумерованные пункты,
-# строки таблиц (вне блоков кода). Печатает «вид номер_строки начало_строки» на каждую строку и в конце
-# «N наибольший_номер» — наибольшее из чисел пунктов («12. …»), «**N**» и «№N» в этих строках.
+sanitize_lines() {
+    awk '{ gsub(/[\001-\010\013-\037\177]|\302[\200-\237]/, "?"); print }'
+}
+
+# Строки вне записей, похожие на пункты другого вида списка задач: чекбоксы («- [ ] …», «* [ ] …», «+ [ ] …»),
+# нумерованные пункты («12. …», «12) …», «- **12.** …», «**12.** …»), строки таблиц — вне блоков кода. Печатает
+# «вид номер_строки начало_строки» на каждую такую строку (начало — как в отказах close: управляющие символы
+# заменены, не длиннее 100 байт) и в конце «N наибольший_номер» — наибольший номер прежнего пункта во всех строках
+# вне записей: номер в начале пункта («12. …», «- [ ] 12. …», «- **12.** …», «| 12 | …», «### 12. …», в том числе
+# под «**» и «~~») и «№N» в любом месте строки. Числа дальше в тексте (дата, количество) номером не считаются.
 foreign_lines() {
     # shellcheck disable=SC2016
     awk "${AWK_LIB}"'
-    function num(s,   v, best, t) {
-        best = 0
-        if (match(s, /^[0-9]+[.)] /)) { v = substr(s, 1, RLENGTH - 2) + 0; if (v > best) best = v }
-        t = s
-        while (match(t, /\*\*[0-9]+\*\*/)) { v = substr(t, RSTART + 2, RLENGTH - 4) + 0; if (v > best) best = v; t = substr(t, RSTART + RLENGTH) }
-        v = maxref(s); if (v > best) best = v
-        return best
+    function lead(s,   v) {
+        sub(/^([-*+] (\[[ xX]\] )?|### |\| *)/, "", s)
+        sub(/^[*~_ ]+/, "", s)
+        if (!match(s, /^[0-9]+/)) return 0
+        v = substr(s, 1, RLENGTH) + 0
+        s = substr(s, RLENGTH + 1)
+        return (s == "" || s ~ /^([.)*~]| *\|)/) ? v : 0
     }
     {
         if (substr($0, 1, 3) == "```") { fence = !fence; next }
@@ -810,80 +836,131 @@ foreign_lines() {
         if (recnum($0) > 0) { inrec = 1; next }
         if (substr($0, 1, 2) == "# " || substr($0, 1, 3) == "## ") { inrec = 0; next }
         if (inrec) next
+        v = lead($0); if (v > max) max = v
+        v = maxref($0); if (v > max) max = v
         kind = ""
-        if ($0 ~ /^- \[[ xX]\] /) kind = "чекбоксы"
-        else if ($0 ~ /^[0-9]+[.)] /) kind = "нумерованные"
+        if ($0 ~ /^[-*+] \[[ xX]\] /) kind = "чекбоксы"
+        else if ($0 ~ /^([0-9]+[.)] |([-*+] )?\*\*[0-9]+[.)]?\*\*)/) kind = "нумерованные"
         else if (substr($0, 1, 1) == "|") kind = "таблицы"
-        if (kind == "") next
-        print kind, NR, substr($0, 1, 80)
-        v = num($0); if (v > max) max = v
+        if (kind != "") print kind, NR, head($0)
     }
     END { print "N", max + 0 }
     ' "$1"
 }
 
-# Совместимость списка с форматом скрипта — только чтение, файлы не меняются ни при каком исходе. Отчёт —
-# в stdout; код 0 — совместим (предупреждения возможны), 1 — несовместим (причины названы).
+# Совместимость списка с форматом скрипта — только чтение, файлы не меняются ни при каком исходе. Судит то же, что
+# check (файла счётчика нет — предупреждение: next создаст его), и то, на чём откажут new и close: файл пуст или не
+# кончается переводом строки, в архиве некуда вставить запись. Отчёт — в stdout; код 0 — совместим (предупреждения
+# возможны), 1 — несовместим (причины названы).
 cmd_compat() {
-    local bad=0 f label out records lines kinds max errors
+    local bad=0 i f label records out errors lines kinds total heading max=0 amax next='' mode=''
+    local -a files=("${TODO_FILE}" "${DONE_FILE}" "${COUNTER_FILE}") labels=('список' 'архив' 'счётчик')
+    local -a usable=(0 0 0)
     printf 'todo compat: проверка списка задач на формат скрипта (файлы не меняются)\n'
-    for f in "${TODO_FILE}" "${DONE_FILE}" "${COUNTER_FILE}"; do
-        case "${f}" in
-            "${TODO_FILE}") label='список' ;;
-            "${DONE_FILE}") label='архив' ;;
-            *) label='счётчик' ;;
-        esac
+    # Метка — по месту в перечне, а не по сравнению путей: пути разных ролей могут совпасть.
+    for i in 0 1 2; do
+        f=${files[i]}
+        label=${labels[i]}
         if [[ -L "${f}" ]]; then
             printf 'todo compat: %s %s: символическая ссылка — по ссылке скрипт не пишет\n' "${label}" "${f}"
             bad=1
+        elif [[ ! -e "${f}" && "${i}" -eq 2 ]]; then
+            printf 'todo compat: предупреждение: %s %s: нет файла — next создаст его по наибольшему номеру записей формата и строк «- **…№N…» архива; номера пунктов другого вида он не учитывает — сверьте с наибольшим номером вне записей\n' "${label}" "${f}"
         elif [[ ! -e "${f}" ]]; then
-            if [[ "${label}" == 'счётчик' ]]; then
-                printf 'todo compat: %s %s: нет файла — next восстановит его по наибольшему номеру записей формата; номера прежнего вида (ниже) он не учитывает\n' "${label}" "${f}"
-            else
-                printf 'todo compat: %s %s: нет файла\n' "${label}" "${f}"
-            fi
+            printf 'todo compat: %s %s: нет файла\n' "${label}" "${f}"
+            bad=1
+        elif [[ ! -f "${f}" ]]; then
+            printf 'todo compat: %s %s: не обычный файл (каталог?)\n' "${label}" "${f}"
             bad=1
         elif [[ ! -r "${f}" ]]; then
             printf 'todo compat: %s %s: не читается — нет прав на чтение\n' "${label}" "${f}"
             bad=1
+        else
+            usable[i]=1
         fi
     done
-    if [[ -f "${TODO_FILE}" && ! -L "${TODO_FILE}" && -r "${TODO_FILE}" ]]; then
+
+    if [[ "${usable[0]}" -eq 1 ]]; then
         records=$(scan list "${TODO_FILE}" | awk '$1 == "R"' | wc -l | tr -d ' ')
         printf 'todo compat: список %s: есть, записей формата: %s\n' "${TODO_FILE}" "${records}"
-        errors=$(structure_ok list "${TODO_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
-        errors=$(validate_fields todo "${TODO_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
+        if [[ ! -s "${TODO_FILE}" || -n "$(tail -c 1 "${TODO_FILE}")" ]]; then
+            printf 'todo compat: список %s: файл пуст или не кончается переводом строки — new и close откажут\n' "${TODO_FILE}"
+            bad=1
+        fi
+    fi
+    if [[ "${usable[1]}" -eq 1 ]]; then
+        records=$(scan archive "${DONE_FILE}" | awk '$1 == "R"' | wc -l | tr -d ' ')
+        printf 'todo compat: архив %s: есть, записей формата: %s\n' "${DONE_FILE}" "${records}"
+        if [[ ! -s "${DONE_FILE}" || -n "$(tail -c 1 "${DONE_FILE}")" ]]; then
+            printf 'todo compat: архив %s: файл пуст или не кончается переводом строки — close откажет\n' "${DONE_FILE}"
+            bad=1
+        fi
+        # Место вставки — как у close: первый заголовок второго уровня и пустая строка за ним.
+        heading=$(archive_heading)
+        if [[ -z "${heading}" ]]; then
+            printf 'todo compat: архив %s: нет заголовка раздела (## …) — close некуда вставить запись\n' "${DONE_FILE}"
+            bad=1
+        else
+            errors=$(sed -n "$((heading + 1))p" "${DONE_FILE}")
+            if [[ -n "${errors//[ $'\t']/}" ]]; then
+                printf 'todo compat: архив %s: после первого заголовка раздела нет пустой строки — close откажет\n' "${DONE_FILE}"
+                bad=1
+            fi
+        fi
+    fi
+    if [[ "${usable[2]}" -eq 1 ]]; then
+        if errors=$( (parse_counter) 2>&1); then
+            next=${errors%% *}
+            printf 'todo compat: счётчик %s: есть, следующий номер %s\n' "${COUNTER_FILE}" "${next}"
+        else
+            printf 'todo compat: счётчик %s: не разобран — %s\n' "${COUNTER_FILE}" "${errors#todo: }"
+            bad=1
+        fi
+    fi
+
+    # Нарушения check. Счётчик сверяется только разобранный; без него — проверки файлов по отдельности.
+    [[ -n "${next}" ]] || mode='без-счётчика'
+    if [[ "${usable[0]}" -eq 1 && "${usable[1]}" -eq 1 ]]; then
+        errors=$(check_violations "${mode}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
+    elif [[ "${usable[0]}" -eq 1 ]]; then
+        errors=$(structure_ok list "${TODO_FILE}" 2>&1 && validate_fields todo "${TODO_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
+    elif [[ "${usable[1]}" -eq 1 ]]; then
+        errors=$(structure_ok archive "${DONE_FILE}" 2>&1 && validate_fields archive "${DONE_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
+    fi
+
+    # Строки другого вида вне записей. Вывод — here-string, не конвейер: head с ранним выходом под pipefail
+    # оборвал бы compat (SIGPIPE) на большом прежнем списке.
+    lines=''
+    if [[ "${usable[0]}" -eq 1 ]]; then
         out=$(foreign_lines "${TODO_FILE}")
-        max=$(printf '%s\n' "${out}" | awk '$1 == "N" { print $2 }')
-        lines=$(printf '%s\n' "${out}" | awk -v F="${TODO_FILE}" '$1 != "N" { k = $1; n = $2; sub(/^[^ ]+ [0-9]+ /, ""); printf "%s:%d: %s: %s\n", F, n, k, $0 }')
+        max=$(awk '$1 == "N" { print $2 }' <<< "${out}")
+        lines=$(F=${TODO_FILE} awk '$1 != "N" { k = $1; n = $2; sub(/^[^ ]+ [0-9]+ /, ""); printf "%s:%d: %s: %s\n", ENVIRON["F"], n, k, $0 }' <<< "${out}")
         if [[ -n "${lines}" ]]; then
-            kinds=$(printf '%s\n' "${out}" | awk '$1 != "N" { c[$1]++ } END { s = ""; for (k in c) { if (s != "") s = s ", "; s = s (k == "нумерованные" ? "нумерованные пункты" : (k == "таблицы" ? "строки таблиц" : k)) " — " c[k] } print s }')
+            kinds=$(awk '$1 != "N" { c[$1]++ } END { s = ""; for (k in c) { if (s != "") s = s ", "; s = s (k == "нумерованные" ? "нумерованные пункты" : (k == "таблицы" ? "строки таблиц" : k)) " — " c[k] } print s }' <<< "${out}")
             if [[ "${bad}" -eq 0 ]]; then
                 printf 'todo compat: предупреждение: вне записей есть строки другого вида списка задач (%s) — если это задачи, а не текст шапки, переведите их в записи до new/close:\n' "${kinds}"
             else
                 printf 'todo compat: вне записей — строки другого вида списка задач (%s):\n' "${kinds}"
             fi
-            printf '%s\n' "${lines}" | head -n 5
-            [[ "$(printf '%s\n' "${lines}" | wc -l)" -le 5 ]] || printf 'todo compat: … всего таких строк: %s\n' "$(printf '%s\n' "${lines}" | wc -l | tr -d ' ')"
-            if [[ "${max:-0}" -gt 0 ]]; then
-                printf 'todo compat: наибольший номер в строках вне записей: %s — при переводе списка счётчик ставить не меньше %s\n' "${max}" "$((max + 1))"
-            fi
+            head -n 5 <<< "${lines}"
+            total=$(wc -l <<< "${lines}")
+            total=${total//[^0-9]/}
+            [[ "${total}" -le 5 ]] || printf 'todo compat: … всего таких строк: %s\n' "${total}"
         fi
     fi
-    if [[ -f "${DONE_FILE}" && ! -L "${DONE_FILE}" && -r "${DONE_FILE}" ]]; then
-        records=$(scan archive "${DONE_FILE}" | awk '$1 == "R"' | wc -l | tr -d ' ')
-        printf 'todo compat: архив %s: есть, записей формата: %s\n' "${DONE_FILE}" "${records}"
-        errors=$(structure_ok archive "${DONE_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
-        errors=$(validate_fields archive "${DONE_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
+    # Номера прежних пунктов архива (его второй раздел) тоже заняты.
+    if [[ "${usable[1]}" -eq 1 ]]; then
+        amax=$(foreign_lines "${DONE_FILE}" | awk '$1 == "N" { print $2 }')
+        [[ "${amax}" -le "${max:-0}" ]] || max=${amax}
     fi
-    if [[ -f "${COUNTER_FILE}" && ! -L "${COUNTER_FILE}" && -r "${COUNTER_FILE}" ]]; then
-        if errors=$( (parse_counter) 2>&1); then
-            printf 'todo compat: счётчик %s: есть, следующий номер %s\n' "${COUNTER_FILE}" "${errors%% *}"
-        else
-            printf '%s\n' "${errors}"
-            bad=1
-        fi
+    max=${max:-0}
+    if [[ "${max}" -gt 0 ]] && [[ -n "${lines}" || ! -e "${COUNTER_FILE}" || (-n "${next}" && "${next}" -le "${max}") ]]; then
+        printf 'todo compat: наибольший номер в строках вне записей: %s (список и прежний раздел архива: номер в начале пункта и «№N»; проверьте по спискам) — счётчик ставить не меньше %s\n' "${max}" "$((max + 1))"
     fi
+    if [[ -n "${next}" && "${next}" -le "${max}" ]]; then
+        printf 'todo compat: предупреждение: следующий номер счётчика %s не больше наибольшего номера вне записей (%s) — новые записи получат номера прежних пунктов; поднимите счётчик руками: «%s # выдан №%s — перевод списка»\n' "${next}" "${max}" "$((max + 1))" "${max}"
+    fi
+
     if [[ "${bad}" -ne 0 ]]; then
         printf 'todo compat: несовместим — new и close на этих файлах не запускать; варианты: перевести список в формат (записи «### №N.», архив, счётчик) либо не применять скрипт в этом проекте\n'
         exit 1
