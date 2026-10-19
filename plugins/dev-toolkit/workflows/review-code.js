@@ -231,6 +231,13 @@ if (input.frame !== undefined) {
     "args.frame: рамка использования в режиме Workflow не поддерживается — прогон с рамкой ведёт режим Agent",
   );
 }
+// Добавочные углы (+angles) скрипт не запускает: состав углов сверяется с уровнем жёстко. Молча принять
+// поле нельзя — заказанный угол остался бы без исполнителя, а прогон выглядел бы прогоном с добавкой.
+if (input.extraAngles !== undefined) {
+  throw new Error(
+    "args.extraAngles: добавочные углы (+angles) в режиме Workflow не поддерживаются — прогон с добавкой ведёт режим Agent",
+  );
+}
 const files = Array.isArray(input.files) ? input.files : [];
 if (!files.length || files.some((f) => typeof f !== "string" || !f)) {
   throw new Error(

@@ -1651,5 +1651,17 @@ console.log("ok 23 слабая сессия без доступа к opus: пр
       "args.frame отвергается при любом значении",
     );
   }
-  console.log("ok 25 границы приёмки кандидатов и отказ при рамке");
+  // Добавочные углы (+angles) в 2.15.0 — только режим Agent: при корректном angles отказ именно по полю.
+  for (const extraAngles of [[7], "7", [], null]) {
+    const a = base("high", 1);
+    a.extraAngles = extraAngles;
+    await assert.rejects(
+      runScript(a, () => null),
+      /args\.extraAngles: добавочные углы \(\+angles\) в режиме Workflow не поддерживаются/,
+      "args.extraAngles отвергается при любом значении",
+    );
+  }
+  console.log(
+    "ok 25 границы приёмки кандидатов, отказ при рамке и при добавочных углах",
+  );
 }
