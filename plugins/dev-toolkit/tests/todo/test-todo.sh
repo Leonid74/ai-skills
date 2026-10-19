@@ -227,6 +227,11 @@ for _i in "${!_awk_names[@]}"; do
     _sel_paths+=("${_awk_paths[_i]}")
   fi
 done
+# Опечатка в TODO_AWKS не должна давать «0 проверок, успех».
+if [[ ${#_sel_names[@]} -eq 0 ]]; then
+  printf 'FAIL: TODO_AWKS="%s" не выбрал ни одного варианта awk (есть: %s)\n' "${TODO_AWKS:-}" "${_awk_names[*]}"
+  exit 1
+fi
 _once=0
 [[ " ${_sel_names[*]} " == *' системный '* ]] && _once=1
 
@@ -1539,7 +1544,7 @@ once ciRunsScriptUnderMawk t_ci_mawk
 
 # ---------------------------------------------------------------------------------------------
 # Дополнения плагина — случаи, которых нет в PHP (пробелы R1 и Q4 со стороны close, ранний выход поиска в check,
-# управляющие символы в выводе refs). В учёт
+# управляющие символы в выводе refs, заголовок архива последней строкой). В учёт
 # 187 случаев PHP они не входят: имя начинается с «plugin:».
 
 _extra=0
@@ -1612,25 +1617,63 @@ t_check_large_legacy() {
 }
 plugin_case checkFindsOpenTaskInLargeLegacySection t_check_large_legacy
 
-# refs не выводит управляющие символы из найденных строк (ESC, BEL) — они меняли бы вывод терминала: ни при
-# поиске по путям, ни при поиске по git-репозиторию (без путей).
+# close при заголовке раздела последней строкой архива (так оставляет пустой архив форматировщик Markdown): отказ с
+# названием причины до сборки файлов, а не на самопроверке. Шаблон архива из скилла — второй раздел под пустой
+# строкой — принимает запись.
+t_close_heading_last_line() {
+  put DONE.md $'# Архив\n\n## Выполненные задачи\n'
+  put summary $'Итог.\n'
+  snap TODO.md DONE.md next
+  T close 3 --closed '2026-02-01, PR #10' --summary-file "${_d}/summary"
+  code_is 1 'заголовок последней строкой'
+  has_err 'после заголовка раздела нет пустой строки (заголовок — последняя строка файла)'
+  lacks_err 'самопроверка'
+  unchanged
+  put DONE.md $'# Архив\n\n## Выполненные задачи\n\n## Прежний формат\n'
+  T close 3 --closed '2026-02-01, PR #10' --summary-file "${_d}/summary"
+  code_is 0 'шаблон со вторым разделом'
+  file_has DONE.md '### №3. Первая задача'
+  T check
+  code_is 0 'check после закрытия в шаблон'
+}
+plugin_case closeRefusesArchiveHeadingAsLastLine t_close_heading_last_line
+
+# refs не выводит управляющие символы из найденных строк (ESC, BEL, CR, DEL, C1 в UTF-8; табуляция остаётся) и из
+# сообщений поиска (имя нечитаемого файла) — они меняли бы вывод терминала: ни при поиске по путям, ни при поиске
+# по git-репозиторию (без путей).
 t_refs_ctrl() {
+  local _c _uid
   mkdir "${_d}/notes"
   printf 'см. №3 \033]0;окно\007 и \033[31mкрасный\033[0m\n' >"${_d}/notes/n.md"
+  printf 'и №3 возврат\rкаретки, удаление\177, C1 \302\233 и\tтабуляция\n' >"${_d}/notes/m.md"
   T refs 3 "${_d}/notes"
   code_is 0 'по путям'
   has "${_out}" 'см. №3' 'по путям'
-  lacks "${_out}" $'\033' 'ESC в выводе refs по путям'
-  lacks "${_out}" $'\007' 'BEL в выводе refs по путям'
-  if ! git -C "${_d}" init -q 2>/dev/null || ! git -C "${_d}" add notes/n.md 2>/dev/null; then
+  for _c in $'\033' $'\007' $'\r' $'\177' $'\302\233'; do
+    lacks "${_out}" "${_c}" "управляющий символ $(printf '%q' "${_c}") в выводе refs по путям"
+  done
+  has "${_out}" $'и\tтабуляция' 'табуляция в выводе refs по путям'
+  # Сообщение об ошибке чтения называет файл — его имя тоже чистится (под root файл читается — проверки нет).
+  printf 'и №3\n' >"${_d}/notes/x"$'\033'"[31m.md"
+  chmod 000 "${_d}/notes/x"$'\033'"[31m.md"
+  _uid="$(id -u)"
+  if [[ "${_uid}" -ne 0 ]]; then
+    T refs 3 "${_d}/notes"
+    has "${_out}${_err}" 'Permission denied' 'сообщение об ошибке чтения'
+    lacks "${_out}${_err}" $'\033' 'ESC в сообщении об ошибке чтения'
+  fi
+  rm -f "${_d}/notes/x"$'\033'"[31m.md"
+  if ! git -C "${_d}" init -q 2>/dev/null || ! git -C "${_d}" add notes/n.md notes/m.md 2>/dev/null; then
     bad 'не удалось создать git-репозиторий фикстуры'
     return
   fi
   T refs 3
   code_is 0 'по git'
   has "${_out}" 'см. №3' 'по git'
-  lacks "${_out}" $'\033' 'ESC в выводе refs по git'
-  lacks "${_out}" $'\007' 'BEL в выводе refs по git'
+  for _c in $'\033' $'\007' $'\r' $'\177' $'\302\233'; do
+    lacks "${_out}" "${_c}" "управляющий символ $(printf '%q' "${_c}") в выводе refs по git"
+  done
+  has "${_out}" $'и\tтабуляция' 'табуляция в выводе refs по git'
 }
 plugin_case refsReplacesControlCharacters t_refs_ctrl
 
@@ -1647,10 +1690,10 @@ if [[ -z "${TODO_AWKS:-}" ]]; then
     printf 'FAIL учёт: случаев PHP %s (нужно 187), методов %s (нужно 38)\n' "${_cases}" "${_methods}"
   fi
 fi
-# Случаи плагина: 4 метода под каждым выбранным вариантом awk — выпавший случай виден и здесь.
-if [[ "${_extra}" -ne $((4 * ${#_sel_names[@]})) ]]; then
+# Случаи плагина: 5 методов под каждым выбранным вариантом awk — выпавший случай виден и здесь.
+if [[ "${_extra}" -ne $((5 * ${#_sel_names[@]})) ]]; then
   _fail=$((_fail + 1))
-  printf 'FAIL учёт: проверок плагина %s (нужно %s: 4 метода × %s awk)\n' "${_extra}" "$((4 * ${#_sel_names[@]}))" "${#_sel_names[@]}"
+  printf 'FAIL учёт: проверок плагина %s (нужно %s: 5 методов × %s awk)\n' "${_extra}" "$((5 * ${#_sel_names[@]}))" "${#_sel_names[@]}"
 fi
 if [[ ${#_failed[@]} -gt 0 ]]; then
   printf 'Упавшие проверки (%s):\n' "${#_failed[@]}"
