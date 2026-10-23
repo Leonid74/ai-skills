@@ -62,15 +62,18 @@
 # исходном коде это «$(wc -l …)», «$(sed -n …)», «$(tail …)» в условиях и аргументах, в новом — «$(tail -c 1 …)» в
 # проверке перевода строки и «$(max_source …)» в отказе о счётчике (compute_next, check_violations): её сбой лишь
 # убирает источник из сообщения. Новый код сверен прогоном shellcheck без директивы — иных замечаний в нём нет.
-# Опыт с нечитаемыми файлами: check и close кончаются кодом ≠ 0, compat называет файл; new при нечитаемом архиве
-# заводит запись с кодом 0, а номера архива не учитывает — номер берётся из счётчика.
+# Поэтому check_violations проверяет код каждой своей подстановки (parse_failed): пустой вывод упавшего конвейера —
+# сбой разбора, а не «нарушений нет».
+# Опыт с нечитаемыми файлами: check и close кончаются кодом ≠ 0, compat называет файл (код 3) и сверяет счётчик с
+# номерами читаемого файла; new при нечитаемом архиве заводит запись с кодом 0, а номера архива не учитывает — номер
+# берётся из счётчика.
 # shellcheck disable=SC2310,SC2312
 
 set -euo pipefail
 export LC_ALL=C
 
 # Версия скрипта: по ней сверяется копия скрипта в проекте с копией в плагине dev-toolkit.
-TODO_SH_VERSION='1.2.0'
+TODO_SH_VERSION='1.2.1'
 
 TODO_FILE=${TODO_FILE:-doc/TODO.md}
 DONE_FILE=${TODO_DONE_FILE:-doc/TODO-DONE.md}
@@ -140,12 +143,14 @@ function recnum(line,   p, rest) {
     if (match(rest, /^[1-9][0-9]*\. ./)) return substr(rest, 1, RLENGTH - 3) + 0
     return 0
 }
+# «№N» с наибольшим N в строке. Число длиннее 9 цифр — не номер: под mawk и busybox оно печатается как 1.23457e+20,
+# и сравнение в оболочке ломается (как у номера в начале пункта в foreign_lines).
 function maxref(line,   mark, i, v, best) {
     mark = "№"
     best = 0
     while ((i = index(line, mark)) > 0) {
         line = substr(line, i + length(mark))
-        if (match(line, /^[0-9]+/)) {
+        if (match(line, /^[0-9]+/) && RLENGTH <= 9) {
             v = substr(line, 1, RLENGTH) + 0
             if (v > best) best = v
         }
@@ -751,6 +756,13 @@ cmd_close() {
     fi
 }
 
+# Сбой разбора в check_violations: функция зовётся в условии, errexit в ней снят, и пустой вывод упавшего конвейера
+# читался бы как «нарушений нет». Печатает, что не разобрано, и возвращает 1 — вызов «… || parse_failed … || bad=1».
+parse_failed() {
+    printf 'todo: сбой разбора (%s) — проверка неполна\n' "$1" >&2
+    return 1
+}
+
 # Нарушения, которые судит check: структура и поля обоих файлов, открытые строки сводных пунктов архива, повторы
 # номеров, открытая задача среди прежних записей архива, счётчик (аргумент «без-счётчика» — счётчик не
 # проверяется). Сообщения — в stderr, код 1, если нарушения есть. Список и архив — на месте (require_files).
@@ -763,21 +775,22 @@ check_violations() {
 
     # Сводный пункт в архиве — только без открытых строк (то же правило, что у close).
     local open
-    open=$(open_lines "${DONE_FILE}" "${DONE_FILE}")
+    open=$(open_lines "${DONE_FILE}" "${DONE_FILE}") || parse_failed 'открытые строки сводных пунктов архива' || bad=1
     if [[ -n "${open}" ]]; then
         printf '%s\n' "${open}" >&2
         bad=1
     fi
 
-    dup=$({ scan list "${TODO_FILE}"; scan archive "${DONE_FILE}"; } | awk '$1 == "R" { print $2 }' | sort -n | uniq -d)
+    dup=$({ scan list "${TODO_FILE}"; scan archive "${DONE_FILE}"; } | awk '$1 == "R" { print $2 }' | sort -n | uniq -d) \
+        || parse_failed 'повторы номеров' || bad=1
     for n in ${dup}; do
         printf '%s: №%s: номер встречается больше одного раза в заголовках записей\n' "${TODO_FILE}" "${n}" >&2
         bad=1
     done
 
     # Номер открытой задачи не должен стоять в записи архива прежнего формата «- **Задача №N…».
-    opened=$(scan list "${TODO_FILE}" | awk '$1 == "R" { print $2 }')
-    legacy=$(scan archive "${DONE_FILE}" | awk '$1 == "T" { print $2 }')
+    opened=$(scan list "${TODO_FILE}" | awk '$1 == "R" { print $2 }') || parse_failed 'номера открытых задач' || bad=1
+    legacy=$(scan archive "${DONE_FILE}" | awk '$1 == "T" { print $2 }') || parse_failed 'прежние записи архива' || bad=1
     for n in ${opened}; do
         # Here-string, не конвейер: ранний выход grep -q оборвал бы printf (SIGPIPE), и под pipefail условие
         # стало бы ложным на большом разделе прежних записей.
@@ -787,7 +800,7 @@ check_violations() {
         fi
     done
 
-    max=$(max_number)
+    max=$(max_number) || parse_failed 'наибольший номер' || bad=1
     if [[ "${counter_mode}" == 'без-счётчика' ]]; then
         :
     elif [[ ! -e "${COUNTER_FILE}" ]]; then
@@ -817,18 +830,20 @@ cmd_refs() {
     local n=${1:-}
     [[ "${n}" =~ ^[1-9][0-9]*$ ]] || die 'refs: нужен номер задачи'
     shift
-    local pattern="№${n}([^0-9]|\$)"
+    local pattern="№${n}([^0-9]|\$)" rc=0
     # Управляющие символы найденных строк и сообщений поиска (кроме табуляции) — знаком вопроса: ESC и BEL меняли
     # бы вывод терминала, а имя файла в сообщении об ошибке чтения может их содержать.
     if [[ $# -eq 0 ]] && git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
         # «:/» — от корня репозитория: из подкаталога поиск иначе молча сузился бы до него.
-        { git grep -n -I -E -e "${pattern}" -- ':/' || true; } 2>&1 | sanitize_lines
+        { git grep -n -I -E -e "${pattern}" -- ':/' || true; } 2>&1 | sanitize_lines || rc=$?
     else
         if [[ $# -eq 0 ]]; then
             set -- .
         fi
-        { grep -r -n -I -E -e "${pattern}" -- "$@" || true; } 2>&1 | sanitize_lines
+        { grep -r -n -I -E -e "${pattern}" -- "$@" || true; } 2>&1 | sanitize_lines || rc=$?
     fi
+    # 141 — SIGPIPE: читатель закрыл вывод раньше конца поиска («refs N | head -1»); это обычный конец, не сбой.
+    [[ "${rc}" -eq 0 || "${rc}" -eq 141 ]] || exit "${rc}"
 }
 
 sanitize_lines() {
@@ -902,16 +917,29 @@ best_source() {
     K=$1 awk '$1 == ENVIRON["K"] && $2 + 0 > best { best = $2 + 0; s = $0 } END { if (s != "") { sub(/^[PS] [0-9]+ /, "", s); print best " — " s } }'
 }
 
+# Счётчик против номеров одного читаемого файла (режим и путь — как у scan), когда другой файл не читается: то же
+# сообщение, что у check, с пометкой о неполноте (max_source). Следующий номер — переменная next вызывающей cmd_compat;
+# счётчик не разобран (next пуст) — сверять нечего. Код 1 — нарушение.
+compat_counter() {
+    local fmax
+    [[ -n "${next}" ]] || return 0
+    fmax=$(scan "$1" "$2" | awk '$1 == "R" || $1 == "L" { if ($2 + 0 > max) max = $2 + 0 } END { print max + 0 }')
+    [[ "${next}" -gt "${fmax}" ]] && return 0
+    printf '%s: следующий номер %s не больше наибольшего занятого (%s)%s\n' "${COUNTER_FILE}" "${next}" "${fmax}" "$(max_source "${fmax}" 2> /dev/null)"
+    return 1
+}
+
 # Совместимость списка с форматом скрипта — только чтение, файлы не меняются ни при каком исходе. Судит то же, что
 # check (файла счётчика нет — предупреждение: next создаст его), и то, на чём откажут new и close: файл пуст или не
 # кончается переводом строки, в архиве некуда вставить запись. Отчёт — в stdout; код 0 — совместим (предупреждения
 # возможны; ноль записей без нарушений — тоже 0: так выглядит переведённый пустой список); 1 — несовместим: нет файла
 # списка или архива либо записей формата нет ни в одном из них и есть нарушения; 3 — записи
-# формата есть, но есть и нарушения (в том числе ссылка, каталог или нечитаемый файл вместо файла списка, архива или
-# счётчика): их исправляют, а не переводят список.
+# формата есть, но есть и нарушения (в том числе ссылка, каталог или нечитаемый файл вместо файла счётчика), либо файл
+# списка или архива есть, но не прочитан (ссылка, каталог, нет прав — его записи не видны): их исправляют, а не
+# переводят список.
 cmd_compat() {
     local bad=0 fatal=0 nrec=0 i f label records out errors lines kinds total heading max=0 amax next='' mode=''
-    local srcs='' lsrc rsrc lnum taken=
+    local srcs='' lsrc rsrc lnum taken='' unseen=0
     local -a files=("${TODO_FILE}" "${DONE_FILE}" "${COUNTER_FILE}") labels=('список' 'архив' 'счётчик')
     local -a usable=(0 0 0)
     printf 'todo compat: проверка списка задач на формат скрипта (файлы не меняются)\n'
@@ -940,7 +968,11 @@ cmd_compat() {
     # Нет файла списка или архива — список не переведён. Ссылка, каталог, нечитаемый файл при записях формата в
     # другом файле — нарушение, его исправляют.
     for i in 0 1; do
-        [[ -e "${files[i]}" || -L "${files[i]}" ]] || fatal=1
+        if [[ ! -e "${files[i]}" && ! -L "${files[i]}" ]]; then
+            fatal=1
+        elif [[ "${usable[i]}" -eq 0 ]]; then
+            unseen=1
+        fi
     done
 
     if [[ "${usable[0]}" -eq 1 ]]; then
@@ -994,9 +1026,11 @@ cmd_compat() {
         # Структура и поля — отдельными проверками, как в check: ошибка структуры не прячет ошибки полей.
         errors=$(structure_ok list "${TODO_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
         errors=$(validate_fields todo "${TODO_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
+        compat_counter list "${TODO_FILE}" || bad=1
     elif [[ "${usable[1]}" -eq 1 ]]; then
         errors=$(structure_ok archive "${DONE_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
         errors=$(validate_fields archive "${DONE_FILE}" 2>&1) || { printf '%s\n' "${errors}"; bad=1; }
+        compat_counter archive "${DONE_FILE}" || bad=1
     fi
 
     # Строки другого вида вне записей. Вывод — here-string, не конвейер: head с ранним выходом под pipefail
@@ -1054,6 +1088,12 @@ cmd_compat() {
 
     if [[ "${bad}" -ne 0 && "${fatal}" -eq 0 && "${nrec}" -gt 0 ]]; then
         printf 'todo compat: нарушения формата — список уже в формате (записей: %s), но new и close на нём не запускать, пока нарушения выше не исправлены (поле, счётчик, пустая строка); переводить список не нужно\n' "${nrec}"
+        exit 3
+    fi
+    # Список или архив есть, но не прочитан (ссылка, каталог, нет прав): записи в нём не видны, и «перевести список» —
+    # совет вслепую.
+    if [[ "${bad}" -ne 0 && "${fatal}" -eq 0 && "${unseen}" -eq 1 ]]; then
+        printf 'todo compat: нарушения формата — файл списка или архива не прочитан (причина выше), его записи не видны: new и close не запускать; исправьте файл и повторите compat — решать о переводе списка по этому отчёту рано\n'
         exit 3
     fi
     if [[ "${bad}" -ne 0 ]]; then

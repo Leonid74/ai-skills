@@ -1740,6 +1740,81 @@ t_counter_source() {
 }
 plugin_case counterRefusalNamesNumberSource t_counter_source
 
+# refs N | head -1: читатель закрыл вывод раньше конца поиска — код 0, как до todo.sh 1.2.0 (ревью синхронизации
+# копии, apps-b24-platform PR #437, G1-d: под pipefail скрипт выходил 141). Совпадений — больше буфера канала;
+# поиск по путям и по git.
+t_refs_closed_output() {
+  local _k _s=''
+  for ((_k = 0; _k < 30000; _k++)); do
+    _s+=$'строка №3 — текст строки\n'
+  done
+  put notes.md "${_s}"
+  (
+    cd "${_d}" || exit 99
+    set -o pipefail
+    PATH="${_awkpath}" timeout 60 bash "${TODO_SH}" refs 3 "${_d}/notes.md" 2>"${_io}/err" | head -n 1 >"${_io}/out"
+    exit "${PIPESTATUS[0]}"
+  )
+  _code=$?
+  slurp _err "${_io}/err"
+  code_is 0 'по путям'
+  if ! git -C "${_d}" init -q 2>/dev/null || ! git -C "${_d}" add notes.md 2>/dev/null; then
+    bad 'не удалось создать git-репозиторий фикстуры'
+    return
+  fi
+  (
+    cd "${_d}" || exit 99
+    set -o pipefail
+    PATH="${_awkpath}" timeout 60 bash "${TODO_SH}" refs 3 2>"${_io}/err" | head -n 1 >"${_io}/out"
+    exit "${PIPESTATUS[0]}"
+  )
+  _code=$?
+  slurp _err "${_io}/err"
+  code_is 0 'по git'
+}
+plugin_case refsSurvivesClosedOutput t_refs_closed_output
+
+# Сбой утилиты внутри check не даёт вердикта «в порядке» (G4-a ревью PR #437: функция зовётся в условии, errexit
+# в ней снят, и пустой вывод упавшего конвейера читался как «нарушений нет»). Сбой моделируется обёрткой в PATH:
+# sort (поиск повторов номеров) и awk на программе open_lines (открытые строки сводных пунктов).
+t_check_parse_failure() {
+  local _real _awkpath_saved=${_awkpath}
+  mkdir -p "${_d}/bin-sort" "${_d}/bin-awk"
+  printf '#!/bin/sh\nexit 1\n' >"${_d}/bin-sort/sort"
+  _real="$(PATH="${_awkpath}" command -v awk)"
+  # Падает только программа open_lines (по строке её текста); прочие программы — настоящий awk.
+  printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ "$a" == *"строка без флажка"* ]] && exit 2; done\nexec %q "$@"\n' "${_real}" >"${_d}/bin-awk/awk"
+  chmod +x "${_d}/bin-sort/sort" "${_d}/bin-awk/awk"
+  _awkpath="${_d}/bin-sort:${_awkpath_saved}"
+  T check
+  code_is 1 'сбой sort'
+  has_err 'сбой разбора' 'сбой sort'
+  lacks "${_out}" 'в порядке' 'сбой sort'
+  _awkpath="${_d}/bin-awk:${_awkpath_saved}"
+  T check
+  code_is 1 'сбой awk в open_lines'
+  has_err 'сбой разбора' 'сбой awk в open_lines'
+  lacks "${_out}" 'в порядке' 'сбой awk в open_lines'
+  _awkpath=${_awkpath_saved}
+}
+plugin_case checkReportsParseFailure t_check_parse_failure
+
+# «№N» длиннее 9 цифр в строке «- **…» прежнего раздела архива — не номер (G3-a ревью PR #437 и пункт (5) записи
+# TODO.md «scripts/todo.sh (2.14.0)»): под mawk и busybox число печаталось как 1.23457e+20 и ломало сравнение в
+# оболочке, check отвечал «в порядке» с таким «наибольшим номером». 9 цифр — номер (граница).
+t_check_long_number() {
+  put DONE.md "${DONE_HEAD}${DONE_LEGACY}"$'- **Задача №1: старая** — см. №123456789012345678901 и №1234567890.\n'
+  T check
+  code_is 0 'номер из 21 и 10 цифр'
+  has "${_out}" 'в порядке (наибольший номер — 7)' 'номер из 21 и 10 цифр'
+  lacks_err 'syntax error' 'номер из 21 и 10 цифр'
+  put DONE.md "${DONE_HEAD}${DONE_LEGACY}"$'- **Задача №1: старая** — см. №123456789.\n'
+  T check
+  code_is 1 'номер из 9 цифр'
+  has_err 'не больше наибольшего занятого (123456789)' 'номер из 9 цифр'
+}
+plugin_case checkIgnoresNumberLongerThanNineDigits t_check_long_number
+
 # ---------------------------------------------------------------------------------------------
 # Итог. Полный набор (без TODO_AWKS) обязан учесть все 187 случаев и 38 методов PHP: потерянный
 # или задвоенный случай — падение стенда, а не расхождение в таблице.
@@ -1753,10 +1828,10 @@ if [[ -z "${TODO_AWKS:-}" ]]; then
     printf 'FAIL учёт: случаев PHP %s (нужно 187), методов %s (нужно 38)\n' "${_cases}" "${_methods}"
   fi
 fi
-# Случаи плагина: 6 методов под каждым выбранным вариантом awk — выпавший случай виден и здесь.
-if [[ "${_extra}" -ne $((6 * ${#_sel_names[@]})) ]]; then
+# Случаи плагина: 9 методов под каждым выбранным вариантом awk — выпавший случай виден и здесь.
+if [[ "${_extra}" -ne $((9 * ${#_sel_names[@]})) ]]; then
   _fail=$((_fail + 1))
-  printf 'FAIL учёт: проверок плагина %s (нужно %s: 6 методов × %s awk)\n' "${_extra}" "$((6 * ${#_sel_names[@]}))" "${#_sel_names[@]}"
+  printf 'FAIL учёт: проверок плагина %s (нужно %s: 9 методов × %s awk)\n' "${_extra}" "$((9 * ${#_sel_names[@]}))" "${#_sel_names[@]}"
 fi
 if [[ ${#_failed[@]} -gt 0 ]]; then
   printf 'Упавшие проверки (%s):\n' "${#_failed[@]}"
