@@ -1742,59 +1742,78 @@ plugin_case counterRefusalNamesNumberSource t_counter_source
 
 # refs N | head -1: читатель закрыл вывод раньше конца поиска — код 0, как до todo.sh 1.2.0 (ревью синхронизации
 # копии, apps-b24-platform PR #437, G1-d: под pipefail скрипт выходил 141). Совпадений — больше буфера канала;
-# поиск по путям и по git.
+# поиск по путям и по git. Иной сбой фильтра вывода — его код (обёртка awk падает кодом 3 на программе sanitize_lines).
 t_refs_closed_output() {
-  local _k _s=''
+  local _k _s='' _real _awkpath_saved=${_awkpath}
   for ((_k = 0; _k < 30000; _k++)); do
     _s+=$'строка №3 — текст строки\n'
   done
   put notes.md "${_s}"
-  (
-    cd "${_d}" || exit 99
-    set -o pipefail
-    PATH="${_awkpath}" timeout 60 bash "${TODO_SH}" refs 3 "${_d}/notes.md" 2>"${_io}/err" | head -n 1 >"${_io}/out"
-    exit "${PIPESTATUS[0]}"
-  )
-  _code=$?
-  slurp _err "${_io}/err"
+  _refs_head "${_d}/notes.md"
   code_is 0 'по путям'
+  mkdir -p "${_d}/bin-awk"
+  _real="$(PATH="${_awkpath}" command -v awk)"
+  # shellcheck disable=SC2016
+  printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ "$a" == *"\\013-\\037"* ]] && exit 3; done\nexec %q "$@"\n' "${_real}" >"${_d}/bin-awk/awk"
+  chmod +x "${_d}/bin-awk/awk"
+  _awkpath="${_d}/bin-awk:${_awkpath_saved}"
+  T refs 3 "${_d}/notes.md"
+  code_is 3 'сбой фильтра вывода'
+  _awkpath=${_awkpath_saved}
   if ! git -C "${_d}" init -q 2>/dev/null || ! git -C "${_d}" add notes.md 2>/dev/null; then
     bad 'не удалось создать git-репозиторий фикстуры'
     return
   fi
+  _refs_head
+  code_is 0 'по git'
+}
+
+# _refs_head [ПУТЬ…] — refs 3 [ПУТЬ…] | head -n 1 под pipefail из каталога фикстуры; _code — код скрипта, _err — его stderr.
+_refs_head() {
   (
     cd "${_d}" || exit 99
     set -o pipefail
-    PATH="${_awkpath}" timeout 60 bash "${TODO_SH}" refs 3 2>"${_io}/err" | head -n 1 >"${_io}/out"
+    PATH="${_awkpath}" timeout 60 bash "${TODO_SH}" refs 3 "$@" 2>"${_io}/err" | head -n 1 >"${_io}/out"
     exit "${PIPESTATUS[0]}"
   )
   _code=$?
   slurp _err "${_io}/err"
-  code_is 0 'по git'
 }
 plugin_case refsSurvivesClosedOutput t_refs_closed_output
 
 # Сбой утилиты внутри check не даёт вердикта «в порядке» (G4-a ревью PR #437: функция зовётся в условии, errexit
-# в ней снят, и пустой вывод упавшего конвейера читался как «нарушений нет»). Сбой моделируется обёрткой в PATH:
-# sort (поиск повторов номеров) и awk на программе open_lines (открытые строки сводных пунктов).
+# в ней снят, и пустой вывод упавшего конвейера читался как «нарушений нет»). Сбой моделируется обёрткой в PATH: sort
+# (поиск повторов номеров) и awk на одной программе — open_lines (открытые строки сводных пунктов), scan списка и scan
+# архива (MODE), отбор прежних записей «T», наибольший номер. Отбор номеров записей «R» общий у повторов и открытых
+# задач — отдельной обёрткой его не уронить.
 t_check_parse_failure() {
-  local _real _awkpath_saved=${_awkpath}
-  mkdir -p "${_d}/bin-sort" "${_d}/bin-awk"
+  local _real _awkpath_saved=${_awkpath} _w _what _p
+  mkdir -p "${_d}/bin-sort"
   printf '#!/bin/sh\nexit 1\n' >"${_d}/bin-sort/sort"
-  _real="$(PATH="${_awkpath}" command -v awk)"
-  # Падает только программа open_lines (по строке её текста); прочие программы — настоящий awk.
-  printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ "$a" == *"строка без флажка"* ]] && exit 2; done\nexec %q "$@"\n' "${_real}" >"${_d}/bin-awk/awk"
-  chmod +x "${_d}/bin-sort/sort" "${_d}/bin-awk/awk"
+  chmod +x "${_d}/bin-sort/sort"
   _awkpath="${_d}/bin-sort:${_awkpath_saved}"
   T check
   code_is 1 'сбой sort'
   has_err 'сбой разбора' 'сбой sort'
   lacks "${_out}" 'в порядке' 'сбой sort'
-  _awkpath="${_d}/bin-awk:${_awkpath_saved}"
-  T check
-  code_is 1 'сбой awk в open_lines'
-  has_err 'сбой разбора' 'сбой awk в open_lines'
-  lacks "${_out}" 'в порядке' 'сбой awk в open_lines'
+  _real="$(PATH="${_awkpath_saved}" command -v awk)"
+  # Условие обёртки: (переменная MODE, подстрока программы); падает только эта программа, прочие — настоящий awk.
+  for _w in '|строка без флажка|open_lines' 'list|function flush(endline)|scan списка' \
+    'archive|function flush(endline)|scan архива' '|$1 == "T"|прежние записи' '|END { print max + 0 }|наибольший номер'; do
+    _what=${_w##*|}
+    _p=${_w#*|}
+    _p=${_p%%|*}
+    mkdir -p "${_d}/bin-awk"
+    # shellcheck disable=SC2016
+    printf '#!/usr/bin/env bash\nm=%q; p=%q\nif [[ -z "$m" || "${MODE:-}" == "$m" ]]; then for a in "$@"; do [[ "$a" == *"$p"* ]] && exit 2; done; fi\nexec %q "$@"\n' \
+      "${_w%%|*}" "${_p}" "${_real}" >"${_d}/bin-awk/awk"
+    chmod +x "${_d}/bin-awk/awk"
+    _awkpath="${_d}/bin-awk:${_awkpath_saved}"
+    T check
+    code_is 1 "сбой awk: ${_what}"
+    has_err 'сбой разбора' "сбой awk: ${_what}"
+    lacks "${_out}" 'в порядке' "сбой awk: ${_what}"
+  done
   _awkpath=${_awkpath_saved}
 }
 plugin_case checkReportsParseFailure t_check_parse_failure
@@ -1812,6 +1831,13 @@ t_check_long_number() {
   T check
   code_is 1 'номер из 9 цифр'
   has_err 'не больше наибольшего занятого (123456789)' 'номер из 9 цифр'
+  # Предел — для подсчёта номеров, не для формы поля «Связано»: ссылка из 10 цифр — в формате, как в 1.2.0.
+  reset_fixture
+  sr "${R3}" '- **Связано:** №5, №7' '- **Связано:** №5, №1234567890'
+  put TODO.md "${TODO_HEAD}${_r}${R5}${R7}"$'\n'
+  T check
+  code_is 0 '«Связано» с номером из 10 цифр'
+  lacks_err '«Связано»' '«Связано» с номером из 10 цифр'
 }
 plugin_case checkIgnoresNumberLongerThanNineDigits t_check_long_number
 
