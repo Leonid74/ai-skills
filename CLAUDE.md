@@ -89,8 +89,9 @@ bash plugins/dev-toolkit/tests/server-disk-cleanup/test-build-cache-forecast.sh
 `TodoScriptTest` проекта `apps-b24-platform`: при полном наборе сам падает, если учтёт не 187 случаев PHP и не 38
 методов; число случаев плагина (`plugin_case`) сверяется всегда — новый случай плагина требует правки этого числа
 в итоге стенда. Мутационная проверка — `TODO_SH=<копия скрипта>`. Скрипт не называет проект
-(`apps-b24`, `artisan`, `php ` в его тексте — падение стенда). Копия скрипта живёт и в проекте-источнике
-(`scripts/todo.sh`, её гоняет CI проекта): при смене поведения — поднять `TODO_SH_VERSION` в скрипте.
+(`apps-b24`, `artisan`, `php ` в его тексте — падение стенда). Источник правды скрипта — плагин; копия живёт у потребителя
+копии (`apps-b24-platform`, `scripts/todo.sh`, её гоняет CI проекта, правки — только здесь): при смене поведения —
+поднять `TODO_SH_VERSION` в скрипте.
 
 ```bash
 shellcheck -S style -o all plugins/dev-toolkit/scripts/todo.sh plugins/dev-toolkit/tests/todo/*.sh

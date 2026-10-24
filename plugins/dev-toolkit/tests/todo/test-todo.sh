@@ -1715,6 +1715,11 @@ t_counter_source() {
     T next
     code_is 1 'next: нечитаемый архив'
     has_err "номер стоит в ${_d}/TODO.md:${_r} (не читается: ${_d}/DONE.md — номер может быть неполным)"$'\n'
+    T check
+    # Архив не разобран — проверка неполна: код 2 (todo.sh 1.2.1), отказ о счётчике по-прежнему назван.
+    code_is 2 'check: нечитаемый архив'
+    has_err 'сбой разбора (разбор архива)' 'check: нечитаемый архив'
+    has_err "номер стоит в ${_d}/TODO.md:${_r} (не читается: ${_d}/DONE.md — номер может быть неполным)"$'\n'
     chmod 644 "${_d}/DONE.md"
     # Нечитаемый список: номер — из строки архива, пометка называет список.
     line_no "${_d}/DONE.md" '- **Задача №1: старая** — сделано, см. №7.'
@@ -1723,7 +1728,9 @@ t_counter_source() {
     code_is 1 'next: нечитаемый список'
     has_err "номер стоит в ${_d}/DONE.md:${_r} (не читается: ${_d}/TODO.md — номер может быть неполным)"$'\n'
     T check
-    code_is 1 'check: нечитаемый список'
+    # Список не разобран — проверка неполна: код 2 (todo.sh 1.2.1), отказ о счётчике по-прежнему назван.
+    code_is 2 'check: нечитаемый список'
+    has_err 'сбой разбора (разбор списка)' 'check: нечитаемый список'
     has_err "номер стоит в ${_d}/DONE.md:${_r} (не читается: ${_d}/TODO.md — номер может быть неполным)"$'\n'
     chmod 644 "${_d}/TODO.md"
   fi
@@ -1740,6 +1747,111 @@ t_counter_source() {
 }
 plugin_case counterRefusalNamesNumberSource t_counter_source
 
+# refs N | head -1: читатель закрыл вывод раньше конца поиска — код 0, как до todo.sh 1.2.0 (ревью синхронизации
+# копии, apps-b24-platform PR #437, G1-d: под pipefail скрипт выходил 141). Совпадений — больше буфера канала;
+# поиск по путям и по git. Иной сбой фильтра вывода — его код (обёртка awk падает кодом 3 на программе sanitize_lines).
+t_refs_closed_output() {
+  local _k _s='' _real _awkpath_saved=${_awkpath}
+  for ((_k = 0; _k < 30000; _k++)); do
+    _s+=$'строка №3 — текст строки\n'
+  done
+  put notes.md "${_s}"
+  _refs_head "${_d}/notes.md"
+  code_is 0 'по путям'
+  mkdir -p "${_d}/bin-awk"
+  _real="$(PATH="${_awkpath}" command -v awk)"
+  # shellcheck disable=SC2016
+  printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ "$a" == *"\\013-\\037"* ]] && exit 3; done\nexec %q "$@"\n' "${_real}" >"${_d}/bin-awk/awk"
+  chmod +x "${_d}/bin-awk/awk"
+  _awkpath="${_d}/bin-awk:${_awkpath_saved}"
+  T refs 3 "${_d}/notes.md"
+  code_is 3 'сбой фильтра вывода'
+  _awkpath=${_awkpath_saved}
+  if ! git -C "${_d}" init -q 2>/dev/null || ! git -C "${_d}" add notes.md 2>/dev/null; then
+    bad 'не удалось создать git-репозиторий фикстуры'
+    return
+  fi
+  _refs_head
+  code_is 0 'по git'
+}
+
+# _refs_head [ПУТЬ…] — refs 3 [ПУТЬ…] | head -n 1 под pipefail из каталога фикстуры; _code — код скрипта, _err — его stderr.
+_refs_head() {
+  (
+    cd "${_d}" || exit 99
+    set -o pipefail
+    PATH="${_awkpath}" timeout 60 bash "${TODO_SH}" refs 3 "$@" 2>"${_io}/err" | head -n 1 >"${_io}/out"
+    exit "${PIPESTATUS[0]}"
+  )
+  _code=$?
+  slurp _err "${_io}/err"
+}
+plugin_case refsSurvivesClosedOutput t_refs_closed_output
+
+# Сбой утилиты внутри check не даёт вердикта «в порядке» (G4-a ревью PR #437: функция зовётся в условии, errexit
+# в ней снят, и пустой вывод упавшего конвейера читался как «нарушений нет»). Сбой моделируется обёрткой в PATH: sort
+# (поиск повторов номеров) и awk на одной программе — open_lines (открытые строки сводных пунктов), scan списка и scan
+# архива (MODE), отбор прежних записей «T», наибольший номер, отбор номеров записей «R» (у открытых задач и записей
+# архива программа общая — ждём оба сообщения). Код — 2: проверка неполна, это не нарушение.
+t_check_parse_failure() {
+  local _real _awkpath_saved=${_awkpath} _w _what _p _m
+  mkdir -p "${_d}/bin-sort"
+  printf '#!/bin/sh\nexit 1\n' >"${_d}/bin-sort/sort"
+  chmod +x "${_d}/bin-sort/sort"
+  _awkpath="${_d}/bin-sort:${_awkpath_saved}"
+  T check
+  code_is 2 'сбой sort'
+  has_err 'сбой разбора (повторы номеров)' 'сбой sort'
+  lacks "${_out}" 'в порядке' 'сбой sort'
+  _real="$(PATH="${_awkpath_saved}" command -v awk)"
+  # Условие обёртки: (переменная MODE, подстрока программы); падает только эта программа, прочие — настоящий awk.
+  # Элемент: MODE|подстрока программы|сообщение parse_failed (через «+» — несколько).
+  for _w in '|строка без флажка|открытые строки сводных пунктов архива' 'list|function flush(endline)|разбор списка' \
+    'archive|function flush(endline)|разбор архива' '|$1 == "T"|прежние записи архива' '|END { print max + 0 }|наибольший номер' \
+    '|$1 == "R" { print $2 }|номера открытых задач+номера записей архива'; do
+    _what=${_w##*|}
+    _p=${_w#*|}
+    _p=${_p%%|*}
+    mkdir -p "${_d}/bin-awk"
+    # shellcheck disable=SC2016
+    printf '#!/usr/bin/env bash\nm=%q; p=%q\nif [[ -z "$m" || "${MODE:-}" == "$m" ]]; then for a in "$@"; do [[ "$a" == *"$p"* ]] && exit 2; done; fi\nexec %q "$@"\n' \
+      "${_w%%|*}" "${_p}" "${_real}" >"${_d}/bin-awk/awk"
+    chmod +x "${_d}/bin-awk/awk"
+    _awkpath="${_d}/bin-awk:${_awkpath_saved}"
+    T check
+    code_is 2 "сбой awk: ${_what}"
+    while IFS= read -r _m; do
+      has_err "сбой разбора (${_m})" "сбой awk: ${_what}"
+    done <<<"${_what//+/$'\n'}"
+    lacks "${_out}" 'в порядке' "сбой awk: ${_what}"
+  done
+  _awkpath=${_awkpath_saved}
+}
+plugin_case checkReportsParseFailure t_check_parse_failure
+
+# «№N» длиннее 9 цифр в строке «- **…» прежнего раздела архива — не номер (G3-a ревью PR #437 и пункт (5) записи
+# TODO.md «scripts/todo.sh (2.14.0)»): под mawk и busybox число печаталось как 1.23457e+20 и ломало сравнение в
+# оболочке, check отвечал «в порядке» с таким «наибольшим номером». 9 цифр — номер (граница).
+t_check_long_number() {
+  put DONE.md "${DONE_HEAD}${DONE_LEGACY}"$'- **Задача №1: старая** — см. №123456789012345678901 и №1234567890.\n'
+  T check
+  code_is 0 'номер из 21 и 10 цифр'
+  has "${_out}" 'в порядке (наибольший номер — 7)' 'номер из 21 и 10 цифр'
+  lacks_err 'syntax error' 'номер из 21 и 10 цифр'
+  put DONE.md "${DONE_HEAD}${DONE_LEGACY}"$'- **Задача №1: старая** — см. №123456789.\n'
+  T check
+  code_is 1 'номер из 9 цифр'
+  has_err 'не больше наибольшего занятого (123456789)' 'номер из 9 цифр'
+  # Предел — для подсчёта номеров, не для формы поля «Связано»: ссылка из 10 цифр — в формате, как в 1.2.0.
+  reset_fixture
+  sr "${R3}" '- **Связано:** №5, №7' '- **Связано:** №5, №1234567890'
+  put TODO.md "${TODO_HEAD}${_r}${R5}${R7}"$'\n'
+  T check
+  code_is 0 '«Связано» с номером из 10 цифр'
+  lacks_err '«Связано»' '«Связано» с номером из 10 цифр'
+}
+plugin_case checkIgnoresNumberLongerThanNineDigits t_check_long_number
+
 # ---------------------------------------------------------------------------------------------
 # Итог. Полный набор (без TODO_AWKS) обязан учесть все 187 случаев и 38 методов PHP: потерянный
 # или задвоенный случай — падение стенда, а не расхождение в таблице.
@@ -1753,10 +1865,10 @@ if [[ -z "${TODO_AWKS:-}" ]]; then
     printf 'FAIL учёт: случаев PHP %s (нужно 187), методов %s (нужно 38)\n' "${_cases}" "${_methods}"
   fi
 fi
-# Случаи плагина: 6 методов под каждым выбранным вариантом awk — выпавший случай виден и здесь.
-if [[ "${_extra}" -ne $((6 * ${#_sel_names[@]})) ]]; then
+# Случаи плагина: 9 методов под каждым выбранным вариантом awk — выпавший случай виден и здесь.
+if [[ "${_extra}" -ne $((9 * ${#_sel_names[@]})) ]]; then
   _fail=$((_fail + 1))
-  printf 'FAIL учёт: проверок плагина %s (нужно %s: 6 методов × %s awk)\n' "${_extra}" "$((6 * ${#_sel_names[@]}))" "${#_sel_names[@]}"
+  printf 'FAIL учёт: проверок плагина %s (нужно %s: 9 методов × %s awk)\n' "${_extra}" "$((9 * ${#_sel_names[@]}))" "${#_sel_names[@]}"
 fi
 if [[ ${#_failed[@]} -gt 0 ]]; then
   printf 'Упавшие проверки (%s):\n' "${#_failed[@]}"
