@@ -975,7 +975,10 @@ for _i in "${!_sel_names[@]}"; do
   _awkpath="${_root}/.fail-max:${_saved}"
   run_compat "${s_lsrc}"
   [[ ${rc} -eq 2 ]] && has 'сбой разбора' && ! has 'нарушения формата —'
-  ok "[${_a}] сбой awk в сверке счётчика: код 2 без вердикта (${rc})" "$?"
+  ok "[${_a}] сбой awk в сверке счётчика (читается архив): код 2 без вердикта (${rc})" "$?"
+  run_compat "${s_adir}"
+  [[ ${rc} -eq 2 ]] && has 'сбой разбора' && ! has 'нарушения формата —'
+  ok "[${_a}] сбой awk в сверке счётчика (читается список): код 2 без вердикта (${rc})" "$?"
   _awkpath=${_saved}
 done
 chmod 644 "${s_unread}/doc/TODO.md" "${s_cunr}/doc/TODO-DONE.md" "${s_cunr2}/doc/TODO.md"

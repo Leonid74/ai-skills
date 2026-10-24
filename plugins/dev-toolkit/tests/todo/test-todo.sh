@@ -1723,7 +1723,9 @@ t_counter_source() {
     code_is 1 'next: нечитаемый список'
     has_err "номер стоит в ${_d}/DONE.md:${_r} (не читается: ${_d}/TODO.md — номер может быть неполным)"$'\n'
     T check
-    code_is 1 'check: нечитаемый список'
+    # Список не разобран — проверка неполна: код 2 (todo.sh 1.2.1), отказ о счётчике по-прежнему назван.
+    code_is 2 'check: нечитаемый список'
+    has_err 'сбой разбора (разбор списка)' 'check: нечитаемый список'
     has_err "номер стоит в ${_d}/DONE.md:${_r} (не читается: ${_d}/TODO.md — номер может быть неполным)"$'\n'
     chmod 644 "${_d}/TODO.md"
   fi
@@ -1784,22 +1786,24 @@ plugin_case refsSurvivesClosedOutput t_refs_closed_output
 # Сбой утилиты внутри check не даёт вердикта «в порядке» (G4-a ревью PR #437: функция зовётся в условии, errexit
 # в ней снят, и пустой вывод упавшего конвейера читался как «нарушений нет»). Сбой моделируется обёрткой в PATH: sort
 # (поиск повторов номеров) и awk на одной программе — open_lines (открытые строки сводных пунктов), scan списка и scan
-# архива (MODE), отбор прежних записей «T», наибольший номер. Отбор номеров записей «R» общий у повторов и открытых
-# задач — отдельной обёрткой его не уронить.
+# архива (MODE), отбор прежних записей «T», наибольший номер, отбор номеров записей «R» (у открытых задач и записей
+# архива программа общая — ждём оба сообщения). Код — 2: проверка неполна, это не нарушение.
 t_check_parse_failure() {
-  local _real _awkpath_saved=${_awkpath} _w _what _p
+  local _real _awkpath_saved=${_awkpath} _w _what _p _m
   mkdir -p "${_d}/bin-sort"
   printf '#!/bin/sh\nexit 1\n' >"${_d}/bin-sort/sort"
   chmod +x "${_d}/bin-sort/sort"
   _awkpath="${_d}/bin-sort:${_awkpath_saved}"
   T check
-  code_is 1 'сбой sort'
-  has_err 'сбой разбора' 'сбой sort'
+  code_is 2 'сбой sort'
+  has_err 'сбой разбора (повторы номеров)' 'сбой sort'
   lacks "${_out}" 'в порядке' 'сбой sort'
   _real="$(PATH="${_awkpath_saved}" command -v awk)"
   # Условие обёртки: (переменная MODE, подстрока программы); падает только эта программа, прочие — настоящий awk.
-  for _w in '|строка без флажка|open_lines' 'list|function flush(endline)|scan списка' \
-    'archive|function flush(endline)|scan архива' '|$1 == "T"|прежние записи' '|END { print max + 0 }|наибольший номер'; do
+  # Элемент: MODE|подстрока программы|сообщение parse_failed (через «+» — несколько).
+  for _w in '|строка без флажка|открытые строки сводных пунктов архива' 'list|function flush(endline)|разбор списка' \
+    'archive|function flush(endline)|разбор архива' '|$1 == "T"|прежние записи архива' '|END { print max + 0 }|наибольший номер' \
+    '|$1 == "R" { print $2 }|номера открытых задач+номера записей архива'; do
     _what=${_w##*|}
     _p=${_w#*|}
     _p=${_p%%|*}
@@ -1810,8 +1814,10 @@ t_check_parse_failure() {
     chmod +x "${_d}/bin-awk/awk"
     _awkpath="${_d}/bin-awk:${_awkpath_saved}"
     T check
-    code_is 1 "сбой awk: ${_what}"
-    has_err 'сбой разбора' "сбой awk: ${_what}"
+    code_is 2 "сбой awk: ${_what}"
+    while IFS= read -r _m; do
+      has_err "сбой разбора (${_m})" "сбой awk: ${_what}"
+    done <<<"${_what//+/$'\n'}"
     lacks "${_out}" 'в порядке' "сбой awk: ${_what}"
   done
   _awkpath=${_awkpath_saved}
