@@ -82,10 +82,14 @@
   случая не проверяются. Стенд проверяет все ассерты под каждым вариантом awk.
 - **Таймаут.** Вызов скрипта идёт под `timeout 60`, как и умолчание Symfony Process (60 с).
 
-## Случаи плагина (в PHP их нет)
+## Случаи плагина (вне зеркала `TodoScriptTest`)
 
 Имя начинается с «plugin:», в учёт 187 случаев не входят; идут под каждым вариантом awk, их число (9 методов)
-стенд сверяет сам.
+стенд сверяет сам. В `TodoScriptTest.php` их нет. С apps-b24-platform #440 (копия `todo.sh` 1.2.1) семь из девяти
+перенесены в отдельный тест проекта `tests/Unit/Scripts/TodoScriptUpstreamPathsTest.php` — с теми же именами
+методов, вместе со случаями режима `compat` из `test-todo-compat.sh`. Не перенесены
+`closePlantedTempSymlinkIsNotFollowed` и `closeRefusesLegacyLineInRecordText`. Зеркало 1:1 — по-прежнему только
+таблица выше.
 
 - **`closePlantedTempSymlinkIsNotFollowed`** — R1 со стороны `close`: подложенные ссылки на предсказуемых
   именах временных файлов списка и архива не ведут запись в чужой файл.
