@@ -541,6 +541,7 @@ CLAUDE.md», «убери устаревшее из памяти проекта�
 | git: потеря работы | `git reset --hard`, `git checkout -f`, `git switch -f`/`--discard-changes`, `git clean -f` (без `-n`), `git rm -f` (без `--cached`) |
 | git: ветки и история | `git branch -D` и `-d` вместе с `-f`/`--force` (безопасный `-d` пропускается); `git reflog expire/delete` и `git prune` (без `-n`/`--dry-run`), `git gc --prune`, `git filter-branch`/`filter-repo` |
 | git: remote        | `git push --force`/`-f` (в том числе в кластере `-fu`), `--force-with-lease`, `--force-if-includes`, `+ветка` в refspec, `--mirror`, адрес или путь вместо имени remote (`git push git@host:x`, `https://…`, `/srv/x.git`) |
+| git: конфиг в команде | `git -c`/`--config-env` с ключом секций `alias.`, `remote.`, `url.`, `branch.` — алиас или подмена remote в той же команде (рабочие `-c user.name=…`, `-c core.*` свободны) |
 | `.env`-файлы       | fail-closed: любое обращение к `.env`/`.env.<суффикс>` (включая `grep`/`sed`/`source`/интерпретаторы/`cp`, glob `.env*`/`.env{,}`, кавычки внутри имени `.e""nv`, `f=.env`), кроме `ls`/`stat`/`test`/`[`/`[[`/`git status`/`git check-ignore`; шаблоны `.env.example`/`.env.dist`/`.env.sample` свободны. Перенаправление в `.env` или из него (`ls > .env`, `… < .env`) блокируется у любой команды. **Упоминание в тексте сообщения не блокируется** в строгих формах, в том числе внутри цепочки (см. «Особенности»): `git commit -m "…"`, `gh pr/issue … --title/--body "…"`; одиночный `echo`/`printf` (`echo "… .env"`, `echo .env >> .gitignore`) — только отдельной командой |
 
 Особенности:
@@ -562,12 +563,14 @@ CLAUDE.md», «убери устаревшее из памяти проекта�
   (`cat <<'EOF' > файл`, `(echo …)`, тела here-doc у других команд) проверяется
   целиком, как команды: общий разбор «данные или код» по грамматике bash ненадёжен.
 - **Правила git — по отдельной команде, а не по всей строке**: флаг соседней команды в цепочке
-  (`git push … && gh pr create -f`, `… | grep -F x`) не считается флагом git. Команда git видна
-  сквозь глобальные опции (`-C`, `-c`, `--git-dir`), обёртки (`timeout`, `env X=Y`, `xargs`,
-  `( … )`, `$( … )`, `bash -c "…"`), сокращения long-опций (`--har`) и кластеры флагов. Рабочие
+  (`git push … && gh pr create -f`, `… | grep -F x`, `… & rm -f y`) не считается флагом git.
+  `reset --hard`, `push --force`, `branch -D` судятся по тексту команды, как и раньше; новые формы —
+  разбором слов сквозь глобальные опции (`-C`, `-c`, `--git-dir`), обёртки (`timeout`, `env X=Y`,
+  `xargs`, `( … )`, `$( … )`, `bash -c "…"`), сокращения long-опций и кластеры флагов. Рабочие
   формы проходят: `git checkout -- .`, `git restore .`, `git push origin --delete <ветка>`,
   `git worktree remove --force`, `git commit --no-verify`, `git rm -r --cached`. Кавычки правила
-  не учитывают: слово `git` в тексте (`grep "git push -f" файл`, тело here-doc) судится как команда.
+  не учитывают: слово `git` в тексте внутри той же команды (`grep "git push -f" файл`,
+  `git log --grep='reset --hard'`, тело here-doc) судится как команда.
 - **Любой сбой хука — блокировка**: выход с кодом, отличным от 0 и 2, превращается в 2.
 - **Defense in depth.** Хук дополняет `permissions.deny` в `settings.json`:
   даёт явную причину блокировки и ловит то, что permissions не покрывают

