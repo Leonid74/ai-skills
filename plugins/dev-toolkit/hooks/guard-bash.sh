@@ -350,6 +350,8 @@ _lx_dollar() {
 #       [-m|--message|-am… "<текст>"] [-F <путь>|-F -];
 #   gh pr|issue create|edit|comment|merge [N] <флаги> [--title|--body|
 #       --subject "<текст>"] [--body-file <путь>|--body-file -];
+#   у git и gh — в любом месте редирект вывода N>&M или >/>>/N> <путь>
+#       (путь остаётся в _scmd и судится правилом .env);
 #   echo|printf <аргументы> [> или >> <путь>] — только одиночной командой.
 # Формы:
 #   A. команда-сообщение в строке или цепочке: <префикс> ; && || & перевод
@@ -469,9 +471,11 @@ _tpl_splits() {
   return 0
 }
 
-# _tpl_split <текст> — токены команды-сообщения в _tpl_t (слова, >, >>) до
-# первого разделителя ; && || | & или перевода строки вне кавычек: остаток с
-# разделителем — в _tpl_tail. Иной символ — _tpl_fail=true.
+# _tpl_split <текст> — токены команды-сообщения в _tpl_t (слова, >, >>,
+# дублирование N>&M) до первого разделителя ; && || | & или перевода строки
+# вне кавычек: остаток с разделителем — в _tpl_tail. Номер дескриптора перед
+# > и >> (2>файл) отбрасывается: цель — путь в любом случае. Иной символ —
+# _tpl_fail=true (в том числе >&файл, >&- и >|).
 _tpl_split() {
   local rest="$1" w
   _tpl_t=()
@@ -480,12 +484,16 @@ _tpl_split() {
   while :; do
     rest="${rest#"${rest%%[! $'\t']*}"}"
     [[ -n "${rest}" ]] || break
-    if [[ "${rest}" == ">>"* ]]; then
+    if [[ "${rest}" =~ ^[0-9]*\>\&[0-9]+ ]] \
+      && { w="${rest:${#BASH_REMATCH[0]}:1}"; [[ -z "${w}" || "${w}" == [$' \t;&|\n'] ]]; }; then
+      _tpl_t+=("${BASH_REMATCH[0]}")
+      rest="${rest:${#BASH_REMATCH[0]}}"
+    elif [[ "${rest}" =~ ^[0-9]*\>\> ]]; then
       _tpl_t+=(">>")
-      rest="${rest:2}"
-    elif [[ "${rest}" == ">"* && "${rest}" != ">&"* && "${rest}" != ">|"* ]]; then
+      rest="${rest:${#BASH_REMATCH[0]}}"
+    elif [[ "${rest}" =~ ^[0-9]*\> && "${rest:${#BASH_REMATCH[0]}:1}" != [\&\|] ]]; then
       _tpl_t+=(">")
-      rest="${rest:1}"
+      rest="${rest:${#BASH_REMATCH[0]}}"
     elif [[ "${rest}" == [\;\&\|$'\n']* ]]; then
       _tpl_tail="${rest}"
       break
@@ -505,7 +513,7 @@ _tpl_split() {
 # MSG. Работает с локальными tt/i/oo вызывающего _tpl_parse.
 _tpl_val() {
   local v="${tt[i+1]:-}"
-  [[ -n "${v}" && "${v}" != ">" && "${v}" != ">>" && "${v}" != *'$'* ]] || return 1
+  [[ -n "${v}" && "${v}" != ">" && "${v}" != ">>" && "${v}" != *'>&'* && "${v}" != *'$'* ]] || return 1
   [[ "${v}" != "__CSUB__" ]] || _tpl_csub=1
   oo+=("${tt[i]}" "MSG")
   i=$((i + 1))
@@ -515,8 +523,23 @@ _tpl_val() {
 # чтение сообщения из stdin.
 _tpl_path() {
   local v="${tt[i+1]:-}"
-  [[ -n "${v}" && "${v}" != ">" && "${v}" != ">>" ]] || return 1
+  [[ -n "${v}" && "${v}" != ">" && "${v}" != ">>" && "${v}" != *'>&'* ]] || return 1
   [[ "${v}" != "-" ]] || _tpl_stdin=1
+  oo+=("${tt[i]}" "${v}")
+  i=$((i + 1))
+}
+
+# _tpl_redir — редирект вывода git/gh: > или >> с путём (путь остаётся в
+# _scmd — цель судит правило .env) либо дублирование N>&M (_tpl_split
+# выдаёт его одним токеном). Работает с локальными tt/i/oo вызывающего
+# _tpl_parse.
+_tpl_redir() {
+  local v="${tt[i+1]:-}"
+  if [[ "${tt[i]}" == *'>&'* ]]; then
+    oo+=("${tt[i]}")
+    return 0
+  fi
+  [[ -n "${v}" && "${v}" != ">" && "${v}" != ">>" && "${v}" != *'>&'* ]] || return 1
   oo+=("${tt[i]}" "${v}")
   i=$((i + 1))
 }
@@ -564,6 +587,7 @@ _tpl_parse() {
             _tpl_stdin=1
             ;;
           --file=?*) oo+=("${tt[i]}") ;;
+          ">" | ">>" | *'>&'*) _tpl_redir || return 1 ;;
           -m | --message) _tpl_val || return 1 ;;
           --message=?* | -m?*)
             # Слитное значение: без $ (токенизатор уже исключил ` \).
@@ -597,6 +621,7 @@ _tpl_parse() {
           create:--draft | create:-d | create:--fill | merge:--squash | merge:-s | merge:--merge | merge:-m | merge:--rebase | merge:-r | merge:--delete-branch | merge:-d | merge:--auto)
             oo+=("${tt[i]}")
             ;;
+          *:">" | *:">>" | *'>&'*) _tpl_redir || return 1 ;;
           *:--title | *:-t | *:--body | *:-b | merge:--subject) _tpl_val || return 1 ;;
           *:--title=?* | *:--body=?* | merge:--subject=?*)
             [[ "${tt[i]}" != *'$'* ]] || return 1
@@ -769,11 +794,20 @@ _tpl_try() {
   return 1
 }
 
+# _bytes <текст> — длина в байтах в _nb. ${#…} в локали UTF-8 считает
+# символы: пороги ниже заданы в байтах (разбор идёт по байтам), и кириллица
+# той же длины в символах вдвое длиннее.
+_bytes() {
+  local LC_ALL=C
+  _nb=${#1}
+}
+
 _scmd="${cmd}"
 # Команду-сообщение ищем только там, где она может быть (дешёвый фильтр), в
 # командах до 16 КБ и не более чем 8 вызовами _tpl_try (см. _tpl_budget).
 _tpl_budget=8
-if ((${#cmd} <= 16384)) && [[ "${cmd}" == *commit* || "${cmd}" == *"gh "* || "${cmd}" =~ ^[[:space:]]*(echo|printf)[[:space:]] ]]; then
+_bytes "${cmd}"
+if ((_nb <= 16384)) && [[ "${cmd}" == *commit* || "${cmd}" == *"gh "* || "${cmd}" =~ ^[[:space:]]*(echo|printf)[[:space:]] ]]; then
   set -f
   # shellcheck disable=SC2310 # отказ шаблона — штатный исход
   _tpl_try "${cmd}" || true
@@ -785,7 +819,8 @@ fi
 _LX_MAX=32768
 _lx_big=false
 set -f
-if ((${#_scmd} > _LX_MAX)); then
+_bytes "${_scmd}"
+if ((_nb > _LX_MAX)); then
   _lx_big=true
 else
   _lex "${_scmd}"
@@ -850,8 +885,8 @@ _classify_seg() {
 }
 
 set +f
-# Текст для правил ниже (rm, git/gh, вывод окружения, git reset/push/
-# branch -D): очищенная шаблоном команда либо исходная. Правила секретов
+# Текст для правил ниже (rm, барьер read-only git/gh, вывод окружения,
+# правила git): очищенная шаблоном команда либо исходная. Правила секретов
 # уже проверили всю исходную строку — секрет в сообщении коммита тоже утечка.
 _code="${_scmd}"
 
@@ -883,6 +918,11 @@ while IFS= read -r _seg; do
     _operand_seen=false
     _has_non_tmp_operand=false
     _opts_ended=false
+    # Подкоманда git rm — не команда rm: git удаляет только отслеживаемые
+    # файлы и без -f отказывает на изменённых (git rm -f судит правило git
+    # ниже). _rm_git: 1 — после слова git ждём подкоманду, 2 — значение
+    # глобальной опции (-C <путь>, -c <ключ>).
+    _rm_git=0
     for _tok in ${_seg}; do
       # Lowercase — только для регистронезависимого опознания команды/флагов
       # (как и остальной файл, который матчит git/rm через grep -i).
@@ -892,8 +932,20 @@ while IFS= read -r _seg; do
       # /tmp-исключение, хотя реально удаляет путь вне /tmp.
       _tok_lc="${_tok,,}"
       if ! ${_seen_rm}; then
+        if ((_rm_git == 2)); then
+          _rm_git=1
+          continue
+        elif ((_rm_git == 1)); then
+          case "${_tok}" in
+            -C | -c | --git-dir | --work-tree | --namespace | --super-prefix | --attr-source) _rm_git=2 ;;
+            -*) ;;
+            *) _rm_git=0 ;;
+          esac
+          continue
+        fi
         case "${_tok_lc}" in
           rm|*/rm) _seen_rm=true ;;
+          git|*/git) _rm_git=1 ;;
           *) ;;
         esac
         continue
@@ -1017,22 +1069,346 @@ while IFS= read -r _seg; do
 done <<< "${_segments}"
 set +f
 
-# git reset --hard
-if grep -Eiq '\bgit\b.*\breset\b.*--hard\b' <<< "${_code}"; then
-  block "git reset --hard (потеря незакоммиченных изменений)"
-fi
+# ---------------------------------------------------------------------------
+# git: потеря незакоммиченной работы, истории и remote.
+#
+# Блокируются только необратимые формы, которых нет в рабочих приёмах
+# (решение владельца 27.10.2026 по прогону 31 277 команд транскриптов: не
+# запрещать рабочие команды): reset --hard; checkout -f, switch -f/
+# --discard-changes; clean -f без -n; rm -f без --cached; branch -D и
+# --delete --force; push с force (-f в кластере, --force*, +refspec),
+# --mirror, адресом или путём вместо имени remote; reflog expire/delete и
+# prune без -n/--dry-run, gc --prune, filter-branch/filter-repo. Откат всего
+# дерева (checkout -- ., restore .) — пропуск: это рабочий приём (откат
+# мутаций, перенос дерева ветки), а правило блокировало бы в основном текст.
+#
+# Разбор — по сегментам текста (&& || ; | и перевод строки, \⏎ склеен), а
+# не по всей строке: флаг соседней команды (git push … && gh pr create -f)
+# не считается флагом git. Сегмент со словом git, где не закрыты кавычки или
+# скобки, склеивается со следующими: иначе ; или | внутри "…"/$( ) отрезали
+# бы флаг от его команды (git push "a;b" --force). Слова — голым
+# word-splitting, как у правила rm: кавычки не учитываются, у слова только
+# для опознания срезаются " ' \ ` ( ) { } и ведущие $ < > ("git, $(git,
+# --hard)). Любое слово git, */git или git-<подкоманда> — начало команды:
+# так видны обёртки (timeout, env X=Y, nice, xargs, ( … ), $( … ), bash -c
+# "…") без их перечня. Цена — ложный блок текста со словом git в кавычках
+# (grep "git push -f" f), как и прежде. Решение «данные или код» лексеру не
+# отдаётся.
+#
+# Опции: глобальные опции git до подкоманды пропускаются (-C, -c, --git-dir,
+# --work-tree, --namespace, --super-prefix, --attr-source — со значением
+# отдельным словом); у подкоманды — кластеры коротких флагов с учётом опций
+# со значением (-b <ветка> у checkout) и long-опции по префиксу: git
+# принимает однозначные сокращения (--har == --hard), неоднозначные
+# отвергает сам — лишний блок на них безвреден.
+# ---------------------------------------------------------------------------
 
-# git push --force / -f
-if grep -Eiq '\bgit\b.*\bpush\b.*(--force\b|--force-with-lease\b|\s-f\b)' <<< "${_code}"; then
-  block "git push --force (перезапись истории на remote)"
-fi
+# Long-опции push со значением отдельным словом: значение — не позиционный
+# аргумент (remote, refspec). Позиционные аргументы судятся только у push и
+# reflog.
+_GIT_LONGVAL=" --repo --receive-pack --exec --push-option "
 
-# git branch -D (принудительное удаление ветки). Проверка регистрозависимая
-# (без -i): блокируем только -D, а безопасный -d (git удалит ветку лишь
-# если она полностью влита) пропускаем.
-if grep -Eq '\bgit\b.*\bbranch\b.*\s-D\b' <<< "${_code}"; then
-  block "git branch -D (принудительное удаление ветки)"
-fi
+# _git_cnt <текст> — добавляет к счётчикам _gq/_ga/_gb/_go/_gc число " ' `
+# ( ) в тексте (склейка сегментов, см. выше). Счёт — разницей длин после
+# удаления символа: ${s//[^\"]/} на длинной строке удаляет почти все символы
+# и стоит секунды.
+_git_cnt() {
+  local s="$1" n=${#1} x
+  x="${s//\"/}"
+  _gq=$((_gq + n - ${#x}))
+  x="${s//\'/}"
+  _ga=$((_ga + n - ${#x}))
+  x="${s//\`/}"
+  _gb=$((_gb + n - ${#x}))
+  x="${s//\(/}"
+  _go=$((_go + n - ${#x}))
+  x="${s//\)/}"
+  _gc=$((_gc + n - ${#x}))
+}
+
+# _git_args <подкоманда> <индекс> — разбор слов _gw[индекс…] команды:
+# _ga_s — буквы коротких флагов (без значений), _ga_l/_ga_lv — long-опции
+# (имя до "=") и их значения, _ga_p — позиционные аргументы (после "--" —
+# все слова). Редирект (> f, 2>&1, <f) — не аргумент. Команда кончается на
+# «голом» слове git (без кавычек и скобок) вне открытых ею кавычек и скобок:
+# это начало следующей команды, а не аргумент (иначе сотни слов git в одной
+# строке давали квадратичное время), а "$(git …)" внутри аргументов разбор не
+# обрывает.
+_git_args() {
+  local i="$2" t r k c x vreq="" skip=0 dd=0 bq=0 ba=0 bo=0 bc=0
+  _ga_s=""
+  _ga_l=()
+  _ga_lv=()
+  _ga_p=()
+  case "$1" in
+    checkout) vreq="bB" ;;
+    switch) vreq="cC" ;;
+    clean) vreq="e" ;;
+    branch) vreq="u" ;;
+    push) vreq="o" ;;
+    *) ;;
+  esac
+  for ((; i < _gn; i++)); do
+    t="${_gw[i]}"
+    r="${_gr[i]}"
+    if [[ "${r}" == "${t}" ]] && ((bq % 2 == 0 && ba % 2 == 0 && bo <= bc)); then
+      case "${t##*/}" in
+        git | git-?*) break ;;
+        *) ;;
+      esac
+    fi
+    if [[ "${r}" == *[\"\'\(\)]* ]]; then
+      x="${r//[^\"]/}"
+      bq=$((bq + ${#x}))
+      x="${r//[^\']/}"
+      ba=$((ba + ${#x}))
+      x="${r//[^(]/}"
+      bo=$((bo + ${#x}))
+      x="${r//[^)]/}"
+      bc=$((bc + ${#x}))
+    fi
+    _gbud=$((_gbud - 1))
+    if ((skip)); then
+      skip=0
+      continue
+    fi
+    # Сначала дешёвая проверка шаблоном: регекс на каждом слове дорог.
+    if [[ "${r}" == *[\<\>]* ]] && [[ "${r}" =~ ^[0-9]*[\<\>] || "${r}" == "&>"* ]]; then
+      # Оператор без цели — цель следующим словом.
+      [[ ! "${r}" =~ ^[0-9]*[\<\>\&\|]+$ ]] || skip=1
+      continue
+    fi
+    [[ -n "${t}" ]] || continue
+    if ((dd)) || [[ "${t}" == "-" || "${t}" != -* ]]; then
+      _ga_p+=("${t}")
+    elif [[ "${t}" == "--" ]]; then
+      dd=1
+    elif [[ "${t}" == --* ]]; then
+      k="${t%%=*}"
+      _ga_l+=("${k}")
+      if [[ "${t}" == *=* ]]; then
+        _ga_lv+=("${t#*=}")
+      elif [[ "${_GIT_LONGVAL}" == *" ${k} "* ]]; then
+        _ga_lv+=("${_gw[i+1]:-}")
+        skip=1
+      else
+        _ga_lv+=("")
+      fi
+    else
+      # Кластер коротких флагов: после буквы опции со значением остаток
+      # слова (или следующее слово) — её значение.
+      for ((k = 1; k < ${#t}; k++)); do
+        c="${t:k:1}"
+        if [[ -n "${vreq}" && "${vreq}" == *"${c}"* ]]; then
+          ((k + 1 < ${#t})) || skip=1
+          break
+        fi
+        _ga_s+="${c}"
+      done
+    fi
+  done
+}
+
+# _ga_has <опция> — 0, если среди long-опций _ga_l есть она или её
+# сокращение (префикс не короче трёх символов).
+_ga_has() {
+  local l
+  for l in "${_ga_l[@]}"; do
+    if ((${#l} >= 3)) && [[ "$1" == "${l}"* ]]; then return 0; fi
+  done
+  return 1
+}
+
+# _git_url <remote> <текст для сообщения> — блок, если вместо имени remote
+# адрес (://, user@host:путь) или путь (/…, ~…, ./…, ../…).
+_git_url() {
+  case "$1" in
+    *://* | *@* | *:* | /* | "~"* | ./* | ../*)
+      block "git push $2 (отправка по адресу или пути вместо имени remote — выгрузка репозитория наружу)"
+      ;;
+    *) ;;
+  esac
+}
+
+# _git_skipv — пропустить значение глобальной опции _gr[i]: если оно
+# открывает кавычки или скобки ("$(cd x; pwd)"), то и слова до их закрытия.
+# Работает с локальной i вызывающего _git_cmd.
+_git_skipv() {
+  local q=0 a=0 o=0 c=0 x r
+  while ((i < _gn)); do
+    r="${_gr[i]}"
+    i=$((i + 1))
+    x="${r//[^\"]/}"
+    q=$((q + ${#x}))
+    x="${r//[^\']/}"
+    a=$((a + ${#x}))
+    x="${r//[^(]/}"
+    o=$((o + ${#x}))
+    x="${r//[^)]/}"
+    c=$((c + ${#x}))
+    ((q % 2 || a % 2 || o > c)) || break
+  done
+}
+
+# _git_cmd <индекс слова git в _gw> — проверка одной команды git.
+# shellcheck disable=SC2310 # _ga_has — условие, а не проверка ошибки
+_git_cmd() {
+  local i="$1" t sub="" p k rp=0
+  t="${_gw[i]##*/}"
+  i=$((i + 1))
+  if [[ "${t}" == git-?* ]]; then
+    sub="${t#git-}"
+  else
+    while ((i < _gn)); do
+      t="${_gw[i]}"
+      i=$((i + 1))
+      case "${t}" in
+        -C | -c | --git-dir | --work-tree | --namespace | --super-prefix | --attr-source) _git_skipv ;;
+        "" | -*) ;;
+        *)
+          sub="${t}"
+          break
+          ;;
+      esac
+    done
+  fi
+  case "${sub}" in
+    filter-branch | filter-repo) block "git ${sub} (переписывание истории)" ;;
+    reset | checkout | switch | clean | rm | branch | push | reflog | gc | prune) ;;
+    *) return 0 ;;
+  esac
+  _git_args "${sub}" "${i}"
+  ((_gbud >= 0)) || block "команда слишком длинная для разбора правил git — разбейте её на несколько вызовов"
+  case "${sub}" in
+    reset)
+      if _ga_has --hard; then block "git reset --hard (потеря незакоммиченных изменений)"; fi
+      ;;
+    checkout)
+      if [[ "${_ga_s}" == *f* ]] || _ga_has --force; then
+        block "git checkout --force (потеря незакоммиченных изменений)"
+      fi
+      ;;
+    switch)
+      if [[ "${_ga_s}" == *f* ]] || _ga_has --force || _ga_has --discard-changes; then
+        block "git switch --force (потеря незакоммиченных изменений)"
+      fi
+      ;;
+    clean)
+      if { [[ "${_ga_s}" == *f* ]] || _ga_has --force; } && [[ "${_ga_s}" != *n* ]] && ! _ga_has --dry-run; then
+        block "git clean -f (удаление неотслеживаемых файлов без возврата)"
+      fi
+      ;;
+    rm)
+      if { [[ "${_ga_s}" == *f* ]] || _ga_has --force; } && ! _ga_has --cached; then
+        block "git rm -f (потеря незакоммиченных изменений)"
+      fi
+      ;;
+    branch)
+      if [[ "${_ga_s}" == *D* ]]; then block "git branch -D (принудительное удаление ветки)"; fi
+      if { [[ "${_ga_s}" == *d* ]] || _ga_has --delete; } && { [[ "${_ga_s}" == *f* ]] || _ga_has --force; }; then
+        block "git branch --delete --force (принудительное удаление ветки)"
+      fi
+      ;;
+    push)
+      if [[ "${_ga_s}" == *f* ]] || _ga_has --force || _ga_has --force-with-lease || _ga_has --force-if-includes; then
+        block "git push --force (перезапись истории на remote)"
+      fi
+      if _ga_has --mirror; then block "git push --mirror (перезапись и удаление веток на remote)"; fi
+      for ((k = 0; k < ${#_ga_l[@]}; k++)); do
+        if ((${#_ga_l[k]} >= 3)) && [[ "--repo" == "${_ga_l[k]}"* ]]; then
+          rp=1
+          _git_url "${_ga_lv[k]}" "${_ga_l[k]}=${_ga_lv[k]}"
+        fi
+      done
+      for ((k = 0; k < ${#_ga_p[@]}; k++)); do
+        p="${_ga_p[k]}"
+        if [[ "${p}" == +* ]]; then block "git push ${p} (принудительная отправка: + в refspec)"; fi
+        # Первый позиционный — remote, если он не задан через --repo.
+        if ((k == 0 && rp == 0)); then _git_url "${p}" "${p}"; fi
+      done
+      ;;
+    reflog)
+      case "${_ga_p[0]:-}" in
+        expire | delete)
+          if [[ "${_ga_s}" != *n* ]] && ! _ga_has --dry-run; then
+            block "git reflog ${_ga_p[0]} (удаление записей reflog — последней возможности вернуть коммиты)"
+          fi
+          ;;
+        *) ;;
+      esac
+      ;;
+    gc)
+      if _ga_has --prune; then block "git gc --prune (безвозвратное удаление недостижимых объектов)"; fi
+      ;;
+    prune)
+      if [[ "${_ga_s}" != *n* ]] && ! _ga_has --dry-run; then
+        block "git prune (безвозвратное удаление недостижимых объектов)"
+      fi
+      ;;
+    *) ;;
+  esac
+}
+
+# _git_run — каждое слово git в _gw[] — начало команды (обёртки, $( ),
+# bash -c "…").
+_git_run() {
+  local k t
+  _gn=${#_gw[@]}
+  for ((k = 0; k < _gn; k++)); do
+    t="${_gw[k]##*/}"
+    case "${t}" in
+      git | git-?*) _git_cmd "${k}" ;;
+      *) ;;
+    esac
+  done
+}
+
+# _git_scan <сегмент> — слова сегмента в _gr (исходные) и _gw (для
+# опознания); слово & (фоновый запуск) завершает команду.
+_git_scan() {
+  local -a raw=()
+  local r t
+  read -ra raw <<< "$1"
+  _gw=()
+  _gr=()
+  for r in "${raw[@]}"; do
+    if [[ "${r}" == "&" ]]; then
+      _git_run
+      _gw=()
+      _gr=()
+      continue
+    fi
+    t="${r//[\"\'\\\`()\{\}]/}"
+    # Присваивание перед подстановкой: x=$(git … → git.
+    [[ ! "${t}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || t="${t#*=}"
+    while [[ "${t}" == [\$\<\>]* ]]; do t="${t:1}"; done
+    _gw+=("${t}")
+    _gr+=("${r}")
+  done
+  _git_run
+}
+
+# Бюджет слов разбора git на команду: каждое слово git проверяется до конца
+# сегмента, и сотни слов git в одной строке дали бы квадратичное время (при
+# таймауте хук команду не блокирует). Сверх бюджета — блок.
+_gbud=20000
+_gtext="${_code//$'\\\n'/ }"
+# shellcheck disable=SC2312 # сбой sed даст пустой разбор — как у _segments
+mapfile -t _glines < <(printf '%s\n' "${_gtext}" | sed -E 's/(&&|\|\||;|\|)/\n/g')
+_gk=0
+while ((_gk < ${#_glines[@]})); do
+  _gseg="${_glines[_gk]}"
+  _gk=$((_gk + 1))
+  [[ "${_gseg}" == *git* ]] || continue
+  _gq=0 _ga=0 _gb=0 _go=0 _gc=0
+  _git_cnt "${_gseg}"
+  while ((_gk < ${#_glines[@]} && (_gq % 2 || _ga % 2 || _gb % 2 || _go > _gc))); do
+    _gseg+=" ${_glines[_gk]}"
+    _git_cnt "${_glines[_gk]}"
+    _gk=$((_gk + 1))
+  done
+  _git_scan "${_gseg}"
+done
 
 # Вывод окружения процесса/контейнера — секреты в env попадают в транскрипт.
 if grep -Eq '/proc/[^[:space:]]*/environ' <<< "${_code}"; then
