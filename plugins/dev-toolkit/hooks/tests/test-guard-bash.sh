@@ -808,6 +808,76 @@ expect 2 'git -c user.name=a\;b clean -fdx'
 # принятые ограничения (не ассертятся): имя команды через переменную (g=git; $g reset --hard —
 # TODO.md) и значение в кавычках через перевод строки (git push origin "x⏎" --force — как в 2.15.2)
 
+# --- rm и find: исключение /tmp по формам из истории команд (2.17.0) ---
+# путь под /tmp в переменной, присвоенной в той же команде
+expect 0 'S=/tmp/claude-1001/x/scratchpad; rm -rf $S/a'
+expect 0 'S=/tmp/claude-1001/x/scratchpad; rm -rf "$S"/a "$S/b" ${S}/c'
+expect 0 'S=/tmp/x && D=$S/y && rm -rf $D'
+expect 0 'export S=/tmp/x; rm -rf "$S"'
+expect 2 'S=/tmp/x; S=/home/y; rm -rf $S'                 # каждое присваивание — под /tmp
+expect 2 'S=/tmp/x; for S in /home/*; do rm -rf $S; done'
+expect 2 'S=/tmp/x; read S; rm -rf $S'
+expect 2 'S=/home/x; rm -rf $S/a'
+expect 2 'rm -rf $S/a'                                    # значение не видно
+expect 2 'S=/tmp/x rm -rf $S'                              # присваивание перед командой — не в оболочке
+expect 2 'rm -rf $S; S=/tmp/x'                             # присваивание после rm
+expect 2 'S=/tmp/x; rm -rf ${S#/tmp}'
+expect 2 'S=/tmp/x; rm -rf ${S}x/../../home'
+expect 2 'S=/tmp/x; cd /tmp/y && (S=/home/y && rm -rf $S )'  # присваивание в подоболочке портит имя
+expect 2 'S=/tmp/x; S="/home/my dir"; rm -rf "$S"'        # значение с пробелом — имя портится
+# относительный путь после cd под /tmp — только если cd связан с rm через &&
+expect 0 'cd /tmp/claude-1001/x && rm -rf ct && mkdir ct'
+expect 0 'S=/tmp/x; cd "$S" && rm -rf ct'
+expect 0 'cd /tmp/x && cd sub && rm -rf a'
+expect 0 $'set -e\ncd /tmp/x\nrm -rf a'
+expect 2 'cd /tmp/x; rm -rf ct'                            # неудачный cd оставил бы rm в проекте
+expect 2 $'cd /tmp/x\nrm -rf ct'
+expect 2 'cd /tmp/x || exit; rm -rf ct'
+expect 2 'cd /tmp/x | cat && rm -rf ct'
+expect 2 'cd "$S" && rm -rf ct'
+expect 2 '( cd /tmp/x ) && rm -rf a'
+expect 2 'cd /tmp/x && rm -rf ../../home'
+expect 2 'cd /tmp/x && cd /home && rm -rf a'
+expect 2 'cd /tmp/x && cd && rm -rf a'
+expect 2 $'cat > s.sh <<\'EOF\'\nset -e\nEOF\ncd /tmp/x; rm -rf a'  # set -e в теле here-doc — текст
+# каталог mktemp: голая переменная — всегда (пустая ничего не удаляет), с хвостом — только через &&
+expect 0 'D=$(mktemp -d); echo; rm -rf "$D"'
+expect 0 'D=$(mktemp -d /tmp/x.XXXXXX) && cp a $D/ && rm -rf $D/w'
+expect 2 'D=$(mktemp -d); cp a $D/; rm -rf $D/w'
+expect 2 'D=$(mktemp -d $(echo /home)); rm -rf $D'
+# редирект — не операнд; кавычки и .. у литерала
+expect 0 'rm -rf /tmp/claude-1001/p4iso 2>/dev/null'
+expect 0 'rm -rf /tmp/x > /dev/null 2>&1'
+expect 0 'rm -rf "/tmp/x/plugin-copy"'
+expect 0 "rm -rf -- '/tmp/x'"
+expect 2 'rm -rf /tmp/x 2> /home/y /home/z'
+expect 2 'rm -rf /tmp/../home/x'
+expect 2 'rm -rf /tmp/a/../../var/lib'
+# попутно: сокращение --recursive и парные кавычки в имени и флагах
+expect 2 'rm --recu /home/x'
+expect 2 'rm --rec /home/x'
+expect 0 $'python3 - <<\'EOF\'\nRM = "docker run --rm img"\nEOF'  # --rm — не сокращение --recursive
+expect 2 '\rm -rf /home/x'
+expect 2 "'rm' -rf /home/x"
+expect 2 'rm "-rf" /home/x'
+expect 0 'grep -n "rm -rf" file'                           # непарная кавычка — текст, как раньше
+# find -delete / -exec rm: стартовый путь под /tmp — как у rm
+expect 2 'find /home/x -mindepth 1 -delete'
+expect 2 'find "$OLD" -type f -delete'
+expect 2 'find /home/x -type f -exec rm {} +'
+expect 2 'find /home/x -execdir /bin/rm -f {} +'
+expect 2 'cd /tmp/x && find /home -exec rm -rf {} +'
+expect 2 'find . -name a -delete'
+expect 2 'find -name a -delete'                            # без стартового пути — текущий каталог
+expect 0 'cd /tmp/x && find -name a -delete'
+expect 2 'find -L /home/x -delete'
+expect 0 'find /tmp/x -mindepth 1 -delete'
+expect 0 'cd /tmp/x && find . -name a -delete'
+expect 0 "S=/tmp/x; find \$S -name '*.o' -exec rm -f {} +"
+expect 0 'find /tmp/x -exec rm -rf {} +'
+expect 0 'find /home/x -name a -print'
+expect 0 "grep -n 'find . -delete' x"
+
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'
 expect 0 'rm -rf /tmp/x'
