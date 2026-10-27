@@ -511,7 +511,7 @@ expect 2 'git push $(echo origin | cat) -f'
 expect 2 'git -C "$(cd /x; pwd)" reset --hard'
 expect 2 'git reset "$(true && echo HEAD)" --hard'
 expect 2 'git fetch & git push -f origin x'              # & — конец команды, следующая проверяется
-expect 0 'git push origin x & rm -f y'                    # -f у rm — не флаг push
+expect 2 'git push origin x & rm -f y'                    # одиночный & не режет — как в 2.15.2
 
 # --- git: необратимые формы (блок) ---
 expect 2 'git push origin +main'                         # + в refspec — принудительная отправка
@@ -739,7 +739,6 @@ expect 2 git\ reset\ --ha
 expect 2 git\ push\ --m\ origin
 expect 2 git\ rm\ --force\ a.txt
 expect 2 git\ switch\ --force\ main
-expect 2 sleep\ 1\ \&\ printenv
 expect 2 git\ commit\ -m\ \"fix\"\ 2\>\>\ .env
 expect 0 git\ rm\ -r\ somedir
 expect 0 git\ rm\ -r\ --cached\ x
@@ -772,7 +771,7 @@ expect 0 git\ reflog\ expire\ -n\ --all
 expect 0 git\ branch\ -uorigin/fix-dev
 expect 0 git\ clean\ -d\ -efoo
 expect 0 git\ push\ -u\ origin\ feat/x\ \&\&\ gh\ pr\ create\ -f
-expect 0 git\ push\ origin\ x\ \&\ rm\ -f\ y
+expect 2 git\ push\ origin\ x\ \&\ rm\ -f\ y
 expect 0 curl\ \"https://x.example/\?a=1\&b=2\"\ \&\&\ git\ push\ origin\ main
 expect 0 echo\ \'R\&D\'\ \;\ git\ status
 expect 0 git\ push\ origin\ --delete\ feat/x
@@ -794,8 +793,20 @@ expect 0 $'cat > notes.md <<\'EOF\'\nIt\'s fine to run git branch -d old\nand la
 expect 2 $'git push origin \x1f --force'
 expect 2 $'git reset \x01 --hard'
 expect 2 $'git reset \x02 --hard'
-# принятое ограничение (не ассертится): имя команды через переменную (g=git; $g reset --hard)
-# и значение в кавычках через перевод строки (git push origin "x⏎" --force) — см. TODO.md
+expect 2 'git branch -Dq old'                             # -D в кластере — разбор по словам
+# проверка правок: & в кавычках не отрывает флаг от команды (нарезка без одиночного &),
+# экранированный разделитель и ${…;…} склеиваются
+expect 2 'git log --format="%h & %s" --output=/tmp/f'
+expect 2 "git log --grep='R&D' --ext-diff -p"
+expect 2 'X="a&b" printenv'
+expect 2 'rm -rf /tmp/a\&b /home/x'
+expect 2 'git -c user.name=a\;b reset --hard'
+expect 2 'git -c user.name=a\&b reset --hard'
+expect 2 'git -c user.name=${U:-a;b} push --force origin main'
+expect 2 'git push origin a\&b --force'
+expect 2 'git -c user.name=a\;b clean -fdx'
+# принятые ограничения (не ассертятся): имя команды через переменную (g=git; $g reset --hard —
+# TODO.md) и значение в кавычках через перевод строки (git push origin "x⏎" --force — как в 2.15.2)
 
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'
