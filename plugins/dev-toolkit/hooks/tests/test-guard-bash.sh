@@ -823,8 +823,8 @@ expect 2 'S=/tmp/x rm -rf $S'                              # присваива�
 expect 2 'rm -rf $S; S=/tmp/x'                             # присваивание после rm
 expect 2 'S=/tmp/x; rm -rf ${S#/tmp}'
 expect 2 'S=/tmp/x; rm -rf ${S}x/../../home'
-expect 2 'S=/tmp/x; cd /tmp/y && (S=/home/y && rm -rf $S )'  # присваивание в подоболочке портит имя
-expect 2 'S=/tmp/x; S="/home/my dir"; rm -rf "$S"'        # значение с пробелом — имя портится
+expect 2 'S=/tmp/x; cd /tmp/y && (S=/tmp/z && rm -rf $S )'  # подоболочка ( … ) — сброс
+expect 2 'S=/tmp/x; S="/tmp/my dir"; rm -rf "$S"'         # значение с пробелом — имя портится
 # относительный путь после cd под /tmp — только если cd связан с rm через &&
 expect 0 'cd /tmp/claude-1001/x && rm -rf ct && mkdir ct'
 expect 0 'S=/tmp/x; cd "$S" && rm -rf ct'
@@ -914,7 +914,7 @@ expect 2 'T=${U:-a; S=/tmp/x; echo $Y}; rm -rf "$S"/*'
 expect 2 'echo "${U:-"a; S=/tmp/x; b"}"; rm -rf "$S"/*'
 expect 2 "echo \$'a\\'; S=/tmp/x; b'; rm -rf \"\$S\"/*"
 expect 2 '[[ -d /tmp/q && S=/tmp/x ]]; rm -rf "$S"/*'
-expect 2 'S=/tmp/x && rm -rf \$S/a'
+expect 2 'S=/tmp/x; rm -rf \$S/a'                     # \ у операнда — сброс
 expect 2 'S=/tmp/x; ( ulimit -v 1048576; timeout 120 bash t.sh ); rm -rf $S/out'  # цена: обёртка до rm
 expect 2 $'S=/tmp/x\nmkdir -p $S &&\n  touch $S/f &&\n  rm -rf $S/f'
 expect 0 $'S=/tmp/x\nrm -rf "$S"'
@@ -951,6 +951,100 @@ expect 2 'S=/tmp/x; rm -rf $S/$R'
 expect 2 'S=/tmp/x; rm -rf "$S/${R}"'
 expect 2 'S=/tmp/x; D=$S/$R; rm -rf $D'
 expect 0 'S=/tmp/x; R=a; rm -rf $S/a'
+
+# ревью 2: команда в простом префиксе, меняющая состояние оболочки (встроенная, из $ИМЯ, в кавычках), — сброс
+expect 2 'cd /tmp/x && eval $C && rm -rf foo'
+expect 2 'cd /tmp/x && source ./env.sh && rm -rf foo'
+expect 2 'cd /tmp/x && . ./env.sh && rm -rf foo'
+expect 2 'cd /tmp/x && $C /etc && rm -rf a'
+expect 2 'S=/tmp/x; $C; rm -rf $S/a'
+expect 2 "trap 'cd /home' DEBUG; cd /tmp/x && rm -rf foo"
+expect 2 "alias c='cd /home'; cd /tmp/x && rm -rf foo"
+expect 2 'S=/tmp/x; unset "S"; rm -rf $S/build'
+expect 2 'S=/tmp/x; export "S"=/home/u; rm -rf $S'
+expect 2 'S=/tmp/x; read -r "S" < f; rm -rf $S'
+expect 2 'S=/tmp/x; printf -vS %s /home/u; rm -rf $S'
+expect 2 'S=/tmp/x; declare S$N=/home/u; rm -rf $S'
+expect 2 'S=/tmp/x; declare -n R=S; R=/home; rm -rf $S/a'
+expect 2 'S=/tmp/x; builtin . ./e.sh; rm -rf $S'
+expect 2 'S=/tmp/x; command . ./e.sh; rm -rf $S'
+expect 2 'cd /tmp/x && pushd /home && rm -rf a'
+expect 2 'cd /tmp/x && popd && rm -rf a'
+expect 2 'cd /tmp/x && "cd" /home && rm -rf a'
+expect 2 'S=/tmp/x; S+=/../..; rm -rf $S'
+expect 2 'S=/tmp/x; S[0]=/home; rm -rf $S'
+expect 0 "S=/tmp/x; printf '%s\n' a; set -e; ls \$S; rm -rf \$S/a"  # внешние команды и printf без -v
+# спецпеременные bash не в счёт
+expect 2 '_=/tmp/x; ls /home/u; rm -rf $_'
+expect 2 'PWD=/tmp/x; cd /home/u; rm -rf $PWD'
+expect 2 'REPLY=/tmp/x; read < f; rm -rf $REPLY'
+# $ в '…' не раскрывается
+expect 2 "S=/tmp/x; rm -rf '\$S'/a"
+expect 2 "T=/tmp/x; S='\$T'; rm -rf \$S"
+expect 2 "S=/tmp/x; cd '\$S' && rm -rf foo"
+# mktemp: кавычки парные, аргументы — -d -q -t и шаблон без пути или под /tmp
+expect 2 $'D=$(mktemp -d)"\nS=/tmp/x\nE=$(mktemp -d)"\nrm -rf $S/build'
+expect 2 'D=$(mktemp -d -p /home/u); rm -rf $D'
+expect 2 'D=$(mktemp -u); rm -rf $D'
+expect 2 'D=$(mktemp --version); rm -rf $D'
+expect 0 'D="$(mktemp -d)"; rm -rf "$D"'
+expect 0 'D=$(mktemp -d -t x.XXXXXX); rm -rf $D'
+expect 0 'D=$(mktemp -d /tmp/x.XXXXXX); rm -rf "$D"'
+# IFS где угодно в сегменте — сброс
+expect 2 "declare 'IFS=:'; S=/tmp/x:/home/u; rm -rf \$S"
+expect 2 'export "IFS"=:; S=/tmp/x:/home/u; rm -rf $S'
+expect 2 'IFS=/; S=/tmp/x; rm -rf $S/a'
+expect 2 'S=/tmp/x; IFS+=/; rm -rf $S/a'
+expect 2 'S=/tmp/x; read IFS x; rm -rf $S/a'
+# -exec: ' " \ — конец -exec только последним словом сегмента; '{}' в кавычках — заполнитель
+expect 2 "find /tmp/x -exec rm -rf {} ' ' /home/u \\;"
+expect 2 'find /tmp/x -exec rm -rf {} " " /home/u \;'
+expect 0 "find /tmp/x -type d -exec rm -rf '{}' \\;"
+expect 0 'find /tmp/x -exec rm -rf {} \;'
+# find: -delete в кавычках, каждый find сегмента, имя и флаги
+expect 2 'cd /tmp/x && find /home/u "-delete"'
+expect 2 'find /tmp/x -maxdepth 0 -exec find /home/u -delete \;'
+expect 2 "fi''nd /home/u -delete"
+expect 2 'find /home/x -ok rm {} \;'
+expect 2 'find /home/x -okdir rm {} \;'
+expect 2 'find /home/x -exec "rm" {} +'
+expect 2 '/usr/bin/find /home/x -delete'
+expect 2 'cd /tmp/x && find -O3 /home -delete'
+expect 2 'cd /tmp/x && find -H /home -delete'
+expect 2 'cd /tmp/x && find -D tree /home -delete'
+expect 2 'cd /tmp/x && env -C /home find . -delete'
+expect 0 'find /tmp/x \( -name a -o -name b \) -delete'
+expect 0 'find /tmp/x ! -name a -delete'
+# .. из подстановки, скобок и масок; граница /tmp
+expect 2 'rm -rf /tmp/{x,..}/home'
+expect 2 'X=.; rm -rf /tmp/$X$X/home'
+expect 2 "rm -rf /tmp/\$'\\x2e\\x2e'/home"
+expect 2 'cd /tmp && rm -rf .?/*'
+expect 2 'S=/tmp/.[.]; cd $S && rm -rf x'
+expect 2 'S=/tmp; rm -rf $S/.?/*'
+expect 2 'R=../../home; rm -rf /tmp/$R'
+expect 2 'rm -rf /tmpx'
+expect 2 'rm -rf /tmp-old/a'
+expect 2 'S=/tmpx; rm -rf $S'
+expect 2 'S=/tmp/../home/y; rm -rf $S'
+expect 2 'S=/tmp/$R; rm -rf $S'
+expect 2 'D=$(mktemp -d); E=$D/x; rm -rf $E'
+expect 0 'echo "wait..."; rm -rf /tmp/build-$$'                 # .. в тексте — не повод
+expect 0 'git diff main..HEAD >/dev/null; rm -rf /tmp/x.base.$$'
+# принятое ограничение (не ассертится): кавычки внутри имени — r""m, как в 2.16.0 (предфильтр по слову rm;
+# так пишутся тест-векторы в here-doc, история #118)
+# конвейер: присваивание и cd в подоболочке
+expect 2 'true | cd /tmp/x && rm -rf ct'
+expect 2 'echo | S=/tmp/x; rm -rf $S/a'
+expect 2 'S=/tmp/x | cat; rm -rf $S/a'
+expect 2 'D=$(mktemp -d) | cat; rm -rf $D'
+expect 2 'D=$(mktemp -d); cd $D && rm -rf ct'                   # пустая $D — cd в домашний каталог
+expect 2 'D=$(mktemp -d); find $D -delete'
+expect 2 'S="/tmp/x /home/y"; rm -rf $S'                        # пробел в значении — имя портится
+# бюджет и длина сегмента
+_seg5k="echo $(printf 'a%.0s' {1..5000})"
+expect 2 "S=/tmp/x; ${_seg5k}; rm -rf \$S/a"
+expect 2 "cd /tmp/x && rm -rf ct; ${_seg3k}; ${_seg3k}; ${_seg3k}"
 
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'
