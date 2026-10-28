@@ -957,7 +957,8 @@ _segments="${_segtext//$'\x1f'/$'\n'}"
 #                  счёт (сброс).
 # Простой сегмент ещё и по команде: первое слово (после присваиваний) — слово
 # без $, кавычек и \, и не встроенная команда, меняющая переменные, каталог или
-# разбор оболочки (_rm_stateful): внешняя программа состояние оболочки не меняет.
+# разбор оболочки (список — в _rm_spoil): внешняя программа состояние оболочки
+# не меняет.
 declare -A _rm_var=()
 _rm_cwd=false
 _rm_cx=false
@@ -971,6 +972,9 @@ if ((_nb > 8192)); then
   _rm_cx=true
   _rm_novar=true
 fi
+
+# $ внутри '…' (после ' нет закрывающей ' до $): '$S'/x — не подстановка.
+_rm_sq="'[^']*[\$]"
 
 # _rm_unq <слово> — _uq: слово без кавычек и \, если кавычки в нём парные.
 _rm_unq() {
@@ -1025,7 +1029,7 @@ _rm_tmp() {
   case "${t}" in
     /tmp | /tmp/*)
       c="${t//\$\$/}"
-      [[ "${c}" != *[\$\{]* ]]
+      [[ "${c}" != *[\$\{\`]* ]]
       return
       ;;
     *) ;;
@@ -1033,7 +1037,7 @@ _rm_tmp() {
   case "${t}" in
     \$*)
       # $ в '…' не раскрывается: '$S'/x — относительный путь
-      [[ "$1" != *"'"* ]] || return 1
+      [[ ! "$1" =~ ${_rm_sq} ]] || return 1
       ! ${_rm_novar} || return 1
       [[ "${t}" =~ ^\$(\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(/[^\$\`\<\>]*)?$ ]] || return 1
       c="${_rm_var[${BASH_REMATCH[2]}${BASH_REMATCH[3]}]-x}"
@@ -1052,7 +1056,7 @@ _rm_tmp() {
 _rm_vclass() {
   local t="$1" c
   _vc=x
-  [[ "${t}" != *"'"*'$'* && "${t}" != *'$'*"'"* ]] || return 0
+  [[ ! "${t}" =~ ${_rm_sq} ]] || return 0
   [[ "${t}" != *[\"\']* ]] || t="${t//[\"\']/}"
   [[ "${t}" != *[\\\`]* ]] || return 0
   [[ "/${t}/" != */../* ]] || return 0
@@ -1124,14 +1128,20 @@ _rm_spoil() {
   done
   ((k < ${#w[@]})) || return 0
   n="${w[k]}"
+  # редирект перед командой (2>/dev/null read S) — какая команда, не разбираем
+  if [[ "${n}" =~ ^[0-9]*[\<\>] || "${n}" == '&>'* ]]; then
+    _rm_reset
+    return 0
+  fi
   case "${n}" in
     *[\$\"\'\\\`]*) _rm_reset ;;
     cd | pushd | popd) _rm_cwd=false ;;
     . | source | eval | exec | read | mapfile | readarray | unset | export | declare | typeset | local | readonly | \
-      getopts | let | alias | unalias | trap | command | builtin | enable | shopt | hash | wait | coproc | fc | bind)
+      getopts | let | alias | unalias | trap | command | builtin | enable | shopt | hash | wait | coproc | fc | bind | \
+      jobs | compgen | complete)
       _rm_reset
       ;;
-    printf) [[ " $1" != *[[:space:]]-v* ]] || _rm_reset ;;
+    printf) [[ " ${1//[\"\'\\]/}" != *[[:space:]]-v* ]] || _rm_reset ;;
     *) ;;
   esac
 }
@@ -1153,7 +1163,7 @@ _rm_track() {
   # шаблон без пути или под /tmp (-p, -u, --tmpdir — нет); после && или в
   # конвейере — x
   local mk='\$\(mktemp([[:space:]]+(-[dqt]+|--directory|--quiet|[A-Za-z0-9_.%-]*X{3,}[A-Za-z0-9_.%-]*|/tmp/[A-Za-z0-9_./%-]*X{3,}[A-Za-z0-9_.%-]*))*\)'
-  if [[ "${s}" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(${mk}|\"${mk}\")[[:space:]]*$ ]]; then
+  if [[ "${s}" != *..* && "${s}" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(${mk}|\"${mk}\")[[:space:]]*$ ]]; then
     if ${piped} || [[ "${pp}" == $'\x1e' ]]; then
       _rm_set "${BASH_REMATCH[2]}" x
     else
@@ -1218,7 +1228,15 @@ _find_del() {
   w=($1)
   for ((i = 0; i < ${#w[@]}; i++)); do
     _rm_unq "${w[i],,}"
-    [[ "${_uq}" != find && "${_uq}" != */find ]] || f+=("${i}")
+    [[ "${_uq}" == find || "${_uq}" == */find ]] || continue
+    if ((${#f[@]})); then
+      # find аргументом (-name find) — не команда; вложенный — после -exec
+      case "${w[i-1]}" in
+        -exec | -execdir | -ok | -okdir) ;;
+        *) continue ;;
+      esac
+    fi
+    f+=("${i}")
   done
   ((${#f[@]})) || return 0
   for ((i = f[0] + 1; i < ${#w[@]}; i++)); do
@@ -1246,7 +1264,12 @@ _find_del() {
       case "${w[j]}" in
         -H | -L | -P | -O* | --) ;;
         -D) j=$((j + 1)) ;;
-        -* | '(' | '\(' | '!' | '\!' | ';' | '\;' | '{}' | '+') break ;;
+        '{}' | "'{}'" | '"{}"')
+          # вложенный find по результатам внешнего: путь судят у внешнего
+          n=1
+          break
+          ;;
+        -* | '(' | '\(' | '!' | '\!' | ';' | '\;' | '+') break ;;
         *)
           n=1
           # shellcheck disable=SC2310 # _rm_tmp — условие, а не проверка ошибки

@@ -1046,6 +1046,28 @@ _seg5k="echo $(printf 'a%.0s' {1..5000})"
 expect 2 "S=/tmp/x; ${_seg5k}; rm -rf \$S/a"
 expect 2 "cd /tmp/x && rm -rf ct; ${_seg3k}; ${_seg3k}; ${_seg3k}"
 
+# верификатор правок: редирект перед командой, jobs -x, printf "-v", find аргументом, обратная кавычка в /tmp
+expect 2 'S=/tmp/a; </tmp/f read S; rm -rf $S'
+expect 2 'S=/tmp/a; 2>/dev/null read S </tmp/f; rm -rf $S'
+expect 2 'S=/tmp/a; > /dev/null read S < /tmp/f; rm -rf $S'
+expect 2 'S=/tmp/a; 2>/dev/null unset S; rm -rf $S/x'
+expect 2 'cd /tmp/a && 2>&1 cd .. && rm -rf foo'
+expect 2 'cd /tmp/a && 2>/dev/null source ./x.sh && rm -rf foo'
+expect 2 'cd /tmp/a && jobs -x cd /home/u && rm -rf foo'
+expect 2 'S=/tmp/a; jobs -x read S </tmp/f; rm -rf $S'
+expect 2 'S=/tmp/x; printf "-v" S /home/u; rm -rf $S'
+expect 2 "S=/tmp/x; printf '-vS' /home/u; rm -rf \$S"
+expect 2 'rm -rf /tmp/`cat<f`/home/u'
+expect 2 'D=$(mktemp -d /tmp/../home/xXXXXXX); rm -rf $D'
+expect 0 "S=/tmp/a; rm -rf \"\$S\"'/x'"                              # ' без $ внутри — не подстановка
+expect 0 'find /tmp/x -name find -delete'                           # find аргументом — не команда
+expect 0 'cd /tmp/x && find . -name find -delete'
+expect 0 'find /tmp/x -type d -exec find {} -delete \;'             # вложенный find по результатам внешнего
+expect 2 'find /tmp/x -type d -exec find /home/u -delete \;'
+expect 2 'cd /tmp/x && find -P /home -delete'
+expect 2 'cd /tmp/x && find -- /home -delete'
+expect 0 'S=/tmp/x; echo http://a:80 1,2 a^b u@h 50% тест; rm -rf $S/a'  # символы алфавита вне кавычек
+
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'
 expect 0 'rm -rf /tmp/x'
