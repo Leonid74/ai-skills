@@ -812,7 +812,7 @@ expect 2 'git -c user.name=a\;b clean -fdx'
 # путь под /tmp в переменной, присвоенной в той же команде
 expect 0 'S=/tmp/claude-1001/x/scratchpad; rm -rf $S/a'
 expect 0 'S=/tmp/claude-1001/x/scratchpad; rm -rf "$S"/a "$S/b" ${S}/c'
-expect 0 'S=/tmp/x && D=$S/y && rm -rf $D'
+expect 2 'S=/tmp/x && D=$S/y && rm -rf $D'                # присваивание после && — x
 expect 0 'export S=/tmp/x; rm -rf "$S"'
 expect 2 'S=/tmp/x; S=/home/y; rm -rf $S'                 # каждое присваивание — под /tmp
 expect 2 'S=/tmp/x; for S in /home/*; do rm -rf $S; done'
@@ -828,8 +828,8 @@ expect 2 'S=/tmp/x; S="/home/my dir"; rm -rf "$S"'        # значение с 
 # относительный путь после cd под /tmp — только если cd связан с rm через &&
 expect 0 'cd /tmp/claude-1001/x && rm -rf ct && mkdir ct'
 expect 0 'S=/tmp/x; cd "$S" && rm -rf ct'
-expect 0 'cd /tmp/x && cd sub && rm -rf a'
-expect 0 $'set -e\ncd /tmp/x\nrm -rf a'
+expect 2 'cd /tmp/x && cd sub && rm -rf a'                # cd — только на абсолютный путь или переменную
+expect 2 $'set -e\ncd /tmp/x\nrm -rf a'                   # cd без && — блок и при set -e
 expect 2 'cd /tmp/x; rm -rf ct'                            # неудачный cd оставил бы rm в проекте
 expect 2 $'cd /tmp/x\nrm -rf ct'
 expect 2 'cd /tmp/x || exit; rm -rf ct'
@@ -840,9 +840,10 @@ expect 2 'cd /tmp/x && rm -rf ../../home'
 expect 2 'cd /tmp/x && cd /home && rm -rf a'
 expect 2 'cd /tmp/x && cd && rm -rf a'
 expect 2 $'cat > s.sh <<\'EOF\'\nset -e\nEOF\ncd /tmp/x; rm -rf a'  # set -e в теле here-doc — текст
-# каталог mktemp: голая переменная — всегда (пустая ничего не удаляет), с хвостом — только через &&
+# каталог mktemp: только голая переменная (пустая ничего не удаляет)
 expect 0 'D=$(mktemp -d); echo; rm -rf "$D"'
-expect 0 'D=$(mktemp -d /tmp/x.XXXXXX) && cp a $D/ && rm -rf $D/w'
+expect 2 'D=$(mktemp -d /tmp/x.XXXXXX) && cp a $D/ && rm -rf $D/w'
+expect 2 'true && D=$(mktemp -d); rm -rf "$D"'           # mktemp после && мог не выполниться
 expect 2 'D=$(mktemp -d); cp a $D/; rm -rf $D/w'
 expect 2 'D=$(mktemp -d $(echo /home)); rm -rf $D'
 # редирект — не операнд; кавычки и .. у литерала
@@ -877,6 +878,79 @@ expect 0 "S=/tmp/x; find \$S -name '*.o' -exec rm -f {} +"
 expect 0 'find /tmp/x -exec rm -rf {} +'
 expect 0 'find /home/x -name a -print'
 expect 0 "grep -n 'find . -delete' x"
+
+# вывод /tmp — только в префиксе из простых сегментов (белый список); с первого непростого сегмента —
+# только литерал (сброс). Пробы ревью планов П2: другой процесс, обёртка, оператор в конце строки, кавычки
+expect 2 $'S=/tmp/x\nbash <<\'EOF\'\nrm -rf "$S"/*\nEOF'      # тело here-doc исполняет другой процесс
+expect 2 $'S=/tmp/x\ncat > /tmp/s.sh <<\'EOF\'\nrm -rf $S/*\nEOF\nbash /tmp/s.sh'
+expect 2 $'S=/tmp/x\nssh host <<\'EOF\'\nrm -rf $S/*\nEOF'
+expect 2 $'S=/tmp/x\nbash <<EOF\nrm -rf $S/a\nEOF'
+expect 2 $'cd /tmp/x && ssh host <<\'EOF\'\nrm -rf build\nEOF'
+expect 2 'S=/tmp/x && bash -c "cd /; rm -rf \$S/*"'
+expect 2 "S=/tmp/x; bash -c 'cd /tmp; rm -rf \$S/*'"      # $S внутри '…' раскроет другой процесс
+expect 2 "S=/tmp/x; ssh host 'cd /srv; rm -rf \$S/*'"
+expect 2 "S=/tmp/x; docker exec c sh -c 'cd /app && rm -rf \$S/*'"
+expect 2 'cd /tmp/x && ssh host rm -rf build'            # обёртка меняет хост или каталог
+expect 2 'cd /tmp/x && docker exec c rm -rf build'
+expect 2 'cd /tmp/x && sudo -i rm -rf build'
+expect 2 'cd /tmp/x && env -C /home/yondu/proj rm -rf build'
+expect 2 $'S=/tmp/x &&\ntrue &\nrm -rf $S/*'             # оператор в конце строки продолжает список
+expect 2 $'S=/tmp/x &&\n  python3 -m http.server -d $S 8000 &\nsleep 1; rm -rf $S/*'
+expect 2 $'test -d /tmp/q &&\nS=/tmp/x\nrm -rf $S/*'
+expect 2 $'test -d /tmp/q ||\nS=/tmp/x\nrm -rf $S/*'
+expect 2 $'echo hi |\nS=/tmp/x\nrm -rf $S/*'
+expect 2 $'mkdir -p /tmp/x &&\n  S=/tmp/x &&\n  true &\nrm -rf "$S"/*'
+expect 2 $'true ||\ncd /tmp/x && rm -rf a'
+expect 2 $'cd /tmp/x &&\ncd /home &&\nrm -rf a'
+expect 2 $'git diff --quiet ||\nD=$(mktemp -d)\nrm -rf "$D"/x'
+expect 2 $'S=/tmp/x &&\nrm -rf $S/a'                      # цена: && в конце строки — сброс
+expect 2 "echo \"it's\"; echo 'a; S=/tmp/x; b'; rm -rf \"\$S\"/*"  # ; внутри кавычек — не разделитель
+expect 2 "grep -c '\"' f; echo \"note; S=/tmp/x; ok\"; rm -rf \"\$S\"/*"
+expect 2 '( echo ")"; S=/tmp/x; echo "(" ); rm -rf "$S"/*'
+expect 2 "sed \"s/'//\" f; echo 'a; S=/tmp/x; b'; rm -rf \"\$S\"/*"
+expect 2 $'echo "it\'s"\nprintf \'%s\\n\' \'x\nS=/tmp/x\ny\'\nrm -rf "$S"/*'
+expect 2 'T=${U:-a; S=/tmp/x}; rm -rf "$S"/*'
+expect 2 'T=${U:-a; S=/tmp/x; echo $Y}; rm -rf "$S"/*'
+expect 2 'echo "${U:-"a; S=/tmp/x; b"}"; rm -rf "$S"/*'
+expect 2 "echo \$'a\\'; S=/tmp/x; b'; rm -rf \"\$S\"/*"
+expect 2 '[[ -d /tmp/q && S=/tmp/x ]]; rm -rf "$S"/*'
+expect 2 'S=/tmp/x && rm -rf \$S/a'
+expect 2 'S=/tmp/x; ( ulimit -v 1048576; timeout 120 bash t.sh ); rm -rf $S/out'  # цена: обёртка до rm
+expect 2 $'S=/tmp/x\nmkdir -p $S &&\n  touch $S/f &&\n  rm -rf $S/f'
+expect 0 $'S=/tmp/x\nrm -rf "$S"'
+# элементы белого списка: допустимые — вывод работает, недопустимые — сброс
+expect 0 "S=/tmp/x; echo 'a b' \"\$S\" \${S} \$? >> /tmp/log 2>&1; rm -rf \"\${S}\"/a"
+expect 0 'S=/tmp/x; ls -l -- *.o a?b [ab] {} ~/x 1>/dev/null &>/dev/null < /dev/null; rm -rf $S/a'
+expect 0 'S=/tmp/x; echo "тест: $S"; rm -rf $S/a'          # не-ASCII
+expect 2 'S=/tmp/x; echo a \# b; rm -rf $S/a'            # \ вне кавычек
+expect 2 'S=/tmp/x; echo a # b; rm -rf $S/a'             # комментарий
+expect 2 'S=/tmp/x; echo $(date); rm -rf $S/a'           # подстановка
+expect 2 'S=/tmp/x; echo `date`; rm -rf $S/a'
+expect 2 'S=/tmp/x; echo {a,b}; rm -rf $S/a'             # { без пары
+expect 2 'S=/tmp/x; sleep 1 & rm -rf $S/a'               # фон
+expect 2 'S=/tmp/x; ! true; rm -rf $S/a'
+expect 2 'S=/tmp/x; cat <<< a; rm -rf $S/a'              # <<
+expect 2 'S=/tmp/x; [[ -d $S ]]; rm -rf $S/a'            # [[
+expect 2 'S=/tmp/x; IFS=/; rm -rf $S'                    # IFS делит $S на слова
+expect 2 'S=/tmp/x; if true; then rm -rf $S/a; fi'       # ключевое слово первым
+expect 2 'S=/tmp/x; for f in a; do rm -rf $S/$f; done'
+expect 2 'S=/tmp/x; echo "${S:-x}"; rm -rf $S/a'         # ${…} с операцией
+expect 2 'S=/tmp/x; echo "a\"b"; rm -rf $S/a'            # \ внутри "…"
+expect 2 'echo "a\"; S=/tmp/x; echo "x\"; rm -rf $S/*'     # \" не закрывает "…"
+expect 2 'S=/tmp/x; echo $"a"; rm -rf $S/a'              # $ перед кавычкой
+expect 2 "echo \$'a\\'; S=/tmp/x; 'x\\' y; rm -rf \$S/*"  # в $'…' \' не закрывает строку
+expect 0 'S=/tmp/x; cat <<< a; rm -rf /tmp/x/a'          # после сброса литерал /tmp проходит
+expect 2 $'cat <<\'EOF\'\nx\nEOF\ncd /tmp/x && find . -delete'  # find после сброса — только литерал
+# бюджет: в команде длиннее 8 КБ вывода нет, только литерал
+_seg3k="echo $(printf 'a%.0s' {1..3000})"
+expect 2 "S=/tmp/x; ${_seg3k}; ${_seg3k}; ${_seg3k}; rm -rf \$S/a"
+expect 0 "S=/tmp/x; ${_seg3k}; ${_seg3k}; rm -rf \$S/a"
+expect 0 "${_seg3k}; ${_seg3k}; ${_seg3k}; rm -rf /tmp/x/a"
+# подстановка в хвосте операнда — вне /tmp ($R=.. или путь)
+expect 2 'S=/tmp/x; rm -rf $S/$R'
+expect 2 'S=/tmp/x; rm -rf "$S/${R}"'
+expect 2 'S=/tmp/x; D=$S/$R; rm -rf $D'
+expect 0 'S=/tmp/x; R=a; rm -rf $S/a'
 
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'
