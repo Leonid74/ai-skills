@@ -542,7 +542,9 @@ CLAUDE.md», «убери устаревшее из памяти проекта�
 | git: потеря работы | `git reset --hard`, `git checkout -f`, `git switch -f`/`--discard-changes`, `git clean -f` (без `-n`), `git rm -f` (без `--cached`) |
 | git: ветки и история | `git branch -D` и `-d` вместе с `-f`/`--force` (безопасный `-d` пропускается); `git reflog expire/delete` и `git prune` (без `-n`/`--dry-run`), `git gc --prune`, `git filter-branch`/`filter-repo` |
 | git: remote        | `git push --force`/`-f` (в том числе в кластере `-fu`), `--force-with-lease`, `--force-if-includes`, `+ветка` в refspec, `--mirror`, адрес или путь вместо имени remote (`git push git@host:x`, `https://…`, `/srv/x.git`) |
-| git: конфиг в команде | `git -c`/`--config-env` с ключом секций `alias.`, `remote.`, `url.`, `branch.` — алиас или подмена remote в той же команде (рабочие `-c user.name=…`, `-c core.*` свободны) |
+| git: конфиг и окружение | ключ вне белого списка в `git -c`, `--config-env`, `git clone -c` и записи `git config <ключ> <значение>` (белый список — ключи рабочих команд: `user.*`, `safe.directory`, `core.quotepath`, `commit.gpgsign`, `diff.renames`, `core.autocrlf`, `color.*` …; `core.editor`, `core.hooksPath`, `core.pager` — только со значением `true`/`.git/hooks`/`cat`); переменные `GIT_*`, `GH_*`, `HOME`, `XDG_*`, `LD_*`, `PAGER`/`EDITOR` перед `git`/`gh` или в `export` той же строки (кроме имён автора и коммитера, `GIT_LITERAL_PATHSPECS`, `GIT_EDITOR=true`, `GIT_PAGER=cat`, `GIT_CONFIG_GLOBAL=/dev/null` …). Чтение `git config --get`/`-l` свободно |
+| git: запуск программ | `--exec-path=`, `clone -u`/`--upload-pack`, `fetch`/`pull`/`ls-remote --upload-pack`, `push --receive-pack`/`--exec`, адрес `ext::`, `archive --exec`, `grep -O`, `rebase -x`/`--exec`, `bisect run`, `submodule foreach`, `--template` у `clone`/`init`; `git credential` |
+| gh                 | `--web`/`-w` (кроме `run list -w` и `repo deploy-key add -w`, где это другие флаги), `gh browse`, `gh api` с записью — метод не `GET`/`HEAD` или поля (`-f`/`-F`/`--input`) без `-X GET` (gh шлёт их POST); `gh auth token`, `gh auth status -t`. Чтение `gh api …`, `gh api -X GET search/… -f q=…`, `gh pr view -R <репо>` свободны |
 | `.env`-файлы       | fail-closed: любое обращение к `.env`/`.env.<суффикс>` (включая `grep`/`sed`/`source`/интерпретаторы/`cp`, glob `.env*`/`.env{,}`, кавычки внутри имени `.e""nv`, `f=.env`), кроме `ls`/`stat`/`test`/`[`/`[[`/`git status`/`git check-ignore`; шаблоны `.env.example`/`.env.dist`/`.env.sample` свободны. Перенаправление в `.env` или из него (`ls > .env`, `… < .env`) блокируется у любой команды. **Упоминание в тексте сообщения не блокируется** в строгих формах, в том числе внутри цепочки (см. «Особенности»): `git commit -m "…"`, `gh pr/issue … --title/--body "…"`; одиночный `echo`/`printf` (`echo "… .env"`, `echo .env >> .gitignore`) — только отдельной командой |
 
 Особенности:
@@ -572,6 +574,11 @@ CLAUDE.md», «убери устаревшее из памяти проекта�
   `git worktree remove --force`, `git commit --no-verify`, `git rm -r --cached`. Кавычки правила
   не учитывают: слово `git` в тексте внутри той же команды (`grep "git push -f" файл`,
   `git log --grep='reset --hard'`, тело here-doc) судится как команда.
+- **Конфиг git, окружение перед git/gh и gh — белым списком по истории команд** (2.18.0): ключи и имена переменных,
+  которые встречались в рабочих командах, проходят; остальные (ключ, исполняющий программу, подмена `HOME`, запись
+  через API GitHub) выполняет владелец. `export` судится только в той же строке, что команда
+  git/gh, присваивание за обёрткой (`X=1 timeout 20 git …`) — тоже. Не видны: `export` на другой строке, `set -a`,
+  кластер коротких флагов gh (`-cw`).
 - **Путь под `/tmp` для `rm -r` и `find` — по той же команде, только в простой её части**: переменная проходит, если
   каждое её присваивание в команде до удаления — путь под `/tmp` (`S=/tmp/…; rm -rf "$S"/x`); каталог
   `D=$(mktemp -d)` — только голой переменной (`rm -rf "$D"`); относительный путь — после `cd <путь под /tmp>`,
