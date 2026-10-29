@@ -973,7 +973,8 @@ expect 2 'cd /tmp/x && popd && rm -rf a'
 expect 2 'cd /tmp/x && "cd" /home && rm -rf a'
 expect 2 'S=/tmp/x; S+=/../..; rm -rf $S'
 expect 2 'S=/tmp/x; S[0]=/home; rm -rf $S'
-expect 0 "S=/tmp/x; printf '%s\n' a; set -e; ls \$S; rm -rf \$S/a"  # внешние команды и printf без -v
+expect 0 "S=/tmp/x; echo a; set -e; ls \$S; rm -rf \$S/a"  # команды положительного списка
+expect 2 "S=/tmp/x; printf '%s\n' a; rm -rf \$S/a"           # вне списка — сброс, и printf без -v
 # спецпеременные bash не в счёт
 expect 2 '_=/tmp/x; ls /home/u; rm -rf $_'
 expect 2 'PWD=/tmp/x; cd /home/u; rm -rf $PWD'
@@ -1067,6 +1068,73 @@ expect 2 'find /tmp/x -type d -exec find /home/u -delete \;'
 expect 2 'cd /tmp/x && find -P /home -delete'
 expect 2 'cd /tmp/x && find -- /home -delete'
 expect 0 'S=/tmp/x; echo http://a:80 1,2 a^b u@h 50% тест; rm -rf $S/a'  # символы алфавита вне кавычек
+
+# ревью 3: команда префикса — положительный список (cd, set с флагами, rm, find, mkdir, ls, echo, which, head,
+# grep, cat, tail), иное — сброс
+expect 0 'S=/tmp/x; set -euo pipefail; mkdir -p $S/a; which jq; head -1 f; grep -c a f; cat f; tail -1 f; rm -rf $S/a'
+expect 0 $'set -e\nS=/tmp/x\nrm -rf $S/a; rm -rf $S/b'
+expect 0 'set -o pipefail; cd /tmp/x && find . -name a -delete && rm -rf b'
+expect 2 'cd /tmp/x && nvm_cd /home/u && rm -rf a'         # функция снимка оболочки
+expect 2 'cd /tmp/x && cd -P /home/u && rm -rf a'           # cd не из двух слов — каталог не под /tmp
+expect 2 'cd /tmp/x && cd>/dev/null /home/u && rm -rf a'   # имя вплотную к редиректу
+expect 2 'S=/tmp/x; unset>/dev/null S; rm -rf $S/a'
+expect 2 'cd /tmp/x && c[d] /home/u && rm -rf a'           # маска первым словом
+expect 2 'S=/tmp/x; X[S=0]=1; rm -rf $S/a'                 # присваивание в индексе
+expect 2 $'UID=/tmp/x\nrm -rf $UID/y'                      # readonly: присваивание падает
+expect 2 $'PPID=/tmp/x\nrm -rf $PPID/y'
+# \⏎ склеен пробелом (нарезка 2.16.0): разорванное имя в префиксе — сброс; управляющие байты — сброс;
+# замена \x1c–\x1f. Принятое ограничение (не ассертится): \⏎ внутри имени rm/find или -delete и >| перед
+# операндом rm — как в 2.16.0, в истории команд 0 случаев (третье ревью 2.17.0, 29.10.2026)
+expect 2 $'S=/tmp/x; unse\\\nt S; rm -rf $S/a'
+expect 2 $'cd /tmp/x && c\\\nd /home/u && rm -rf a'
+expect 0 $'S=/tmp/x; ls \\\n  -la; rm -rf $S/a'
+expect 2 $'S\x1e=/tmp/x; rm -rf "$S_"/*'
+expect 2 $'\x0bHOME=$(mktemp -d)\nrm -rf "$HOME"'
+expect 2 $'\rHOME=$(mktemp -d)\nrm -rf "$HOME"'
+expect 2 $'rm -rf /tmp/a\x1f /home/x'
+expect 2 $'rm -rf /tmp/a\x1d /home/x'
+# разбор rm: -- целым словом (иное слово из -, кавычек и \ — операнд вне /tmp), + конец -exec только после
+# {}, имя с редиректом
+expect 2 'rm "\-\-" -rf /home/x'
+expect 2 'rm -rf /tmp/x \-\- -home'
+expect 2 'rm -rf /tmp/x -""- -home'
+expect 0 'rm -rf -- /tmp/x'
+expect 2 'rm -rf "\/tmp/x"'
+expect 2 'find /tmp/x -delete & rm -rf /tmp/y + /home/x'
+expect 0 'find /tmp/x -name a -exec rm -rf {} + 2>/dev/null'
+expect 2 'rm>/dev/null -rf /home/x'
+expect 2 'find>/dev/null /home/x -delete'
+# .. и маска на . — и с приклеенным редиректом
+expect 2 'cd /tmp/..</dev/null && rm -rf home'
+expect 2 'cd /tmp/..&>/dev/null && find home -delete'
+expect 2 'find /tmp/..</dev/null -delete'
+expect 2 'S=/tmp/..</dev/null; rm -rf $S/home/u'
+expect 2 'S=/tmp/..*; rm -rf $S/home'
+expect 2 'rm -rf /tmp/..*/home'
+expect 0 'rm -rf /tmp/x>/dev/null'
+expect 2 'D=$(mktemp -d fooXXX); rm -rf $D'                # шаблон без пути и без -t — каталог в текущем
+# find: rm за обёрткой в -exec, -files0-from, {} у первого find, пути bfs в любом месте выражения
+expect 2 'find /home/x -exec sudo rm -f {} +'
+expect 2 'find /home/x -exec env rm {} \;'
+expect 0 'find /tmp/x -exec sudo rm -rf {} +'
+expect 2 'cd /tmp/x && find -files0-from list -delete'
+expect 2 'ls | xargs -I{} find {} -exec rm -rf {} +'
+expect 2 'find /tmp/x -name build ~/proj -exec rm -rf {} +'
+expect 2 'find /tmp/x -delete /home/u'
+expect 2 'find /tmp/x -exec rm -rf {} + /home/u'
+expect 2 'find /tmp/x -f /home/u -delete'
+expect 0 'find /tmp/x -name build -type d -mindepth 1 -exec rm -rf {} +'
+expect 0 "find /tmp/x -newer /home/u/ref -name '*.o' -delete"
+expect 0 'find /tmp/x -path "*/node_modules" -prune -o -name a -delete'
+expect 0 'cd /tmp/x && find . -maxdepth 1 -name "b*" -exec rm -rf {} +'
+# третье ревью 2.17.0 (T6): уборка в /tmp через новые ветки — не ложный блок
+expect 0 'D=$(mktemp -dt foo.XXXXXX); rm -rf "$D"'          # кластер -dt у mktemp
+expect 0 'set +e; S=/tmp/x; rm -rf $S/a'                    # set с +флагом
+expect 0 'cd /tmp/x && LC_ALL=C find . -name a -delete'     # присваивание перед find
+expect 0 "rm -rf '--' /tmp/x"                               # -- в кавычках — конец опций
+expect 0 'find /tmp/x -name a -delete 2> /dev/null'         # цель редиректа отдельным словом
+expect 0 'find /tmp/x -name a -delete < /dev/null'
+expect 0 "find /tmp/x -name a -fprintf /tmp/l '%p\n' -delete" # два аргумента -fprintf
 
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'
