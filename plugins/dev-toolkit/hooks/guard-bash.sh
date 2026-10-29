@@ -922,20 +922,429 @@ set -f
 # и git: разделители && || ; | — в \x1f, перевод строки остаётся строкой, \⏎
 # склеен. Одиночный & не режет: нарезка не видит кавычек, и & внутри
 # --format="%h & %s" или X="a&b" оторвал бы флаг от команды (ревью 2.16.0).
-# Байт \x1f в самой команде заменяется буквой: иначе подделал бы метку
+# Байты \x1c–\x1f в самой команде заменяются буквой: иначе подделали бы метку
 # (буква, а не пробел, — не разорвать значение опции). Захват — присваиванием
 # $( ) под set -e/pipefail: сбой sed — внутренняя ошибка, то есть блок.
+#
+# Вид разделителя перед каждым сегментом — для правила rm (связь cd и mktemp с
+# rm, ниже): sed ставит \x1e на &&, \x1d на ;, \x1c на || и |, затем все три
+# сводятся в \x1f — нарезка та же, что прежний один проход (&&/||/;/| не
+# пересекаются). _segsep[i] начинается с метки разделителя перед сегментом i
+# (перевод строки и начало команды — без метки).
 _segtext="${_code//$'\\\n'/ }"
-_segtext="${_segtext//$'\x1f'/_}"
-_segtext="$(printf '%s\n' "${_segtext}" | sed -E 's/(&&|\|\||;|\|)/\x1f/g')"
+_segtext="${_segtext//[$'\x1c\x1d\x1e\x1f']/_}"
+_segtext="$(printf '%s\n' "${_segtext}" | sed -E 's/&&/\x1e/g; s/\|\|/\x1c/g; s/;/\x1d/g; s/\|/\x1c/g')"
+_segm="${_segtext//$'\x1e'/$'\n\x1e'}"
+_segm="${_segm//$'\x1d'/$'\n\x1d'}"
+_segm="${_segm//$'\x1c'/$'\n\x1c'}"
+mapfile -t _segsep <<< "${_segm}"
+_segtext="${_segtext//[$'\x1c\x1d\x1e']/$'\x1f'}"
 _segments="${_segtext//$'\x1f'/$'\n'}"
+
+# Исключение /tmp для rm и find (2.17.0). Путь под /tmp выводится из той же
+# команды (переменная, каталог mktemp, относительный путь после cd) только в
+# префиксе из простых сегментов — их задаёт белый список (_rm_cplx). С первого
+# непростого сегмента учёт переменных и cwd выключен до конца команды (сброс):
+# судится только литерал /tmp/…, как в 2.16.0. Сброс, а не заморозка прежнего
+# состояния: после непонятой формы хук не знает, исполняет ли следующий rm эта
+# же оболочка (тело here-doc, bash -c '…', ssh host '…' — там $S пуста).
+#   _rm_var[имя] — t: присвоено под /tmp безусловно (не после &&, не в
+#                  конвейере); u: $(mktemp …) — годится только голая переменная
+#                  операндом rm (пустая ничего не удаляет); x — иное.
+#   _rm_cwd      — текущий каталог под /tmp: cd на путь под /tmp, от cd до
+#                  текущего сегмента одни &&.
+#   _rm_cx       — встречен непростой сегмент; _rm_novar — переменные не в
+#                  счёт (сброс).
+# Простой сегмент ещё и по команде: первое слово (после присваиваний) — ровно
+# команда из положительного списка (_rm_spoil), иначе сброс. Управляющий байт
+# (кроме \t и \n) в команде — сброс с начала: bash режет такую команду иначе,
+# чем хук.
+declare -A _rm_var=()
+_rm_cwd=false
+_rm_cx=false
+_rm_novar=false
+_rm_head=false
+# Бюджет: в команде длиннее 8 КБ вывода нет, только литерал — разбор белым
+# списком растёт с длиной сегментов, а при таймауте хук команду не блокирует.
+# Самая длинная команда истории с удалением в /tmp — 4,6 КБ.
+_bytes "${_code}"
+if ((_nb > 8192)); then
+  _rm_cx=true
+  _rm_novar=true
+fi
+
+# $ внутри '…' (после ' нет закрывающей ' до $): '$S'/x — не подстановка.
+_rm_sq="'[^']*[\$]"
+# Компонент пути на . с маской (.[ .? .* ..*) без globskipdots (bash < 5.2)
+# совпадает с ..
+_rm_dm='/\.[^/]*[][?*]'
+
+# _rm_unq <слово> — _uq: слово без кавычек и \, если кавычки в нём парные.
+_rm_unq() {
+  local d="${1//[^\"]/}" s="${1//[^\']/}"
+  _uq="$1"
+  if ((${#d} % 2 == 0 && ${#s} % 2 == 0)); then
+    _uq="${1//[\"\'\\]/}"
+  fi
+}
+
+# _rm_set <имя> <класс> — худший из прежнего и нового (t < u < x). Переменные,
+# которые bash переприсваивает сам ($_ после каждой команды, PWD после cd, REPLY
+# после read …) или не даёт присвоить (UID, EUID, PPID, SHELLOPTS — readonly:
+# присваивание падает, значение прежнее), — всегда x.
+_rm_set() {
+  case "$1" in
+    _ | PWD | OLDPWD | REPLY | MAPFILE | OPTARG | OPTIND | RANDOM | SRANDOM | SECONDS | LINENO | HISTCMD | \
+      EPOCHSECONDS | EPOCHREALTIME | BASHPID | DIRSTACK | PIPESTATUS | COPROC | GROUPS | FUNCNAME | BASH* | \
+      UID | EUID | PPID | SHELLOPTS)
+      _rm_var[$1]=x
+      return 0
+      ;;
+    *) ;;
+  esac
+  case "${_rm_var[$1]-t}:$2" in
+    x:* | u:t) ;;
+    *) _rm_var[$1]="$2" ;;
+  esac
+}
+
+# _rm_reset — сброс: до конца команды только литерал /tmp.
+_rm_reset() {
+  _rm_cx=true
+  _rm_novar=true
+  _rm_cwd=false
+}
+
+# _rm_tmp <слово> <op|path> — код 0, если путь под /tmp. op — операнд rm
+# (голая u годится: пустая ничего не удаляет), path — путь cd/find (пустая
+# u дала бы домашний или текущий каталог). Относительный путь — только при
+# _rm_cwd и _rm_head (rm/find — первое слово сегмента). Подстановка в хвосте
+# ($S/$R) — вне /tmp: $R=.. или /… выводит путь из-под $S. В литерале /tmp/… —
+# только $$ и без {: иначе .. мог прийти из подстановки или раскрытия скобок.
+# Компонент пути на . с маской (_rm_dm) — тоже вне /tmp; .. ищется и у пути с
+# приклеенным редиректом (/tmp/..</dev/null, /tmp/..&>f). Слово с \ — вне /tmp: в "…" \
+# перед обычным символом остаётся, путь относительный.
+_rm_tmp() {
+  local t="$1" c
+  [[ "${t}" != *\\* ]] || return 1
+  [[ "${t}" != *[\"\']* ]] || t="${t//[\"\']/}"
+  c="/${t//[<>&]//}/"
+  [[ "${c}" != */../* && ! "${c}" =~ ${_rm_dm} ]] || return 1
+  case "${t}" in
+    /tmp | /tmp/*)
+      c="${t//\$\$/}"
+      [[ "${c}" != *[\$\{\`]* ]]
+      return
+      ;;
+    *) ;;
+  esac
+  case "${t}" in
+    \$*)
+      # $ в '…' не раскрывается: '$S'/x — относительный путь
+      [[ ! "$1" =~ ${_rm_sq} ]] || return 1
+      ! ${_rm_novar} || return 1
+      [[ "${t}" =~ ^\$(\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(/[^\$\`\<\>]*)?$ ]] || return 1
+      c="${_rm_var[${BASH_REMATCH[2]}${BASH_REMATCH[3]}]-x}"
+      case "${c}" in
+        t) return 0 ;;
+        u) [[ -z "${BASH_REMATCH[4]}" && "$2" == op ]] ;;
+        *) return 1 ;;
+      esac
+      ;;
+    "" | -* | /* | ~* | *'$'* | *'`'* | *'{'* | *'}'* | *'<'* | *'>'* | +) return 1 ;;
+    *) ${_rm_cwd} && ${_rm_head} ;;
+  esac
+}
+
+# _rm_vclass <значение> — _vc: класс значения присваивания (без mktemp).
+_rm_vclass() {
+  local t="$1" c
+  _vc=x
+  [[ ! "${t}" =~ ${_rm_sq} ]] || return 0
+  [[ "${t}" != *[\"\']* ]] || t="${t//[\"\']/}"
+  [[ "${t}" != *[\\\`]* ]] || return 0
+  c="/${t//[<>&]//}/"
+  [[ "${c}" != */../* && ! "${c}" =~ ${_rm_dm} ]] || return 0
+  case "${t}" in
+    /tmp | /tmp/*) [[ "${t}" == *'$'* || "${t}" == *'{'* ]] || _vc=t ;;
+    \$*)
+      [[ "${t}" =~ ^\$(\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(/[^\$]*)?$ ]] || return 0
+      c="${_rm_var[${BASH_REMATCH[2]}${BASH_REMATCH[3]}]-x}"
+      case "${c}" in
+        t) _vc=t ;;
+        u) [[ -n "${BASH_REMATCH[4]}" ]] || _vc=u ;;
+        *) ;;
+      esac
+      ;;
+    *) ;;
+  esac
+}
+
+# _rm_cplx <сегмент> — код 0, если сегмент не простой. Простой задан
+# положительно (белый список): после снятия закрытых строк '…' и "…" слева
+# направо (внутри "…" — только обычные символы, $ИМЯ, ${ИМЯ}, $? $# $! $$)
+# остаются безопасный алфавит, {} целиком, байты не-ASCII, $ИМЯ, ${ИМЯ} и
+# редиректы N> N>> < N>&M &>; нет $'…', $"…", <<, [[, IFS,
+# зарезервированного слова первым и длины сверх 4 КБ. Для такого сегмента нарезка совпадает с bash.
+# Расширять алфавит — только с вектором, мутантом и прогоном корпуса.
+_rm_cplx() {
+  local s="$1" v
+  ((${#s} <= 4096)) || return 0
+  # $'…' и $"…": в $'…' \' не закрывает строку — снятие ниже её не видит
+  [[ "${s}" != *\$[\'\"]* ]] || return 0
+  # shellcheck disable=SC2016 # $ в регексе — литерал
+  local _wq='^([^'"'"'"]*)('"'"'[^'"'"']*'"'"'|"([^"\\`$]|\$([A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})|\$[?#!$])*")(.*)$'
+  # shellcheck disable=SC2016 # $ в регексе — литерал
+  local _wa='^([-A-Za-z0-9_./:=,+%@~*?^[[:space:]]|\[|\]|\{\}|[^[:cntrl:][:print:]]|\$([A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})|\$[?#!$]|[0-9]*>&[0-9]|&>|[0-9]*>>?|<)*$'
+  v="${s}"
+  while [[ "${v}" =~ ${_wq} ]]; do
+    v="${BASH_REMATCH[1]}Q${BASH_REMATCH[5]}"
+  done
+  [[ "${v}" =~ ${_wa} ]] || return 0
+  [[ ! "${v}" =~ (^|[[:space:]])\[\[ ]] || return 0
+  # << (here-doc, here-string) — вне подмножества
+  [[ "${v}" != *'<<'* ]] || return 0
+  # IFS (присваивание, read IFS, declare 'IFS=:' …) меняет разбиение $S на слова
+  [[ "${s}" != *IFS* ]] || return 0
+  # составная команда (зарезервированное слово первым): присваивание и cd в ней
+  # могут уйти в подоболочку конвейера или фона
+  [[ "${s}" =~ ^[[:space:]]*(\{|\}|!|if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|time|coproc)([[:space:]]|$) ]]
+}
+
+# _rm_spoil <сегмент> — простой сегмент, не cd <путь> и не одни присваивания:
+# имя в NAME=, NAME+=, NAME[…]= в любом слове — x (присваивание перед командой).
+# Команда задана положительным списком: первое слово после присваиваний ровно
+# cd (cwd — не под /tmp), set с флагами (set -e, set -o pipefail), rm, find или
+# mkdir, ls, echo, which, head, grep, cat, tail — список сверен с префиксами
+# истории. Иное — сброс: встроенная команда, функция снимка оболочки (nvm_cd …)
+# или обёртка могут сменить каталог и переменные, хук этого не знает. find и
+# grep в оболочке Claude Code — функции, но только с local и подоболочкой.
+# Присваивание с индексом (X[…]=) — сброс: в индексе может стоять присваивание.
+_rm_spoil() {
+  local n w k=0
+  # shellcheck disable=SC2206 # голый word-splitting при set -f
+  w=($1)
+  for n in "${w[@]}"; do
+    [[ ! "${n}" =~ ([A-Za-z_][A-Za-z0-9_]*)(\[[^]]*\])?(\+|:)?= ]] || _rm_set "${BASH_REMATCH[1]}" x
+  done
+  while ((k < ${#w[@]})) && [[ "${w[k]}" =~ ^[A-Za-z_][A-Za-z0-9_]*(\[|\+?=) ]]; do
+    if [[ "${BASH_REMATCH[1]}" == '[' ]]; then
+      _rm_reset
+      return 0
+    fi
+    k=$((k + 1))
+  done
+  ((k < ${#w[@]})) || return 0
+  case "${w[k]}" in
+    cd) _rm_cwd=false ;;
+    set)
+      for n in "${w[@]:k+1}"; do
+        [[ "${n}" =~ ^([-+][A-Za-z]+|[a-z]+)$ ]] || {
+          _rm_reset
+          return 0
+        }
+      done
+      ;;
+    rm | find | mkdir | ls | echo | which | head | grep | cat | tail) ;;
+    *) _rm_reset ;;
+  esac
+}
+
+# _rm_track <сегмент> — обновить состояние по сегменту (до сброса).
+_rm_track() {
+  local s="$1" n w a i pp="${_segsep[_si]-}" qq="${_segsep[_si+1]-}" piped=false
+  ! ${_rm_cx} || return 0
+  pp="${pp:0:1}"
+  qq="${qq:0:1}"
+  # оператор &&, || или | в конце строки: следующая строка продолжает список
+  if [[ -z "${s//[[:space:]]/}" && ( "${pp}" == $'\x1e' || "${pp}" == $'\x1c' ) ]]; then
+    _rm_reset
+    return 0
+  fi
+  [[ "${pp}" == $'\x1e' ]] || _rm_cwd=false
+  [[ "${pp}" != $'\x1c' && "${qq}" != $'\x1c' ]] || piped=true
+  # NAME=$(mktemp …) — целым сегментом, кавычки парные; аргументы — -d -q -t и
+  # шаблон без пути или под /tmp (-p, -u, --tmpdir — нет); после && или в
+  # конвейере — x; шаблон без пути и без -t — каталог в текущем, тоже x
+  local mk='\$\(mktemp([[:space:]]+(-[dqt]+|--directory|--quiet|[A-Za-z0-9_.%-]*X{3,}[A-Za-z0-9_.%-]*|/tmp/[A-Za-z0-9_./%-]*X{3,}[A-Za-z0-9_.%-]*))*\)'
+  if [[ "${s}" != *..* && "${s}" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(${mk}|\"${mk}\")[[:space:]]*$ ]]; then
+    n="${BASH_REMATCH[2]}"
+    a=u
+    if ${piped} || [[ "${pp}" == $'\x1e' ]]; then a=x; fi
+    [[ ! "${s}" =~ [[:space:]][A-Za-z0-9_.%-]*X{3} || "${s}" =~ [[:space:]]-[dq]*t ]] || a=x
+    _rm_set "${n}" "${a}"
+    return 0
+  fi
+  # shellcheck disable=SC2310 # _rm_cplx — условие
+  if _rm_cplx "${s}"; then
+    _rm_reset
+    return 0
+  fi
+  # shellcheck disable=SC2206 # голый word-splitting при set -f
+  w=(${s})
+  ((${#w[@]})) || return 0
+  # cd <абсолютный путь под /tmp или переменная под /tmp> — ровно два слова
+  if ((${#w[@]} == 2)) && [[ "${w[0]}" == cd ]]; then
+    _rm_head=false
+    # shellcheck disable=SC2310 # _rm_tmp — условие, а не проверка ошибки
+    if ! ${piped} && [[ "${w[1]//[\"\']/}" == [/\$]* ]] && _rm_tmp "${w[1]}" path; then
+      _rm_cwd=true
+    else
+      _rm_cwd=false
+    fi
+    return 0
+  fi
+  # Одни присваивания (возможно, после export) — значения по классу; после &&
+  # или в конвейере — x (присваивание могло не выполниться в этой оболочке).
+  a=0
+  [[ "${w[0]}" != export ]] || a=1
+  if ((${#w[@]} > a)); then
+    n=true
+    for ((i = a; i < ${#w[@]}; i++)); do
+      [[ "${w[i]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || {
+        n=false
+        break
+      }
+    done
+    if ${n}; then
+      for ((i = a; i < ${#w[@]}; i++)); do
+        [[ "${w[i]}" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]
+        n="${BASH_REMATCH[1]}"
+        if ${piped} || [[ "${pp}" == $'\x1e' ]]; then
+          _rm_set "${n}" x
+          continue
+        fi
+        _rm_vclass "${BASH_REMATCH[2]}"
+        _rm_set "${n}" "${_vc}"
+      done
+      return 0
+    fi
+  fi
+  _rm_spoil "${s}"
+}
+
+# _find_del <сегмент> — find с -delete или -exec/-execdir/-ok/-okdir, в команде
+# которого есть rm (и за обёрткой: sudo rm, env rm): _fd=true; блок, если
+# стартовый путь (без него — текущий каталог) не под /tmp. Пути первого find —
+# каждое голое слово вызова, кроме аргумента предиката (_fd_arg) и слов команды
+# -exec: bfs, которым find подменён в оболочке Claude Code, принимает путь в
+# любом месте выражения, после -f и после конца -exec на + (хвост после \; —
+# другой сегмент нарезки, не судится). {} у первого find — путь
+# (xargs -I{} find {}); -files0-from (пути из файла) — блок.
+_fd_arg='^-(i?l?name|i?path|i?wholename|i?regex|x?type|maxdepth|mindepth|[acmB](time|min)|used|[acB]?newer|newer[aBcmt][aBcmt]|samefile|size|perm|user|group|uid|gid|links|inum|fstype|context|printf|fprint0?|fls|regextype|D|S|limit|since|flags|xattrname)$'
+_find_del() {
+  local w i j f=() n h=-1 e=false b=false z=false p=()
+  _fd=false
+  # shellcheck disable=SC2206 # голый word-splitting при set -f, как у rm
+  w=($1)
+  for ((i = 0; i < ${#w[@]}; i++)); do
+    ((h >= 0)) || [[ "${w[i]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || h=${i}
+    _rm_unq "${w[i],,}"
+    _uq="${_uq%%[<>]*}"
+    [[ "${_uq}" == find || "${_uq}" == */find ]] || continue
+    if ((${#f[@]})); then
+      # find аргументом (-name find) — не команда; вложенный — после -exec
+      case "${w[i-1]}" in
+        -exec | -execdir | -ok | -okdir) ;;
+        *) continue ;;
+      esac
+    fi
+    f+=("${i}")
+  done
+  ((${#f[@]})) || return 0
+  for ((i = f[0] + 1; i < ${#w[@]}; i++)); do
+    _rm_unq "${w[i]}"
+    if ${e}; then
+      # команда -exec: до + сразу после {} или до конца сегмента (\; ';')
+      n="${w[i]//[\"\'\\]/}"
+      n="${n,,}"
+      [[ "${n}" != rm && "${n}" != */rm && "${_uq}" != -delete ]] || _fd=true
+      [[ "${w[i]}" != + ]] || ! ${b} || e=false
+      b=false
+      [[ "${w[i]}" != '{}' && "${w[i]}" != "'{}'" && "${w[i]}" != '"{}"' ]] || b=true
+      continue
+    fi
+    # редирект — не путь; оператор отдельным словом забирает и цель
+    if [[ "${_uq}" =~ ^[0-9]*(\<|\>|\&\>)(\>?)(.*)$ ]]; then
+      [[ -n "${BASH_REMATCH[3]}" ]] || i=$((i + 1))
+      continue
+    fi
+    case "${_uq}" in
+      -delete) _fd=true ;;
+      -exec | -execdir | -ok | -okdir) e=true ;;
+      -files0-from) z=true ;;
+      -f) ((++i < ${#w[@]})) && p+=("${w[i]}") ;;
+      -fprintf) i=$((i + 2)) ;;
+      -* | '(' | ')' | '!' | ',') [[ ! "${_uq}" =~ ${_fd_arg} ]] || i=$((i + 1)) ;;
+      *) p+=("${w[i]}") ;;
+    esac
+  done
+  ${_fd} || return 0
+  ! ${z} || block "удаление через find (-delete / -exec rm) вне /tmp"
+  # относительный путь — только если find первое слово сегмента
+  _rm_head=false
+  ((f[0] != h)) || _rm_head=true
+  for n in "${p[@]}"; do
+    # shellcheck disable=SC2310 # _rm_tmp — условие, а не проверка ошибки
+    _rm_tmp "${n}" path || block "удаление через find (-delete / -exec rm) вне /tmp"
+  done
+  # shellcheck disable=SC2310 # _rm_tmp — условие, а не проверка ошибки
+  ((${#p[@]})) || _rm_tmp . path || block "удаление через find (-delete / -exec rm) вне /tmp"
+  # вложенный find (-exec find … -delete): стартовые пути до первой опции
+  _rm_head=false
+  for i in "${f[@]:1}"; do
+    n=0
+    for ((j = i + 1; j < ${#w[@]}; j++)); do
+      case "${w[j]}" in
+        -H | -L | -P | -O* | --) ;;
+        -D) j=$((j + 1)) ;;
+        '{}' | "'{}'" | '"{}"')
+          # вложенный find по результатам внешнего: путь судят у внешнего
+          n=1
+          break
+          ;;
+        -* | '(' | '\(' | '!' | '\!' | ';' | '\;' | '+') break ;;
+        *)
+          n=1
+          # shellcheck disable=SC2310 # _rm_tmp — условие, а не проверка ошибки
+          _rm_tmp "${w[j]}" path || block "удаление через find (-delete / -exec rm) вне /tmp"
+          ;;
+      esac
+    done
+    # shellcheck disable=SC2310 # _rm_tmp — условие, а не проверка ошибки
+    ((n)) || _rm_tmp . path || block "удаление через find (-delete / -exec rm) вне /tmp"
+  done
+}
+_lc_was="${LC_ALL-__unset__}"
+LC_ALL=C
+# Учёт состояния нужен только правилам rm и find: в команде без этих букв (без
+# учёта регистра, кавычек и \) его не вести.
+_rm_x="${_code//[\"\'\\]/}"
+_rm_x="${_rm_x,,}"
+[[ "${_rm_x}" == *rm* || "${_rm_x}" == *find* ]] || _rm_reset
+# Управляющий байт, кроме \t и \n (\v \f \r для bash — не разделители слов, а
+# [[:space:]] регексов их пропускает; \x1c–\x1f в нарезке заменены буквой), —
+# вывода нет.
+_rm_cc=$'[\x01-\x08\x0b-\x1f\x7f]'
+# shellcheck disable=SC2053 # _rm_cc — шаблон
+[[ "${_code}" != *${_rm_cc}* ]] || _rm_reset
+_si=-1
 while IFS= read -r _seg; do
+  _si=$((_si + 1))
+  _rm_track "${_seg}"
+  _fd=false
+  _rm_x="${_seg//[\"\'\\]/}"
+  if [[ "${_rm_x}" == *[Ff][Ii][Nn][Dd]* ]] && [[ "${_rm_x}" == *-delete* || "${_rm_x}" == *-exec* || "${_rm_x}" == *-ok* ]]; then
+    _find_del "${_seg}"
+  fi
   if grep -qiE '\brm\b' <<< "${_seg}"; then
     _seen_rm=false
     _is_recursive=false
     _operand_seen=false
     _has_non_tmp_operand=false
     _opts_ended=false
+    _rm_rd=false
+    _rm_pb=false
     # Подкоманда git rm — не команда rm: git удаляет только отслеживаемые
     # файлы и без -f отказывает на изменённых (git rm -f судит правило git
     # ниже). Только если git (ровно, с учётом регистра) — первое слово
@@ -948,9 +1357,14 @@ while IFS= read -r _seg; do
     _rm_first=true
     _rm_q=0
     _rm_subst=false
+    # shellcheck disable=SC2206 # голый word-splitting при set -f
+    _rm_ws=(${_seg})
+    _rm_tn=${#_rm_ws[@]}
+    _rm_ti=0
     # shellcheck disable=SC2016 # '$(' и '`' — литералы для поиска
     if [[ "${_seg}" == *'$('* || "${_seg}" == *'`'* ]]; then _rm_subst=true; fi
     for _tok in ${_seg}; do
+      _rm_ti=$((_rm_ti + 1))
       # Lowercase — только для регистронезависимого опознания команды/флагов
       # (как и остальной файл, который матчит git/rm через grep -i).
       # Сравнение операнда с /tmp ниже идёт по ИСХОДНОМУ "${_tok}", не
@@ -982,8 +1396,17 @@ while IFS= read -r _seg; do
           esac
           continue
         fi
-        case "${_tok_lc}" in
-          rm|*/rm) _seen_rm=true ;;
+        _uq="${_tok_lc}"
+        # кавычки и \ у имени ('rm', \rm) — только первым словом команды:
+        # grep "rm" -rn — аргумент, а не команда
+        if ${_rm_first} && [[ "${_uq}" == *[\"\'\\]* ]]; then _rm_unq "${_uq}"; fi
+        # > или < вплотную к имени (rm>/dev/null) — не часть имени
+        _uq="${_uq%%[<>]*}"
+        case "${_uq}" in
+          rm|*/rm)
+            _seen_rm=true
+            _rm_head=${_rm_first}
+            ;;
           *)
             if ${_rm_first} && ! ${_rm_subst} && [[ "${_tok}" == git || "${_tok}" == */git ]]; then
               _rm_git=1
@@ -993,24 +1416,73 @@ while IFS= read -r _seg; do
         [[ "${_tok}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || _rm_first=false
         continue
       fi
-      if ! ${_opts_ended} && [[ "${_tok_lc}" = "--" ]]; then
+      # Редирект (2>/dev/null, > f, 2>&1) — не операнд; оператор отдельным
+      # словом забирает и следующее слово — цель.
+      if ${_rm_rd}; then
+        _rm_rd=false
+        [[ "${_tok}" != /dev/null ]] || continue
+      fi
+      if [[ "${_tok}" =~ ^[0-9]*(\>|\>\>|\&\>|\&\>\>)(/dev/null)?$ ]]; then
+        [[ -n "${BASH_REMATCH[2]}" ]] || _rm_rd=true
+        continue
+      fi
+      [[ ! "${_tok}" =~ ^[0-9]*\>\&[0-9]+-?$ ]] || continue
+      if ${_fd}; then
+        # хвост \; ';' ";" после нарезки по ; — последнее слово сегмента; + —
+        # конец -exec только сразу после {}
+        if [[ "${_tok}" == [\\\'\"] ]] && ((_rm_ti < _rm_tn)); then _tok="''"; fi
+        if [[ "${_tok}" == + ]] && ! ${_rm_pb}; then _tok="''"; fi
+        _rm_pb=false
+        case "${_tok}" in
+          '{}' | "'{}'" | '"{}"')
+            _operand_seen=true
+            _rm_pb=true
+            continue
+            ;;
+          '\;' | "';'" | '";"' | '+' | \\ | "'" | '"')
+            if ${_is_recursive} && { ${_has_non_tmp_operand} || ! ${_operand_seen}; }; then
+              block "рекурсивное удаление (rm -r/-rf/--recursive)"
+            fi
+            _seen_rm=false
+            _is_recursive=false
+            _operand_seen=false
+            _has_non_tmp_operand=false
+            _opts_ended=false
+            _rm_first=false
+            continue
+            ;;
+          *) ;;
+        esac
+      fi
+      _uq="${_tok_lc}"
+      [[ "${_uq}" != *[\"\'\\]* ]] || _rm_unq "${_uq}"
+      # конец опций — только -- целым словом ("\-\-" в bash — операнд \-\-)
+      if ! ${_opts_ended} && [[ "${_tok}" == -- || "${_tok}" == "'--'" || "${_tok}" == '"--"' ]]; then
         _opts_ended=true
         continue
       fi
-      if ! ${_opts_ended} && [[ "${_tok_lc#-}" != "${_tok_lc}" ]]; then
-        case "${_tok_lc}" in
-          --recursive) _is_recursive=true ;;
-          --*) ;;                     # прочие длинные опции не про рекурсию
+      # иное слово из -, кавычек и \ (\-\-, -""-) bash может свести к --: конец
+      # опций или операнд — хук не различает, и слово считается операндом вне /tmp
+      if ! ${_opts_ended} && [[ "${_tok}" == *[\"\'\\]* && "${_tok}" =~ ^[-\"\'\\]+$ ]]; then
+        _operand_seen=true
+        _has_non_tmp_operand=true
+        continue
+      fi
+      if ! ${_opts_ended} && [[ "${_uq#-}" != "${_uq}" ]]; then
+        case "${_uq}" in
+          --?*)
+            # --recursive и его однозначные сокращения (--recu): опция — префикс
+            # слова, не любое --r… (--rm из docker run — не рекурсия)
+            [[ "recursive" != "${_uq#--}"* ]] || _is_recursive=true
+            ;;
           *r*) _is_recursive=true ;;  # короткий кластер с 'r' (-r/-rf/-fr/-vr…)
           *) ;;
         esac
         continue
       fi
       _operand_seen=true
-      case "${_tok}" in
-        /tmp|/tmp/*) ;;
-        *) _has_non_tmp_operand=true ;;
-      esac
+      # shellcheck disable=SC2310 # _rm_tmp — условие, а не проверка ошибки
+      _rm_tmp "${_tok}" op || _has_non_tmp_operand=true
     done
     if ${_is_recursive} && { ${_has_non_tmp_operand} || ! ${_operand_seen}; }; then
       block "рекурсивное удаление (rm -r/-rf/--recursive)"
@@ -1111,6 +1583,7 @@ while IFS= read -r _seg; do
   fi
 done <<< "${_segments}"
 set +f
+if [[ "${_lc_was}" == __unset__ ]]; then unset LC_ALL; else LC_ALL="${_lc_was}"; fi
 
 # ---------------------------------------------------------------------------
 # git: потеря незакоммиченной работы, истории и remote.
