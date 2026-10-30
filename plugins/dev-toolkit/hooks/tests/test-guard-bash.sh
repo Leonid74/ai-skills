@@ -1407,6 +1407,15 @@ expect 0 'echo "$HOME"'
 expect 0 'echo $MAX_TOKENS'
 expect 0 'echo "$API_KEYS"'
 expect 0 'printenv DISABLE_TELEMETRY'
+# ревью PR #90: кавычки у имени printenv, продолжение аргументов в кавычках, & — граница, '…' — текст
+expect 2 'printenv "GH_TOKEN"'
+expect 2 "printenv 'GH_TOKEN'"
+expect 2 'echo "x; $GH_TOKEN"'
+expect 2 "printf '%s | %s\n' \"\$USER\" \"\$GH_TOKEN\""
+expect 2 'sleep 1 & printenv GH_TOKEN'
+expect 2 'echo $GH_TOKEN:+x'                                 # :+ без скобок — значение и текст
+expect 2 "echo \"it's \$GH_TOKEN 'x'\""                      # апостроф в "…" — не начало '…'
+expect 0 "echo 'export GH_TOKEN=\$GH_TOKEN' >> run.sh"
 # вложенный claude: блок только обхода разрешений
 expect 2 'claude -p "x" --dangerously-skip-permissions'
 expect 2 'claude --allow-dangerously-skip-permissions -p x'
@@ -1415,6 +1424,9 @@ expect 2 'claude -p x --permission-mode=bypassPermissions'
 expect 2 '( ulimit -v 2097152; timeout 300 claude -p "a; b" --permission-mode bypassPermissions </dev/null )'
 expect 2 "claude -p x --settings '{\"permissions\":{\"defaultMode\":\"bypassPermissions\"}}'"
 expect 2 'sid=$(timeout 100 claude -p x --dangerously-skip-permissions)'
+expect 2 'x=$(claude -p x --dangerously-skip-permissions)'   # слово x=$(claude
+expect 2 '/usr/local/bin/claude -p x --dangerously-skip-permissions'
+expect 2 'claude-code -p x --dangerously-skip-permissions'
 expect 0 'claude -p x --permission-mode acceptEdits --plugin-dir ./p'
 expect 0 'claude -p x --permission-mode default'
 expect 0 'CLAUDE_CONFIG_DIR=/tmp/c claude auto-mode config'
@@ -1450,8 +1462,37 @@ expect 0 'pkill -f statusline-tmux-ctx'
 expect 0 'systemctl --user status tmux.service'
 expect 0 'systemctl --user show tmux.service -p OOMPolicy'
 expect 0 "grep -n 'tmux kill-server' CLAUDE.md"
-expect 0 "grep -E 'tmux|pkill|killall|systemctl' f"
+expect 0 "grep -c 'tmux kill-server' CLAUDE.md"              # -c не у оболочки — слово в кавычках текст
+expect 0 "grep -E 'x|pkill tmux|y' f"                        # сегмент внутри кавычек шаблона — не pkill
 expect 0 "grep -E 'x|tmux kill-server|y' f"                 # сегмент внутри кавычек шаблона
+# ревью PR #90: позиция подкоманды, свой сокет только до неё, pkill — любой аргумент, & — граница
+expect 2 'tmux killw -t 1'
+expect 2 'tmux respawnp -k'
+expect 2 'tmux respawnw -k'
+expect 2 'tmux select-pane -L \; kill-server'                # -L подкоманды — не сокет
+expect 2 "tmux send-keys -t p 'tmux kill-server' Enter"      # клавиши набирают команду в живой панели
+expect 2 "sh -c 'true; tmux kill-server'"
+expect 2 "bash -e -c 'tmux kill-server'"
+expect 2 "bash --norc -c 'tmux kill-server'"
+expect 2 "eval 'tmux kill-server'"
+expect 2 "grep \"don't\" f; tmux kill-server; echo 'x'"     # апостроф в "…" — литерал
+expect 2 'pkill -f foo & tmux kill-server'
+expect 2 'systemctl status x & tmux kill-server'
+expect 2 'pkill -SIGKILL tmux'                               # -S<сигнал> у pkill — не сокет
+expect 2 'pkill --signal KILL tmux'
+expect 2 'killall -o 1h tmux'
+expect 2 "pkill '^tmux'"
+expect 2 'pkill /usr/bin/tmux'
+expect 0 'pkill -u tmux foo'                                 # значение -u — пользователь, не шаблон
+expect 0 'tmux new-window -n kill-logs'
+expect 0 'tmux -S /tmp/x/tmux kill-server'
+expect 0 'tmux -L t kill-session -t tmux'
+expect 0 'tmux -L t new -d \; kill-server'
+expect 0 'tmux -f kill-x.conf ls'                            # значение -f — не подкоманда
+expect 0 'tmux list-commands kill-session'
+expect 0 "tmux display-message -p 'kill-pane soon'"
+expect 0 'systemctl --user -p OOMPolicy show tmux.service'   # значение -p — не глагол
+expect 0 'systemctl --user status foo tmux.service'          # после глагола чтения — не глагол
 expect 0 $'cat > f.md <<\'EOF\'\nНе выполнять `tmux kill-server`.\nEOF'
 expect 0 'tmux list-sessions'
 expect 2 "tmux -L t kill-server # $(printf '%17000s' '' | tr ' ' x)"   # строка со словом tmux > 16 КБ — блок «разбейте»
@@ -1463,7 +1504,22 @@ expect 0 "rg -n 'TOKEN|printenv|x' src/"
 expect 0 'grep -c HOME\|ENV'                                 # ENV (BRE-альтернатива без кавычек) — не команда env
 expect 2 "echo 'a|b' | env"
 expect 2 "echo \"don't\" | env"
+expect 2 "echo \"don't\" | env | grep 'A'"                   # апостроф в "…" и поздняя '…' (ревью PR #90)
+expect 2 "echo \"it's\" | env | grep \"x's\""                # то же, кавычек чётно — не спасает fail-closed
 expect 2 "echo 'x' ; printenv"
+# строка оболочки (sh/bash -c, ssh, eval) — команды; строка, закрывающая многострочную '…', — без пропуска
+expect 2 "bash -c 'cd /x; env | sort'"
+expect 2 "bash -c 'cd /x; env'"
+expect 2 "ssh h 'cd /srv; printenv'"
+expect 2 "ssh prod 'cd /srv/app && docker compose config | grep DB'"
+expect 2 $'bash -c \'cd /app\nls\' ; env | grep \'A\''
+expect 2 "bash -c 'cd /x; env '"                             # одна кавычка после env — не аргумент
+expect 2 'echo \" ; env ; echo \"'                          # \" вне кавычек — литерал, не открывает "…"
+expect 2 'sleep 1 & printenv'                                # & — граница команды
+expect 0 "grep 'x & env'"                                    # & в кавычках — не граница
+expect 0 "python3 -c 'import sys; set'"                     # -c не оболочки — текст
+expect 0 "git log --format='%h & %s' | head"
+expect 0 'X="a&b" ls'
 expect 2 "grep -E 'a|env|b' f # $(printf '%9000s' '' | tr ' ' x)"   # строка > 8 КБ — без пропуска по кавычкам
 
 # --- регрессия существующих правил ---
