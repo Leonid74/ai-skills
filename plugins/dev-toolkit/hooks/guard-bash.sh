@@ -2651,7 +2651,8 @@ fi
 #   аргумент как команду tmux или клавиши (send-keys, if-shell,
 #   confirm-before, run-shell, bind-key, command-prompt, display-menu), — и в
 #   аргументах; слово tmux в аргументе (split-window 'tmux …') — вложенный
-#   вызов: снова позиция подкоманды и глобальных опций; имя окна kill-logs,
+#   вызов: снова позиция подкоманды и глобальных опций, его свой сокет не
+#   переходит на внешнюю цепочку после \;; имя окна kill-logs,
 #   путь сокета …/tmux — аргументы, не команда;
 # - pkill/killall: любой аргумент-не-опция — tmux (tmux:*, ^tmux*, …/tmux),
 #   и дальше в шаблоне нет своего сокета (pkill -f 'tmux -L t' — тестовый
@@ -2667,7 +2668,7 @@ fi
 # квадратично. Хук видит только прямые команды: скрипт-файл (инцидент 03.10) — нет.
 _ks_scan() {
   local -a raw=()
-  local r t m="" n c sc=0 sock=0 pend=0 pk=0 pa=0 sk=0 vb=0 sub=0 any=0 gv=0 keys=0
+  local r t m="" n c sc=0 sock=0 pend=0 pk=0 pa=0 sk=0 vb=0 sub=0 any=0 gv=0 keys=0 nest=0 ns=0 own
   read -ra raw <<< "$1"
   for r in "${raw[@]}" ""; do
     t="${r//[\"\'\\\`()\{\}]/}"
@@ -2701,32 +2702,39 @@ _ks_scan() {
       # Конец прежней команды: pkill/killall tmux без своего сокета.
       if ((pk && sock == 0)); then block "${m} tmux — остановка живого сервера tmux, где работает Claude"; fi
       m="${n}"
-      sock=0 pend=0 pk=0 pa=0 sk=0 vb=0 sub=0 any=0 gv=0 keys=0
+      sock=0 pend=0 pk=0 pa=0 sk=0 vb=0 sub=0 any=0 gv=0 keys=0 nest=0 ns=0
       continue
     fi
     [[ -n "${m}" ]] || continue
     case "${m}" in
       tmux)
+        # Свой сокет вложенного вызова (split-window 'tmux -L t …') — ns, он не
+        # переносится на внешнюю цепочку после \;; вложенный вызов наследует
+        # сокет внешнего (панель тестового сервера — его TMUX).
+        own=$((nest ? ns : sock))
+        # \; — следующая команда цепочки tmux: снова позиция подкоманды (и не
+        # значение -L/-S).
+        if [[ "${t}" == ";" ]]; then
+          sub=0 keys=0 nest=0 ns=0 pend=0 gv=0
+          continue
+        fi
         if ((pend)); then
           pend=0
-          if [[ "${t}" != default && "${t}" != */default ]]; then sock=1; fi
+          if [[ "${t}" != default && "${t}" != */default ]]; then
+            if ((nest)); then ns=1; else sock=1; fi
+          fi
           continue
         fi
         if ((gv)); then
           gv=0
           continue
         fi
-        # \; — следующая команда цепочки tmux: снова позиция подкоманды.
-        if [[ "${t}" == ";" ]]; then
-          sub=0 keys=0
-          continue
-        fi
         if ((sub)); then
           if [[ "${t}" == tmux || "${t}" == */tmux ]]; then
-            sub=0 keys=0 any=0
+            sub=0 keys=0 any=0 nest=1 ns=${sock}
             continue
           fi
-          if ((keys && sock == 0)); then
+          if ((keys && own == 0)); then
             case "${t}" in
               kill-?* | respawn-?* | killp | killw | respawnp | respawnw)
                 block "tmux … ${t} в аргументе подкоманды без своего сокета (-L/-S, не default) — остановка живого сервера tmux, где работает Claude"
@@ -2739,7 +2747,9 @@ _ks_scan() {
         case "${t}" in
           -L | -S) ((any)) || pend=1 ;;
           -L?* | -S?*)
-            if ((any == 0)) && [[ "${t:2}" != default && "${t:2}" != */default ]]; then sock=1; fi
+            if ((any == 0)) && [[ "${t:2}" != default && "${t:2}" != */default ]]; then
+              if ((nest)); then ns=1; else sock=1; fi
+            fi
             ;;
           -f | -c | -T) ((any)) || gv=1 ;;
           -*) ;;
@@ -2747,7 +2757,7 @@ _ks_scan() {
             sub=1 any=1
             case "${t}" in
               kill-?* | respawn-?* | killp | killw | respawnp | respawnw)
-                if ((sock == 0)); then
+                if ((own == 0)); then
                   block "tmux ${t} без своего сокета (-L/-S, не default) — остановка живого сервера tmux, где работает Claude"
                 fi
                 ;;

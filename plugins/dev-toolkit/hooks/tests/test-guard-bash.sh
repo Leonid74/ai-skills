@@ -1481,6 +1481,9 @@ expect 2 "tmux if-shell true kill-server"                   # аргумент �
 expect 2 "tmux confirm-before kill-server"
 expect 0 "tmux -L t split-window -d 'tmux kill-server'"
 expect 0 "tmux new-window 'tmux -Lt kill-server'"            # сокет вложенного вызова — его глобальная опция
+expect 2 "tmux split-window 'tmux -L x ls' \\; kill-server"  # …и не переносится на внешнюю цепочку
+expect 2 'tmux select-pane -t tmux -L \; kill-server'        # \; — не значение -L
+expect 2 'tmux select-pane -L -t 1 \; kill-server'           # -L подкоманды не берёт значение -t
 expect 2 "sh -c 'true; tmux kill-server'"
 expect 2 "bash -e -c 'tmux kill-server'"
 expect 2 "bash --norc -c 'tmux kill-server'"
