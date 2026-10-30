@@ -3010,6 +3010,66 @@ _env_tok_hit() {
   return 0
 }
 
+# Запись в пути автозапуска кода (2.20.0, Ф3): .git/hooks любого репозитория,
+# ~/.gitconfig, ~/.config/git/config и rc-файлы оболочки. Классы — только те,
+# куда в корпусе команд владельца нет ни одной рабочей записи (настройки
+# Claude, кэш плагина, ~/.ssh, прочий .git — есть, они вне правила: TODO.md).
+# Писатели — цель редиректа записи, cp/mv/ln/install (цель), tee, sed -i;
+# разбор — токены лексера в цикле правила .env, без своей нарезки.
+_f3_msg="запись из Bash в путь автозапуска кода (.git/hooks, ~/.gitconfig, rc-файлы оболочки) — только командой владельца !"
+
+# _f3_path <путь без кавычек> — _f3_res=true, если путь из класса Ф3
+# (результат в переменной, как у _env_tok_hit). Дом — ~, $HOME, ${HOME} или
+# значение HOME хука префиксом (не регексом: точка в пути дома — не маска).
+# Литерал под /tmp — не класс (фикстуры тестов); с компонентом .. — не под
+# /tmp (как в правиле rm). .git/hooks в пути через переменную или подстановку
+# ($T/.git/hooks — фикстура mktemp) — не класс: значение не видно, а
+# фикстуры так и пишут (принятое ограничение, как у пути через переменную);
+# якорь дома ($HOME/…, ${HOME}/…) переменной здесь не считается.
+_f3_path() {
+  local p="$1" r="" q="$1"
+  _f3_res=false
+  case "${p}" in
+    /tmp/.. | /tmp/../* | /tmp/*/.. | /tmp/*/../*) ;;
+    /tmp | /tmp/*) return 0 ;;
+    *) ;;
+  esac
+  # shellcheck disable=SC2016 # '$HOME/' — литерал из текста команды
+  case "${p}" in
+    '$HOME/'* | '${HOME}/'*) q="${p#*/}" ;;
+    *) ;;
+  esac
+  if [[ "${q}" != *'$'* && "${p}" =~ (^|/)\.git/hooks(/|$) ]]; then
+    _f3_res=true
+    return 0
+  fi
+  # shellcheck disable=SC2016,SC2088 # '~/', '$HOME' — литералы из текста команды
+  case "${p}" in
+    '~/'*) r="${p:2}" ;;
+    '$HOME/'*) r="${p:6}" ;;
+    '${HOME}/'*) r="${p:8}" ;;
+    *) if [[ -n "${HOME:-}" && "${p}" == "${HOME}/"* ]]; then r="${p:${#HOME}+1}"; fi ;;
+  esac
+  case "${r}" in
+    .gitconfig | .config/git/config | .bashrc | .bash_profile | .bash_login | .bash_logout | .profile | .zshrc | .zprofile | .zshenv | .zlogin | .zlogout) _f3_res=true ;;
+    *) ;;
+  esac
+  return 0
+}
+
+# Предфильтр: без подстроки класса в тексте (кавычки и \ сняты) правило не
+# запускается — иначе _env_unquote шёл бы по каждому токену каждой команды.
+# Команда длиннее _LX_MAX лексером не разбиралась — правило её не судит, и
+# замена по всей строке не нужна (на мегабайте она стоила десятки секунд).
+_f3_on=false
+if ! ${_lx_big}; then
+  _f3_x="${_scmd//[\"\'\\]/}"
+  case "${_f3_x}" in
+    *.git/hooks* | *.gitconfig* | *.config/git* | *.bashrc* | *.bash_profile* | *.bash_login* | *.bash_logout* | *.profile* | *.zshrc* | *.zprofile* | *.zshenv* | *.zlogin* | *.zlogout*) _f3_on=true ;;
+    *) ;;
+  esac
+fi
+
 # Локаль C на весь цикл, а не local в функциях: local LC_ALL вызывает
 # setlocale на каждом входе и выходе, и на сотнях токенов это секунды.
 # После цикла идёт только exit — восстанавливать локаль не нужно.
@@ -3025,6 +3085,115 @@ for _s in "${!_lx_from[@]}"; do
   _classify_seg "${_s}"
   _from=${_lx_from[_s]}
   _to=$((_from + _lx_cnt[_s]))
+  if ${_f3_on}; then
+    # Ф3: цель редиректа записи — у любой команды (и у allowlist правила
+    # .env); операнды — только у писателей, после имени команды. Обёртка
+    # (sudo cp …) — не писатель: принятое ограничение.
+    _f3_cmd=false
+    case "${_sc_c0}" in
+      cp | mv | ln | install | tee | sed) _f3_cmd=true ;;
+      *) ;;
+    esac
+    _f3_ops=()
+    _f3_t=""
+    _f3_sedi=false
+    _f3_scr=false
+    _f3_skip=false
+    _f3_np=false
+    for ((_j = _from; _j < _to; _j++)); do
+      _t="${_lx_tk[_j]}"
+      if [[ "${_t:0:1}" == "o" ]]; then
+        # Оператор с > — запись (>, >>, >|, &>, N>, <>), следующий токен —
+        # её цель; иначе (<, <<, <<<) следующий токен — не операнд.
+        if [[ "${_t:1}" == *'>'* ]]; then _f3_np=true; else _j=$((_j + 1)); fi
+        continue
+      fi
+      # Кавычки снимаются только у цели редиректа и слов писателя после его
+      # имени: у прочих слов результат не нужен, а цикл .env снимет их сам.
+      if ! ${_f3_np}; then
+        ${_f3_cmd} || continue
+        ((_j > _sc_ci)) || continue
+      fi
+      _env_unquote "${_t:1}"
+      if ${_f3_np}; then
+        _f3_np=false
+        _f3_path "${_tu}"
+        ! ${_f3_res} || block "${_f3_msg}"
+        continue
+      fi
+      if ${_f3_skip}; then
+        # Значение опции отдельным словом — не операнд.
+        _f3_skip=false
+        continue
+      fi
+      # Опции — как их читает GNU getopt: long — по однозначному префиксу
+      # (--target-dir, --in), короткие — кластером до первой буквы со значением
+      # (значение — остаток слова или следующее слово).
+      case "${_tu}" in
+        --) ;;
+        --?*)
+          _f3_n="${_tu#--}"
+          _f3_n="${_f3_n%%=*}"
+          if [[ "${_sc_c0}" == sed ]]; then
+            if [[ in-place == "${_f3_n}"* ]]; then
+              _f3_sedi=true
+            elif [[ expression == "${_f3_n}"* || file == "${_f3_n}"* || line-length == "${_f3_n}"* ]]; then
+              [[ line-length == "${_f3_n}"* ]] || _f3_scr=true
+              [[ "${_tu}" == *=* ]] || _f3_skip=true
+            fi
+          elif [[ target-directory == "${_f3_n}"* ]]; then
+            if [[ "${_tu}" == *=* ]]; then _f3_t="${_tu#*=}"; else _f3_t=next; fi
+          elif [[ suffix == "${_f3_n}"* || mode == "${_f3_n}"* || owner == "${_f3_n}"* || group == "${_f3_n}"* ]]; then
+            [[ "${_tu}" == *=* ]] || _f3_skip=true
+          fi
+          ;;
+        -?*)
+          _f3_w="${_tu#-}"
+          if [[ "${_sc_c0}" == sed ]]; then
+            # -i (суффикс — остаток слова), -e/-f (скрипт), -l (число).
+            _f3_k="${_f3_w%%[efil]*}"
+          else
+            # -t (каталог), -S (суффикс), у install ещё -m/-o/-g.
+            _f3_k="${_f3_w%%[tSmog]*}"
+          fi
+          _f3_c="${_f3_w:${#_f3_k}:1}"
+          _f3_r="${_f3_w:${#_f3_k}+1}"
+          case "${_f3_c}" in
+            i) _f3_sedi=true ;;
+            e | f)
+              _f3_scr=true
+              [[ -n "${_f3_r}" ]] || _f3_skip=true
+              ;;
+            t) if [[ -n "${_f3_r}" ]]; then _f3_t="${_f3_r}"; else _f3_t=next; fi ;;
+            l | S | m | o | g) [[ -n "${_f3_r}" ]] || _f3_skip=true ;;
+            *) ;;
+          esac
+          ;;
+        *) if [[ "${_f3_t}" == next ]]; then _f3_t="${_tu}"; else _f3_ops+=("${_tu}"); fi ;;
+      esac
+    done
+    # Скрипт sed без -e/-f — первый операнд, не файл.
+    if [[ "${_sc_c0}" == sed ]] && ! ${_f3_scr} && ((${#_f3_ops[@]} > 0)); then
+      _f3_ops=("${_f3_ops[@]:1}")
+    fi
+    _f3_chk=()
+    case "${_sc_c0}" in
+      cp | mv | ln | install)
+        if [[ -n "${_f3_t}" && "${_f3_t}" != next ]]; then
+          _f3_chk=("${_f3_t}")
+        elif ((${#_f3_ops[@]} >= 2)); then
+          _f3_chk=("${_f3_ops[-1]}")
+        fi
+        ;;
+      sed) if ${_f3_sedi}; then _f3_chk=("${_f3_ops[@]}"); fi ;;
+      tee) _f3_chk=("${_f3_ops[@]}") ;;
+      *) ;;
+    esac
+    for _f3_o in "${_f3_chk[@]}"; do
+      _f3_path "${_f3_o}"
+      ! ${_f3_res} || block "${_f3_msg}"
+    done
+  fi
   _env_hit=false
   _next_path=false
   for ((_j = _from; _j < _to; _j++)); do
