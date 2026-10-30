@@ -1638,6 +1638,12 @@ expect 0 'D=/tmp/fx; mkdir -p $D/.git/hooks && cp h $D/.git/hooks/pre-commit'
 expect 2 'echo x >> ~/.zlogin'
 expect 2 'cp x ~/.bash_logout'
 expect 2 'echo x | tee ~/.zlogout'
+expect 2 'cp x $HOME/proj/.git/hooks/pre-commit'             # якорь дома — не «путь через переменную»
+expect 2 'cp hook "${HOME}/proj/.git/hooks/pre-commit"'
+expect 0 'cp x "$PWD/.git/hooks/pre-commit"'                 # прочая переменная — не судится (TODO.md)
+expect 2 'cat x >| ~/.bashrc'
+expect 2 'cat x 1<> ~/.bashrc'
+expect 0 'sed -n 1,5p ~/.bashrc'
 
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'
