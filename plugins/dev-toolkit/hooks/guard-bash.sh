@@ -2439,7 +2439,8 @@ _qscan() {
         ;;
       $'\x1f' | $'\x1d')
         len=$((len + 1))
-        if [[ "${tok}" == $'\x1d' ]] && ((q && !sh)); then
+        # & в кавычках (не строки оболочки) и \& — литерал, не граница.
+        if [[ "${tok}" == $'\x1d' ]] && ((esc || (q && !sh))); then
           cur+="&"
           esc=0
           continue
@@ -2467,6 +2468,7 @@ _qscan() {
         elif [[ (${q} -eq 1 && "${tok}" == \') || (${q} -eq 2 && "${tok}" == \") ]]; then
           q=0 sh=0
           pre+="Q"
+          if ((${#pre} > 512)); then pre="${pre: -256}"; fi
         fi
         ;;
       *)
@@ -2570,8 +2572,14 @@ for ((_ek = 0; _ek < ${#_qs_seg[@]}; _ek++)); do
       done
       ;;
     echo | printf)
+      # Куски '…' — текст ($ не раскрывается): echo 'export T=$T' | tee f —
+      # не вывод значения; "…" (с \" внутри) — целиком, апостроф в нём — литерал.
+      _ea="${_eargs[*]}"
+      if [[ "${_ea}" == *\'* && "${_ea}" == *"\$"* ]]; then
+        _ea="$(sed -zE "s/(\"([^\"\\\\]|\\\\.)*\")|'[^']*'/\\1/g" <<< "${_ea}")"
+      fi
       # shellcheck disable=SC2310 # функция — условие, а не проверка ошибки
-      if [[ "${_eargs[*]}" == *"\$"* ]] && _sec_ref "${_eargs[*]}"; then
+      if [[ "${_ea}" == *"\$"* ]] && _sec_ref "${_ea}"; then
         block "вывод значения секретной переменной (${_c0r} \$ИМЯ) — значение попало бы в транскрипт; наличие — [ -n \"\$ИМЯ\" ], длина — \${#ИМЯ}"
       fi
       ;;
@@ -2639,9 +2647,12 @@ fi
 # (2.19.0; инциденты 03.10, 10.10). Один проход по словам с состоянием:
 # - tmux: подкоманда kill-*/respawn-*/killp/killw/respawnp/respawnw без своего
 #   сокета — только на позиции подкоманды (первое слово-не-опция после
-#   глобальных опций и после \; цепочки; у send-keys — и в её аргументах:
-#   клавиши набирают команду в панели живого сервера); имя окна kill-logs,
-#   путь сокета …/tmux и -t tmux — аргументы, не команда;
+#   глобальных опций и после \; цепочки); у подкоманд, исполняющих свой
+#   аргумент как команду tmux или клавиши (send-keys, if-shell,
+#   confirm-before, run-shell, bind-key, command-prompt, display-menu), — и в
+#   аргументах; слово tmux в аргументе (split-window 'tmux …') — вложенный
+#   вызов: снова позиция подкоманды и глобальных опций; имя окна kill-logs,
+#   путь сокета …/tmux — аргументы, не команда;
 # - pkill/killall: любой аргумент-не-опция — tmux (tmux:*, ^tmux*, …/tmux),
 #   и дальше в шаблоне нет своего сокета (pkill -f 'tmux -L t' — тестовый
 #   сервер); -S<сигнал> у pkill — опция, а не сокет;
@@ -2711,10 +2722,14 @@ _ks_scan() {
           continue
         fi
         if ((sub)); then
+          if [[ "${t}" == tmux || "${t}" == */tmux ]]; then
+            sub=0 keys=0 any=0
+            continue
+          fi
           if ((keys && sock == 0)); then
             case "${t}" in
               kill-?* | respawn-?* | killp | killw | respawnp | respawnw)
-                block "tmux send-keys … ${t} без своего сокета (-L/-S, не default) — остановка живого сервера tmux, где работает Claude"
+                block "tmux … ${t} в аргументе подкоманды без своего сокета (-L/-S, не default) — остановка живого сервера tmux, где работает Claude"
                 ;;
               *) ;;
             esac
@@ -2736,7 +2751,7 @@ _ks_scan() {
                   block "tmux ${t} без своего сокета (-L/-S, не default) — остановка живого сервера tmux, где работает Claude"
                 fi
                 ;;
-              send-keys | send) keys=1 ;;
+              send-keys | send | if-shell | if | confirm-before | confirm | run-shell | run | bind-key | bind | command-prompt | display-menu | menu) keys=1 ;;
               *) ;;
             esac
             ;;

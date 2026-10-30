@@ -1416,6 +1416,11 @@ expect 2 'sleep 1 & printenv GH_TOKEN'
 expect 2 'echo $GH_TOKEN:+x'                                 # :+ без скобок — значение и текст
 expect 2 "echo \"it's \$GH_TOKEN 'x'\""                      # апостроф в "…" — не начало '…'
 expect 0 "echo 'export GH_TOKEN=\$GH_TOKEN' >> run.sh"
+expect 0 "echo 'export GH_TOKEN=\$GH_TOKEN # .env' >> run.sh" # шаблон сообщений: '…' — текст сообщения
+expect 0 "echo 'export GH_TOKEN=\$GH_TOKEN' | tee -a run.sh"  # '…' в конвейере — текст
+expect 0 "cd /x && printf 'T=\$GH_TOKEN\n' >> f"
+expect 2 "echo \"\$GH_TOKEN\" | tee x"
+expect 2 "cd /x && echo \"a \\\" 'b \$GH_TOKEN' c\""           # \" в "…" — не конец; '…' внутри "…" — не текст
 # вложенный claude: блок только обхода разрешений
 expect 2 'claude -p "x" --dangerously-skip-permissions'
 expect 2 'claude --allow-dangerously-skip-permissions -p x'
@@ -1471,6 +1476,11 @@ expect 2 'tmux respawnp -k'
 expect 2 'tmux respawnw -k'
 expect 2 'tmux select-pane -L \; kill-server'                # -L подкоманды — не сокет
 expect 2 "tmux send-keys -t p 'tmux kill-server' Enter"      # клавиши набирают команду в живой панели
+expect 2 "tmux split-window -d 'tmux kill-server'"          # вложенный tmux в строке команды
+expect 2 "tmux if-shell true kill-server"                   # аргумент — команда tmux
+expect 2 "tmux confirm-before kill-server"
+expect 0 "tmux -L t split-window -d 'tmux kill-server'"
+expect 0 "tmux new-window 'tmux -Lt kill-server'"            # сокет вложенного вызова — его глобальная опция
 expect 2 "sh -c 'true; tmux kill-server'"
 expect 2 "bash -e -c 'tmux kill-server'"
 expect 2 "bash --norc -c 'tmux kill-server'"
@@ -1518,8 +1528,14 @@ expect 2 'echo \" ; env ; echo \"'                          # \" вне кавы
 expect 2 'sleep 1 & printenv'                                # & — граница команды
 expect 0 "grep 'x & env'"                                    # & в кавычках — не граница
 expect 0 "python3 -c 'import sys; set'"                     # -c не оболочки — текст
-expect 0 "git log --format='%h & %s' | head"
-expect 0 'X="a&b" ls'
+expect 0 'echo a \& set'                                     # \& — литерал, не граница
+# время: 40 000 соседних кусков '…' — разбор кавычек линейный (хвост префикса без потолка был квадратичен)
+_t0=${SECONDS}
+expect 0 "echo $(printf "'a'%.0s" {1..40000})"
+if ((SECONDS - _t0 > 20)); then
+  _fail=$((_fail + 1))
+  printf 'FAIL: 40 000 кусков в кавычках — %s с (порог 20 с)\n' "$((SECONDS - _t0))"
+fi
 expect 2 "grep -E 'a|env|b' f # $(printf '%9000s' '' | tr ' ' x)"   # строка > 8 КБ — без пропуска по кавычкам
 
 # --- регрессия существующих правил ---
