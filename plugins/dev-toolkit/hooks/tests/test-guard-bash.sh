@@ -1541,6 +1541,62 @@ if ((SECONDS - _t0 > 20)); then
 fi
 expect 2 "grep -E 'a|env|b' f # $(printf '%9000s' '' | tr ' ' x)"   # строка > 8 КБ — без пропуска по кавычкам
 
+# --- Ф3 (2.20.0): запись из Bash в пути автозапуска кода (блок) ---
+# Классы — .git/hooks, ~/.gitconfig, ~/.config/git/config, rc-файлы оболочки: в
+# корпусе команд владельца рабочих записей туда нет ни одной.
+expect 2 'cp scripts/pre-commit .git/hooks/pre-commit'
+expect 2 'ln -s ../../scripts/pre-push .git/hooks/pre-push'
+expect 2 'ln -sf ../../scripts/h .git/hooks/pre-commit'
+expect 2 "printf '#!/bin/sh\nexit 0\n' > .git/hooks/pre-commit"
+expect 2 $'cat > .git/hooks/pre-commit <<\'EOF\'\nexit 0\nEOF'
+expect 2 "cp x '.git/hooks/pre-commit'"                     # кавычки сняты по правилам bash
+expect 2 'cp -t .git/hooks pre-commit'
+expect 2 'cp --target-directory=.git/hooks pre-commit'
+expect 2 'cd repo && cp h ../repo/.git/hooks/post-checkout'  # .git/hooks в любом месте пути
+expect 2 "sed -i.bak -e 's/a/b/' .git/hooks/pre-push"
+expect 2 "echo 'alias ll=ls' >> ~/.bashrc"
+expect 2 'cat x >> "$HOME/.profile"'
+expect 2 'cat x &> ${HOME}/.bash_profile'
+expect 2 'cp x ~/.bash_login'
+expect 2 "cp x ${HOME}/.bashrc"                             # значение HOME хука литералом
+expect 2 'cp x "$HOME/.bashrc"'
+expect 2 "sed -i 's/a/b/' ~/.gitconfig"
+expect 2 "sed -Ei 's/a/b/' ~/.bashrc"
+expect 2 "sed --in-place 's/a/b/' ~/.zprofile"
+expect 2 'mv /tmp/x/cfg ~/.gitconfig'
+expect 2 'install -m 644 cfg ~/.config/git/config'
+expect 2 'echo x | tee ~/.zshrc'
+expect 2 'echo x | tee -a /tmp/log ~/.zshenv'
+expect 2 'ls > ~/.bashrc'                                   # редирект у allowlist правила .env — тоже запись
+expect 2 'git status >> .git/hooks/pre-commit'
+expect 2 'test -f x 2> ~/.profile'
+
+# --- Ф3: чтение, фикстуры под /tmp и классы вне правила (пропуск) ---
+expect 0 'ls .git/hooks'
+expect 0 'ls ~/.bashrc'
+expect 0 'cat ~/.bashrc'
+expect 0 'grep -n PATH ~/.bashrc ~/.profile'
+expect 0 'grep -n PATH 2>&1 ~/.bashrc'
+expect 0 'grep -n PATH >&2 ~/.bashrc'
+expect 0 'cat ~/.bashrc >/dev/null 2>&1'
+expect 0 'diff <(sort ~/.bashrc) /tmp/x'
+expect 0 'diff ~/.bashrc /tmp/x 2>/dev/null'
+expect 0 "sed -n '/PATH/p' ~/.profile"
+expect 0 "sed -E 's/x/y/' ~/.bashrc"                         # sed без -i — не запись
+expect 0 "sed -i 's/a/b/' f < ~/.bashrc"                     # цель < — чтение, не операнд
+expect 0 'git config core.hooksPath'
+expect 0 'cp .git/hooks/pre-commit.sample /tmp/x/'          # источник не судится
+expect 0 'cp ~/.gitconfig /tmp/backup.gitconfig'
+expect 0 'cp -i ~/.bashrc /tmp/b'
+expect 0 "printf 'x' > /tmp/t/repo/.git/hooks/pre-commit"   # фикстура под /tmp
+expect 0 'cp -p ~/.tmux.conf ./.tmux.conf'
+expect 0 "echo 'x' | tee -a .husky/pre-commit"              # .husky, .githooks — вне правила (TODO.md)
+expect 0 'install -m 755 hook .githooks/commit-msg'
+expect 0 'echo x >> ~/.ssh/known_hosts'                     # ~/.ssh — рабочие записи в корпусе
+expect 0 'cp a .claude/settings.local.json'                 # настройки Claude — рабочие записи в корпусе
+expect 0 'printf x > .git/config'                           # прочий .git — вне правила (фикстуры 4554, 14167)
+expect 0 'git commit -m "запись в ~/.bashrc и .git/hooks/pre-commit"'
+
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'
 expect 0 'rm -rf /tmp/x'
