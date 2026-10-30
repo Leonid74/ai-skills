@@ -1379,6 +1379,93 @@ if ((SECONDS - _t0 > 15)); then
   printf 'FAIL: разбор 2 000 слов gh — %s с (порог 15 с)\n' "$((SECONDS - _t0))"
 fi
 
+# --- Ф2b (2.19.0): секреты и среда ---
+# №35: хвост имени не ровно s — счётчики, не секреты (решение владельца 30.10: и passwords=/api_keys=)
+expect 0 "jq -n '{usage:{input_${_tok}s:10,output_${_tok}s:500}}'"
+expect 0 "jq -n '{a_${_tok}s:12345678}'"
+expect 0 "echo max_${_tok}s=12345678"
+expect 0 "python3 -c '${_tok}s = sys.argv[1:]'"
+expect 0 "${_pw}s=hunter2hunter2 ./x"
+expect 2 "${_tok}s_url=abcdefgh1234 ./x"                  # хвост s… — секретное имя
+expect 2 "access_${_tok}=abcdefgh1234 ./x"
+# значение секретной переменной: printenv <имя>, echo/printf со ссылкой (и одиночная команда — мимо шаблона)
+expect 2 'echo "$GH_TOKEN"'
+expect 2 'echo $API_KEY'
+expect 2 'printf "%s\n" "${DB_PASSWORD}"'
+expect 2 'cd /tmp && echo "$GH_TOKEN"'
+expect 2 'echo "$GH_TOKEN" > /tmp/t.txt'
+expect 2 'echo "${GH_TOKEN:0:4}"'
+expect 2 'echo "${DB_PASSWORD:-none}"'
+expect 2 'echo "$TOKENS_KEY"'
+expect 2 'printenv GH_TOKEN'
+expect 2 'printenv -0 ANTHROPIC_API_KEY'
+expect 0 'echo "${#GH_TOKEN}"'
+expect 0 'echo "${GH_TOKEN:+set}"'
+expect 0 'echo "${GH_TOKEN+set}"'
+expect 0 'echo "\$GH_TOKEN"'
+expect 0 'echo "$HOME"'
+expect 0 'echo $MAX_TOKENS'
+expect 0 'echo "$API_KEYS"'
+expect 0 'printenv DISABLE_TELEMETRY'
+# вложенный claude: блок только обхода разрешений
+expect 2 'claude -p "x" --dangerously-skip-permissions'
+expect 2 'claude --allow-dangerously-skip-permissions -p x'
+expect 2 'claude -p x --permission-mode bypassPermissions'
+expect 2 'claude -p x --permission-mode=bypassPermissions'
+expect 2 '( ulimit -v 2097152; timeout 300 claude -p "a; b" --permission-mode bypassPermissions </dev/null )'
+expect 2 "claude -p x --settings '{\"permissions\":{\"defaultMode\":\"bypassPermissions\"}}'"
+expect 2 'sid=$(timeout 100 claude -p x --dangerously-skip-permissions)'
+expect 0 'claude -p x --permission-mode acceptEdits --plugin-dir ./p'
+expect 0 'claude -p x --permission-mode default'
+expect 0 'CLAUDE_CONFIG_DIR=/tmp/c claude auto-mode config'
+expect 0 'claude -p x --setting-sources local --settings s.json --allowedTools Read'
+expect 0 'claude config list | grep disableBypassPermissionsMode'      # буква перед bypass — не режим
+expect 0 'grep -rn bypassPermissions docs/'
+expect 0 'git commit -m "docs: claude --dangerously-skip-permissions — блок"'
+# tmux: остановка живого сервера; свой сокет -L/-S (не default) — исключение
+expect 2 'tmux kill-server'
+expect 2 'tmux kill-session -t main'
+expect 2 'tmux killp -t 1'
+expect 2 'tmux respawn-pane -k'
+expect 2 'timeout 5 tmux kill-server'
+expect 2 'x=$(tmux kill-window)'
+expect 2 'tmux -L default kill-server'
+expect 2 'tmux -Ldefault kill-server'
+expect 2 'tmux -S /tmp/tmux-1001/default kill-server'
+expect 2 'tmux new -d \; kill-server'
+expect 2 "bash -c 'tmux kill-server'"
+expect 2 'pkill tmux'
+expect 2 'killall -9 tmux'
+expect 2 'pkill -f "tmux: server"'
+expect 2 'pkill -u yondu tmux'
+expect 2 'systemctl --user stop tmux.service'
+expect 2 'systemctl --user restart tmux'
+expect 2 'systemctl --user set-property tmux.service X=1'
+expect 0 'env -u TMUX -u TMUX_PANE TMUX_TMPDIR=/tmp/x tmux -L t -f /dev/null kill-server'
+expect 0 'tmux -L test kill-server'
+expect 0 'tmux -S /tmp/x/sock kill-session -t a'
+expect 0 'tmux -Ltest kill-server'
+expect 0 'pkill -f "tmux -L t"'
+expect 0 'pkill -f statusline-tmux-ctx'
+expect 0 'systemctl --user status tmux.service'
+expect 0 'systemctl --user show tmux.service -p OOMPolicy'
+expect 0 "grep -n 'tmux kill-server' CLAUDE.md"
+expect 0 "grep -E 'tmux|pkill|killall|systemctl' f"
+expect 0 "grep -E 'x|tmux kill-server|y' f"                 # сегмент внутри кавычек шаблона
+expect 0 $'cat > f.md <<\'EOF\'\nНе выполнять `tmux kill-server`.\nEOF'
+expect 0 'tmux list-sessions'
+expect 2 "tmux -L t kill-server # $(printf '%17000s' '' | tr ' ' x)"   # строка со словом tmux > 16 КБ — блок «разбейте»
+# правило вывода окружения: | внутри кавычек шаблона и регистр — не команда
+expect 0 "grep -E 'a|env|b' f"
+expect 0 'grep -E "a|ENV|b" f'
+expect 0 "grep -E 'x|printenv|export|set|declare' f"
+expect 0 "rg -n 'TOKEN|printenv|x' src/"
+expect 0 'grep -c HOME\|ENV'                                 # ENV (BRE-альтернатива без кавычек) — не команда env
+expect 2 "echo 'a|b' | env"
+expect 2 "echo \"don't\" | env"
+expect 2 "echo 'x' ; printenv"
+expect 2 "grep -E 'a|env|b' f # $(printf '%9000s' '' | tr ' ' x)"   # строка > 8 КБ — без пропуска по кавычкам
+
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'
 expect 0 'rm -rf /tmp/x'
