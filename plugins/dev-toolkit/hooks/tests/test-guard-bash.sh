@@ -1264,6 +1264,102 @@ expect 0 'gh pr diff 5 -eREADME'                           # №4 [б]
 expect 0 'gh pr list -Sfew'
 expect 0 'gh auth status'
 expect 0 'gh pr checks 5 --watch'
+# --- Ф2a: правки по ревью PR #89 (xhigh) ---
+# присваивания судятся один раз на слово (курсор); захват вывода git/gh в переменную — не окружение git
+expect 0 'GIT_SHA=$(git rev-parse HEAD) GIT_BR=$(git branch --show-current) && echo "$GIT_SHA"'
+expect 0 'docker build --build-arg GIT_SHA=$(git rev-parse HEAD) --build-arg GIT_BRANCH=$(git branch --show-current) .'
+expect 0 'export GIT_SHA=$(git rev-parse --short HEAD)'
+expect 0 'export GIT_SHA="$(git rev-parse --short HEAD)"; echo "$GIT_SHA"'
+expect 0 'export GH_LOGIN=`gh api user --jq .login`'
+expect 2 'export HOME=$(mktemp -d); git init -q'
+expect 2 'GIT_DIR=$(pwd)/x git status'
+expect 2 'git status; GIT_DIR=/tmp/x git log'                     # присваивание между двумя git
+expect 2 'git status && x=1 GIT_DIR=/tmp/x git log'
+expect 2 'git -C /r status 2>&1 GIT_DIR=/tmp/x git log'
+expect 2 'GIT_DIR=/tmp/x git-upload-pack /r'                      # ветка git-<подкоманда>
+expect 0 'GIT_PAGER=cat git-log -1'
+expect 2 'export GH_HOST=e.com; gh pr list'                       # export перед gh
+expect 2 'typeset -x GIT_DIR=/tmp/x; git status'
+expect 0 'GIT_PAGER="cat" git log -1'                             # значение в кавычках
+expect 0 "GIT_EDITOR='true' git commit -q --amend"
+# gh в кавычках — шаблон поиска, кроме bash -c
+expect 0 "grep -n 'gh auth token' README.md"
+expect 0 'rg -n "gh browse" plugins/'
+expect 0 "gh pr view 89 --json body -q .body | grep -n 'gh browse'"
+expect 0 'echo "gh browse" | wc -c'
+expect 2 'T=$(gh auth token)'
+expect 2 'T="$(gh auth token)"'
+expect 2 'bash -c "gh auth token"'
+expect 2 "bash -lc 'gh browse'"
+expect 2 '/usr/bin/gh browse'
+# текст в кавычках у gh — не флаги (кроме подстановки)
+expect 0 "gh pr close 5 -c 'дубль, см. gh browse и -w'"
+expect 0 "gh issue close 5 --comment 'закрыто: gh auth token не нужен'"
+expect 0 "gh pr review 5 --approve --body 'проверь -w и gh api -X PATCH'"
+expect 0 "gh release create v1 --notes 'gh browse --web'"
+expect 0 "gh pr edit 89 --body 'цена \$5 и gh browse'"
+expect 0 'gh pr comment 89 --body "см. $HOME и -w"'
+expect 0 "gh pr create --title t --body='цена \$5, флаг -w'"
+expect 0 'gh pr close 5 -c "don'"'"'t use -w here"'
+expect 2 "gh pr close 5 -c 'x y' -w"
+expect 2 "gh pr view 5 --jq '.a | .b' --web"
+expect 2 'gh pr comment 5 --body "$(gh auth token)"'
+expect 2 'gh pr comment 5 --body "`gh browse` x"'
+expect 2 "gh issue list '-w'"
+# gh api: метод через =, поля всех видов; токен
+expect 2 'gh api -X=POST repos/o/r/issues'
+expect 2 'gh api -X=patch repos/o/r'
+expect 2 'gh api repos/o/r/issues -F title=x'
+expect 2 'gh api repos/o/r/issues --field title=x'
+expect 2 'gh api repos/o/r/issues --raw-field title=x'
+expect 2 'gh api repos/o/r/issues --raw-field=title=x'
+expect 2 'gh api repos/o/r/issues --field=title=x'
+expect 2 'gh api repos/o/r/issues -ftitle=x'
+expect 2 'gh api repos/o/r/issues -Ftitle=x'
+expect 2 'gh api repos/o/r/x --input=body.json'
+expect 2 'gh auth git-credential get'
+expect 2 'gh auth status --show-token=true'
+expect 2 'gh repo view --web=true'
+expect 2 'gh pr view 5 --exec x'                                  # барьер gh pr view
+# clone -c слитно, кластером и сокращением; ls-remote --exec; pull
+expect 2 'git clone -ccore.pager=less https://e.com/r.git'
+expect 2 'git clone -qc core.pager=less https://e.com/r.git'
+expect 2 'git clone --config core.pager=less https://e.com/r.git'
+expect 2 'git clone --conf core.pager=less https://e.com/r.git'
+expect 2 'git clone --conf=core.pager=less https://e.com/r.git'
+expect 0 'git clone -qc core.autocrlf=false https://e.com/r.git'
+expect 0 'git clone -b main -c user.name=t https://e.com/r.git'
+expect 0 'git clone -bfix/cache.v2 https://e.com/r.git'          # c в значении -b — не -c
+expect 2 'git ls-remote --exec=/tmp/x origin'
+expect 2 'git ls-remote --exec /tmp/x origin'
+expect 0 'git ls-remote --exit-code origin main'
+expect 2 'git pull --upload-pack=/tmp/x origin'
+expect 2 'git clone --reference=ext::x https://e.com/r.git'    # ext:: в значении long-опции
+# rebase -S<ключ> — значение только слитно; config -t <тип>
+expect 0 'git rebase -S0x1A2B main'
+expect 0 'git rebase -iS0xABC main'
+expect 0 'git rebase -Sx main'
+expect 2 'git rebase -S -x make main'
+expect 2 'git rebase -xS main'
+expect 2 'git config -t bool core.pager less'
+expect 2 'git config set -t bool core.pager less'
+# --config-env: значение ключа с проверкой не видно; опции config со значением; чтение
+expect 2 'git --config-env core.editor=true commit'
+expect 2 'git --config-env=core.pager=cat log'
+expect 0 'git config --file .git/x.cfg user.name t'
+expect 0 'git config -f .git/x.cfg user.name t'
+expect 0 "git config --get core.pager 'less'"
+expect 0 'git config --unset-all credential.helper store'
+expect 0 "git config --get-all remote.origin.fetch 'refs/*'"
+# потолок 16 КБ — и у команды только со словом gh
+expect 2 "gh pr list --search $(printf '%17000s' '' | tr ' ' x)"
+# время: 2 000 слов gh в сегменте — разбор линейный (проход присваиваний с начала сегмента на каждом слове — 40 с)
+_t0=${SECONDS}
+expect 0 "$(printf 'gh %.0s' {1..2000})"
+if ((SECONDS - _t0 > 15)); then
+  _fail=$((_fail + 1))
+  printf 'FAIL: разбор 2 000 слов gh — %s с (порог 15 с)\n' "$((SECONDS - _t0))"
+fi
 
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'

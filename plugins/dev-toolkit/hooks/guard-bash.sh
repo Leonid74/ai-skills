@@ -1556,8 +1556,8 @@ while IFS= read -r _seg; do
         esac
       else
         # gh (cobra) сокращений long-опций НЕ принимает — точного совпадения
-        # достаточно. -R/--repo (чтение PR своего же репозитория в 4 рабочих
-        # командах транскриптов — ложные блоки) и разбор кластера коротких
+        # достаточно. -R/--repo (чтение PR в 4 рабочих командах транскриптов:
+        # 3 своих репозитория, 1 чужой — ложные блоки) и разбор кластера коротких
         # флагов (ложный блок -eREADME, кластеров с w в истории 0) сняты в
         # 2.18.0 по решению владельца 29.10.2026; --web и -w у любой
         # подкоманды gh судит правило gh (_gh_cmd).
@@ -1588,8 +1588,10 @@ if [[ "${_lc_was}" == __unset__ ]]; then unset LC_ALL; else LC_ALL="${_lc_was}";
 # --discard-changes; clean -f без -n; rm -f без --cached; branch -D и
 # --delete --force; push с force (-f в кластере, --force*, +refspec),
 # --mirror, адресом или путём вместо имени remote; reflog expire/delete и
-# prune без -n/--dry-run, gc --prune, filter-branch/filter-repo; ключи
-# alias./remote./url./branch. в -c/--config-env. Откат всего дерева
+# prune без -n/--dry-run, gc --prune, filter-branch/filter-repo. С 2.18.0 —
+# и исполнение кода через git/gh: ключи конфигурации белым списком
+# (_git_cfg), переменные окружения (_env_chk), опции запуска программ, правила
+# gh (_gh_cmd); строки со словом gh разбираются так же. Откат всего дерева
 # (checkout -- ., restore .) — пропуск: это рабочий приём (откат мутаций,
 # перенос дерева ветки), а правило блокировало бы в основном текст.
 #
@@ -1676,7 +1678,7 @@ _git_longval() {
 # «голое» слово git (git push … git reset … в прозе) или исчерпанный бюджет.
 # shellcheck disable=SC2310 # _git_longval — условие, а не проверка ошибки
 _git_args() {
-  local i="$2" t r k x vreq="" skip=0 dd=0
+  local i="$2" t r k o x vreq="" vopt="" skip=0 dd=0
   _ga_s=""
   _ga_l=()
   _ga_lv=()
@@ -1689,8 +1691,11 @@ _git_args() {
     push) vreq="o" ;;
     clone) vreq="obucj" ;;
     grep) vreq="efABCm" ;;
-    rebase) vreq="sX" ;;
-    config) vreq="f" ;;
+    rebase)
+      vreq="sX"
+      vopt="S"
+      ;;
+    config) vreq="ft" ;;
     *) ;;
   esac
   for ((; i < _gn; i++)); do
@@ -1734,11 +1739,18 @@ _git_args() {
     else
       # Кластер коротких флагов: буквы до первой опции со значением и она
       # сама (clone -u, rebase -x видны по букве); её значение — остаток слова,
-      # а если она последняя — следующее слово. Срез шаблоном, не посимвольный
-      # обход (квадратичен на длинном слове).
+      # а если она последняя — следующее слово. Опция с необязательным
+      # значением (rebase -S[<ключ>]) берёт только остаток своего слова: буквы
+      # ключа (-S0x…) — не флаги, следующее слово — не значение. Срез шаблоном,
+      # не посимвольный обход (квадратичен на длинном слове).
       x="${t:1}"
-      if [[ -n "${vreq}" ]]; then
-        k="${x%%["${vreq}"]*}"
+      k="${x}"
+      o="${x}"
+      if [[ -n "${vreq}" ]]; then k="${x%%["${vreq}"]*}"; fi
+      if [[ -n "${vopt}" ]]; then o="${x%%["${vopt}"]*}"; fi
+      if ((${#o} < ${#k})); then
+        _ga_s+="${x:0:${#o}+1}"
+      elif ((${#k} < ${#x})); then
         _ga_s+="${x:0:${#k}+1}"
         if ((${#k} + 1 == ${#x})); then skip=1; fi
       else
@@ -1830,12 +1842,18 @@ _env_chk() {
 
 # _env_pre <индекс слова git/gh в _gw> — присваивания перед командой в том же
 # сегменте (FOO=1 git, env FOO=1 git, FOO=1 timeout 20 git): каждое слово
-# ИМЯ=… до слова git/gh, обёртки не перечисляются.
+# ИМЯ=… от прошлой команды git/gh (курсор _gej) до этой, обёртки не
+# перечисляются. Курсор: каждое слово судится один раз — проход с начала
+# сегмента на каждой команде был квадратичным (2 000 слов gh — 40 с, дальше
+# таймаут). Слово, которое само начинает git/gh (GIT_SHA=$(git …) — захват
+# вывода), в диапазон не входит: на окружение того git оно не влияет.
 _env_pre() {
   local j
-  for ((j = 0; j < $1; j++)); do
+  for ((j = _gej; j < $1; j++)); do
+    _gbud=$((_gbud - 1))
     if [[ "${_gr[j]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then _env_chk "${_gr[j]}" "перед git/gh"; fi
   done
+  _gej=$(($1 + 1))
 }
 
 # _env_exp <сегмент> — export/declare -x/typeset -x: присваивания в _gl_exp
@@ -1843,7 +1861,7 @@ _env_pre() {
 # ограничение (в истории 0).
 _env_exp() {
   local -a w=()
-  local i=0 c x=0 a
+  local i=0 c x=0 a v
   read -ra w <<< "$1"
   while ((i < ${#w[@]})) && [[ "${w[i]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do i=$((i + 1)); done
   c="${w[i]:-}"
@@ -1857,18 +1875,56 @@ _env_exp() {
   done
   ((x)) || return 0
   for a in "${w[@]:i+1}"; do
-    if [[ "${a}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then _gl_exp+=("${a}"); fi
+    [[ "${a}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+    # Захват вывода git/gh (export GIT_SHA=$(git …)) — не окружение git; иная
+    # подстановка (HOME=$(mktemp -d)) судится.
+    v="${a#*=}"
+    v="${v//[\"\']/}"
+    if [[ "${v}" == "\$(git" || "${v}" == "\$(gh" || "${v}" == "\`git" || "${v}" == "\`gh" ]]; then continue; fi
+    _gl_exp+=("${a}")
+  done
+}
+
+# _gh_txt <индекс> — слово _gr[индекс] открывает текст в кавычках (--body '…',
+# --body='…', проза): в _gh_e — индекс слова после закрывающей кавычки того же
+# вида; 0 — кавычки закрыты в том же слове ('-w' — флаг), текст не закрыт в
+# сегменте или в нём есть подстановка $( или ` (вложенная команда судится).
+_gh_txt() {
+  local j="$1" r p q x c
+  _gh_e=0
+  r="${_gr[j]}"
+  p="${r%%[\"\']*}"
+  q="${r:${#p}:1}"
+  x="${r//"${q}"/}"
+  c=$((${#r} - ${#x}))
+  ((c % 2)) || return 0
+  while ((j < _gn)); do
+    r="${_gr[j]}"
+    j=$((j + 1))
+    _gbud=$((_gbud - 1))
+    if [[ "${r}" == *"\$("* || "${r}" == *\`* ]]; then return 0; fi
+    if ((j > $1 + 1)); then
+      x="${r//"${q}"/}"
+      c=$((c + ${#r} - ${#x}))
+    fi
+    if ((c % 2 == 0)); then
+      _gh_e=${j}
+      return 0
+    fi
   done
 }
 
 # _gh_cmd <индекс слова gh в _gw> — правила gh (2.18.0, решение владельца
 # 27.10.2026): --web/-w и browse (браузер), api с записью — по методу запроса
-# (поля без -X — POST), auth token и auth status -t (вывод токена). -w — это
-# --web у всех подкоманд, кроме run list (--workflow) и repo deploy-key add
-# (--allow-write) — сверено по gh reference 2.103.0. Кластеры коротких флагов
-# не разбираются: в истории их 0.
+# (поля без -X — POST), auth token, auth git-credential и auth status -t
+# (вывод токена). -w — это --web у всех подкоманд, кроме run list (--workflow)
+# и repo deploy-key add (--allow-write) — сверено по gh reference 2.103.0.
+# Кластеры коротких флагов не разбираются: в истории их 0. Текст в кавычках
+# (--body '…', -c '…' у pr close — шаблон сообщений знает не все подкоманды и
+# отказывает на $ и \ в тексте) — не флаги: его слова обнуляются в _gw/_gr,
+# чтобы и _git_run не принял слово gh/git из прозы за команду.
 _gh_cmd() {
-  local i t r g="${_gw[$1 + 1]:-}" s="${_gw[$1 + 2]:-}" m="" fld=0 web=0 tk=0 skip=0
+  local i j t r g="${_gw[$1 + 1]:-}" s="${_gw[$1 + 2]:-}" m="" fld=0 web=0 tk=0 skip=0
   _gl_hit=1
   for ((i = $1 + 1; i < _gn; i++)); do
     t="${_gw[i]}"
@@ -1881,14 +1937,29 @@ _gh_cmd() {
       m="${t}"
       continue
     fi
+    if [[ "${r}" == *[\"\']* ]]; then
+      _gh_txt "${i}"
+      if ((_gh_e)); then
+        for ((j = i; j < _gh_e; j++)); do
+          _gw[j]=""
+          _gr[j]=""
+        done
+        i=$((_gh_e - 1))
+        continue
+      fi
+    fi
     case "${t}" in
       --web | --web=*) block "gh … --web (открытие браузера)" ;;
       -w) web=1 ;;
       -X | --method) skip=1 ;;
-      -X?*) m="${t:2}" ;;
+      -X?*)
+        # pflag принимает и -X=POST.
+        m="${t:2}"
+        m="${m#=}"
+        ;;
       --method=*) m="${t#*=}" ;;
       -f | -F | --field | --raw-field | --input | -f?* | -F?* | --field=* | --raw-field=* | --input=*) fld=1 ;;
-      -t | --show-token) tk=1 ;;
+      -t | --show-token | --show-token=*) tk=1 ;;
       *) ;;
     esac
   done
@@ -1908,7 +1979,7 @@ _gh_cmd() {
       fi
       ;;
     auth)
-      if [[ "${s}" == token ]] || { [[ "${s}" == status ]] && ((tk)); }; then
+      if [[ "${s}" == token || "${s}" == git-credential ]] || { [[ "${s}" == status ]] && ((tk)); }; then
         block "gh auth ${s} (вывод токена)"
       fi
       ;;
@@ -1950,7 +2021,7 @@ _git_skipv() {
 # git; подкоманда задана, если слово — git-<подкоманда>.
 # shellcheck disable=SC2310 # _ga_has — условие, а не проверка ошибки
 _git_cmd() {
-  local i="$1" sub="${2:-}" t r p k
+  local i="$1" sub="${2:-}" t r p k x q
   _gl_hit=1
   i=$((i + 1))
   while [[ -z "${sub}" ]] && ((i < _gn)); do
@@ -2060,18 +2131,32 @@ _git_cmd() {
         block "git clone --upload-pack (запуск программы на стороне источника)"
       fi
       if _ga_has --template; then block "git clone --template (хуки из чужого каталога)"; fi
+      # Ключ -c — отдельным словом, слитно (-cK=V), в кластере (-qc K=V) и
+      # сокращением --con… (git принимает все формы; --c и --co неоднозначны с
+      # --checkout).
       for ((k = i; k < _gn; k++)); do
         p="${_gw[k]}"
         if [[ "${_gr[k]}" == "${p}" && "${p,,}" == git ]]; then break; fi
         case "${p}" in
-          -c | --config) _git_cfg "${_gw[k + 1]:-}" "clone -c" ;;
-          --config=*) _git_cfg "${p#*=}" "clone -c" ;;
+          --con*=*) if [[ --config == "${p%%=*}"* ]]; then _git_cfg "${p#*=}" "clone -c"; fi ;;
+          --con*) if [[ --config == "${p}"* ]]; then _git_cfg "${_gw[k + 1]:-}" "clone -c"; fi ;;
+          -[!-]*)
+            x="${p:1}"
+            q="${x%%[obucj]*}"
+            if [[ "${x:${#q}:1}" == c ]]; then
+              x="${x:${#q}+1}"
+              _git_cfg "${x:-${_gw[k + 1]:-}}" "clone -c"
+            fi
+            ;;
           *) ;;
         esac
       done
       ;;
     fetch | pull | ls-remote)
-      if _ga_has --upload-pack; then block "git ${sub} --upload-pack (запуск программы на стороне источника)"; fi
+      # У ls-remote --exec — синоним --upload-pack.
+      if _ga_has --upload-pack || { [[ "${sub}" == ls-remote ]] && _ga_has --exec; }; then
+        block "git ${sub} --upload-pack (запуск программы на стороне источника)"
+      fi
       ;;
     archive)
       if _ga_has --exec; then block "git archive --exec (запуск программы на стороне источника)"; fi
@@ -2104,7 +2189,9 @@ _git_cmd() {
             || _ga_has --get-urlmatch || _ga_has --get-color || _ga_has --get-colorbool || _ga_has --list \
             || _ga_has --unset || _ga_has --unset-all || _ga_has --remove-section || _ga_has --rename-section \
             || _ga_has --edit; }; then
-            if ((${#_ga_p[@]} >= 2)) || _ga_has --add || _ga_has --replace-all; then
+            # Запись — ключ и значение (и у --add, --replace-all: с одним
+            # аргументом git их отвергает).
+            if ((${#_ga_p[@]} >= 2)); then
               _git_cfg "${_ga_p[0]:-}=${_ga_p[1]:-}" config
             fi
           fi
@@ -2115,22 +2202,33 @@ _git_cmd() {
   esac
 }
 
+# _gh_quo <индекс> — 0, если слово gh в кавычках ('gh auth token' — шаблон
+# grep/rg, "gh browse" в echo) — текст, а не команда; bash -c "gh …" — команда.
+_gh_quo() {
+  [[ "${_gr[$1]}" == [\"\']gh || "${_gr[$1]}" == [\"\']/*/gh ]] || return 1
+  (($1 > 0)) || return 0
+  [[ "${_gr[$1 - 1]}" != -*c ]]
+}
+
 # _git_run — слово git, */git, git.exe в _gw[] — начало команды (обёртки,
 # $( ), bash -c "…"); git-<подкоманда> — только первым словом сегмента после
 # присваиваний.
+# shellcheck disable=SC2310 # _gh_quo — условие, а не проверка ошибки
 _git_run() {
   local k t first=1
   _gn=${#_gw[@]}
+  _gej=0
   for ((k = 0; k < _gn; k++)); do
     t="${_gw[k],,}"
     if [[ "${t}" == git || "${t}" == */git || "${t}" == git.exe || "${t}" == */git.exe ]]; then
       _env_pre "${k}"
       _git_cmd "${k}"
-    elif [[ "${_gw[k]}" == gh || "${_gw[k]}" == */gh ]]; then
+    elif [[ "${_gw[k]}" == gh || "${_gw[k]}" == */gh ]] && ! _gh_quo "${k}"; then
       _env_pre "${k}"
       _gh_cmd "${k}"
     elif ((first)) && [[ "${t}" == git-?* || "${t}" == */git-?* ]]; then
       t="${t##*/}"
+      _env_pre "${k}"
       _git_cmd "${k}" "${t#git-}"
     fi
     [[ "${_gr[k]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || first=0
@@ -2163,8 +2261,8 @@ _git_scan() {
   _git_run
 }
 
-# Бюджет слов разбора git на вызов и потолок длины команды со словом git:
-# сверх них — блок (fail-closed: иначе длинный хвост уводил бы новые формы
+# Бюджет слов разбора git/gh на вызов и потолок длины команды со словом git
+# или gh: сверх них — блок (fail-closed: иначе длинный хвост уводил бы новые формы
 # из-под разбора). В транскриптах владельца (31 277 команд) ни одна команда в
 # пороги не упиралась (27.10.2026).
 LC_ALL=C
