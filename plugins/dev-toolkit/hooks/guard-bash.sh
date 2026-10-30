@@ -77,11 +77,52 @@ fi
 # Первый символ литерала — не ":": иначе оператор области видимости
 # (Password::defaults, --filter=…TokenTest::test_x) читался бы как
 # "двоеточие + литерал". В хвосте ":" разрешён (URL, base64-подобные значения).
-_secret_assign_re='(password|passwd|secret|token|api[_-]?key)[A-Za-z0-9_]*["'\'']?[[:space:]]*(=>?|:)[[:space:]]*["'\'']?'
+# Хвост имени — не ровно "s" (2.19.0, №35, решение владельца 30.10.2026):
+# max_tokens, input_tokens, tokens — счётчики и списки (usage API,
+# токенизатор), 7 ложных блоков истории. Ослабление: литерал имени во
+# множественном числе (passwords=…, api_keys=…, secrets=…) не ловится — в
+# истории 0. Имя _sname_core — общее с правилом значения секретной переменной
+# (_sec_name ниже); [A-RT-Za-rt-z] — без s и S (и под -i).
+_sname_core='(password|passwd|secret|token|api[_-]?key)(s[A-Za-z0-9_]+|[A-RT-Za-rt-z0-9_][A-Za-z0-9_]*)?'
+_secret_assign_re="${_sname_core}"'["'\'']?[[:space:]]*(=>?|:)[[:space:]]*["'\'']?'
 _secret_assign_re+='[A-Za-z0-9!#%&*+,;<=>?@^_|-][A-Za-z0-9!#%&*+,./:;<=>?@^_|~-]{7,}'
 if LC_ALL=C grep -qiE -e "${_secret_assign_re}" <<< "${cmd}"; then
   block_secret "в команде литерал, присвоенный чувствительному имени (password/secret/token/api_key); ${_secret_hint}"
 fi
+
+# _sec_name <имя> — 0, если имя переменной секретное: содержит password,
+# passwd, secret, token, api_key с хвостом не ровно "s" (тот же _sname_core,
+# что у правила присваивания; без учёта регистра). MAX_TOKENS, API_KEYS — нет.
+_sec_name() {
+  local u="${1,,}"
+  [[ "${u}" =~ ${_sname_core}$ ]]
+}
+
+# _sec_ref <текст> — 0, если текст подставляет значение секретной переменной
+# ($GH_TOKEN, ${API_KEY}, ${PASS:-x}, ${PASS:0:4}). Не значение: \$ИМЯ (текст),
+# ${#ИМЯ} (длина), ${ИМЯ:+…}/${ИМЯ+…} (проверка наличия). Один разбор по $
+# (разбиение с IFS=$, без глоба) — линейно: срез остатка строки за каждым $ был
+# квадратичен (16 000 ссылок — 27,6 с, ревью PR #90); имя — из первых 128 байт
+# куска.
+# shellcheck disable=SC2310 # _sec_name — условие, а не проверка ошибки
+_sec_ref() {
+  local -a srp=()
+  local k IFS='$' l="${1,,}"
+  local -
+  # Предфильтр: без корня секретного имени в тексте ссылки на секрет нет.
+  [[ "${l}" == *pass* || "${l}" == *secret* || "${l}" == *token* || "${l}" == *api* ]] || return 1
+  set -f
+  # shellcheck disable=SC2206 # разбиение по $ намеренное (IFS), глоб выключен
+  srp=($1)
+  for ((k = 1; k < ${#srp[@]}; k++)); do
+    [[ "${srp[k-1]: -1}" != \\ ]] || continue
+    if [[ "${srp[k]:0:128}" =~ ^(\{)?(#)?([A-Za-z_][A-Za-z0-9_]*)(:?\+)? ]]; then
+      if [[ -n "${BASH_REMATCH[1]}" && (-n "${BASH_REMATCH[2]}" || -n "${BASH_REMATCH[4]}") ]]; then continue; fi
+      if _sec_name "${BASH_REMATCH[3]}"; then return 0; fi
+    fi
+  done
+  return 1
+}
 
 # Лексер команды для правила .env: токены с учётом кавычек, $'…',
 # комментариев и подстановок $(…)/`…`/<(…). Исключений он НЕ даёт — только
@@ -555,7 +596,7 @@ _tpl_redir() {
 # shellcheck disable=SC2310 # отказ шаблона — штатный код возврата
 _tpl_parse() {
   local -a tt=("${_tpl_t[@]}") oo=()
-  local n=${#_tpl_t[@]} i=0 u sub seen=0
+  local n=${#_tpl_t[@]} i=0 u sub seen=0 x
   _tpl_stdin=0
   _tpl_csub=0
   _tpl_out=""
@@ -661,6 +702,16 @@ _tpl_parse() {
             ;;
           "__CSUB__") return 1 ;;
           *)
+            # Ссылка на секретную переменную — вывод значения, не текст
+            # (2.19.0): её судит правило окружения. Куски '…' слова — текст
+            # ($ в них не раскрывается): снимаются по грамматике слова
+            # шаблона ("…" без " внутри — целиком, апостроф в нём — литерал),
+            # одним sed -z (многострочное "…" — одна запись).
+            x="${tt[i]}"
+            if [[ "${x}" == *\'* && "${x}" == *'$'* ]]; then
+              x="$(sed -zE "s/(\"[^\"]*\")|'[^']*'/\\1/g" <<< "${x}")" || return 1
+            fi
+            if _sec_ref "${x}"; then return 1; fi
             ((seen == 1)) || oo+=("MSG")
             seen=1
             ;;
@@ -2345,10 +2396,104 @@ if grep -Eq '/proc/[^[:space:]]*/environ' <<< "${_code}"; then
   block "чтение /proc/*/environ (окружение процесса с секретами)"
 fi
 
+# _qscan — сегменты _segtext для правил окружения и tmux (_qs_seg; строка —
+# _qs_ln) и признак «сегмент начат внутри кавычек» (_qs_in): разделитель
+# нарезки стоял в '…'/"…" — сегмент продолжает текст, не команда. Нарезка не
+# видит кавычек, и | в шаблоне grep -E 'a|env|b' отрезал бы «команду» env из
+# текста. Автомат кавычек bash по токенам одного sed (кавычки, \, метки
+# нарезки — линейно): в '…' закрывает только ', в "…" — только " (апостроф в
+# "don't" — литерал), \ вне '…' экранирует следующую кавычку. Кавычку,
+# открытую строкой оболочки (sh/bash … -c, ssh <хост>, eval: _qsh_re по
+# тексту сегмента до неё), автомат не считает текстом — её сегменты команды
+# (ревью PR #90). Одиночный & вне кавычек — граница команды (нарезка 2.16.0 по
+# & не режет — флаг в "%h & %s" оторвался бы от команды). Строка с
+# незакрытой в ней кавычкой (продолжение многострочной строки, апостроф прозы
+# here-doc) и строка > 8 КБ — без признака (fail-closed): перенос состояния на
+# следующие строки дал бы прозе here-doc спрятать команды после EOF. Склейки
+# сегментов нет: ошибка автомата освобождает сегмент, а не прячет хвост строки
+# (склейка по кавычкам дала ложный блок рабочей команды, прототип Ф2b).
+_qsh_re='(^|[[:space:]/;(])((ba|da|z|k)?sh([[:space:]]+[^[:space:]]+)*[[:space:]]+-[A-Za-z]*c[A-Za-z]*|ssh([[:space:]]+[^[:space:]]+)+|eval)[[:space:]]*$'
+_qscan() {
+  local tok q=0 sh=0 esc=0 cur="" pre="" in=0 lo=0 ln=0 len=0 k
+  local -a toks=()
+  _qs_seg=()
+  _qs_in=()
+  _qs_ln=()
+  # \x1c — конец строки, \x1d — одиночный & (байты \x1c–\x1e в _segtext
+  # заменены нарезкой на \x1f).
+  tok="$(sed -E -e 's/[\x1f"'"'"'\\]/\n&\n/g' -e 's/(^|[ \t\n])&([ \t\n]|$)/\1\n\x1d\n\2/g' -e 's/$/\n\x1c/' <<< "${_segtext}")"
+  mapfile -t toks <<< "${tok}"
+  for tok in "${toks[@]}"; do
+    case "${tok}" in
+      "") ;;
+      $'\x1c')
+        _qs_seg+=("${cur}")
+        _qs_in+=("${in}")
+        _qs_ln+=("${ln}")
+        if ((q || len > 8192)); then
+          for ((k = lo; k < ${#_qs_in[@]}; k++)); do _qs_in[k]=0; done
+        fi
+        ln=$((ln + 1))
+        lo=${#_qs_seg[@]}
+        q=0 sh=0 esc=0 in=0 len=0 cur="" pre=""
+        ;;
+      $'\x1f' | $'\x1d')
+        len=$((len + 1))
+        # & в кавычках (не строки оболочки) и \& — литерал, не граница.
+        if [[ "${tok}" == $'\x1d' ]] && ((esc || (q && !sh))); then
+          cur+="&"
+          esc=0
+          continue
+        fi
+        _qs_seg+=("${cur}")
+        _qs_in+=("${in}")
+        _qs_ln+=("${ln}")
+        if ((q && !sh)); then in=1; else in=0; fi
+        esc=0 cur="" pre=""
+        ;;
+      \\)
+        len=$((len + 1))
+        cur+="${tok}"
+        if ((q != 1)); then esc=$((!esc)); fi
+        ;;
+      \' | \")
+        len=$((len + 1))
+        cur+="${tok}"
+        if ((esc)); then
+          esc=0
+        elif ((q == 0)); then
+          if [[ "${tok}" == \' ]]; then q=1; else q=2; fi
+          sh=0
+          if [[ "${pre}" == *sh* || "${pre}" == *eval* ]] && [[ "${pre}" =~ ${_qsh_re} ]]; then sh=1; fi
+        elif [[ (${q} -eq 1 && "${tok}" == \') || (${q} -eq 2 && "${tok}" == \") ]]; then
+          q=0 sh=0
+          pre+="Q"
+          if ((${#pre} > 512)); then pre="${pre: -256}"; fi
+        fi
+        ;;
+      *)
+        len=$((len + ${#tok}))
+        cur+="${tok}"
+        esc=0
+        if ((q == 0)); then
+          pre+="${tok}"
+          if ((${#pre} > 512)); then pre="${pre: -256}"; fi
+        fi
+        ;;
+    esac
+  done
+}
+
 # Вывод окружения (printenv/env/export/set/declare, docker compose config,
-# … exec … env) — по сегментам текста _code (очищенного шаблоном сообщений).
+# … exec … env) и значение секретной переменной — по сегментам _qscan текста
+# _code (очищенного шаблоном сообщений). Имена команд окружения — с учётом
+# регистра: ENV в шаблоне grep — не команда (2.19.0); кавычки с имени
+# снимаются (env' — последняя команда строки оболочки bash -c '…; env').
 set -f
-while IFS= read -r _seg; do
+mapfile -t _elines <<< "${_segtext}"
+_qscan
+for ((_ek = 0; _ek < ${#_qs_seg[@]}; _ek++)); do
+  _seg="${_qs_seg[_ek]}"
   read -ra _w <<< "${_seg}"
   # Ведущие присваивания (FOO=1 cmd) — не команда сегмента.
   _i=0
@@ -2356,9 +2501,31 @@ while IFS= read -r _seg; do
     _i=$((_i + 1))
   done
   [[ ${_i} -lt ${#_w[@]} ]] || continue
-  _c0="${_w[${_i}],,}"
-  _c0="${_c0##*/}"
+  _c0r="${_w[${_i}]//[\"\']/}"
+  _c0r="${_c0r##*/}"
+  _c0="${_c0r,,}"
+  case "${_c0r}" in
+    printenv | env | export | declare | typeset | set | echo | printf) ;;
+    *)
+      case "${_c0}" in
+        docker | docker-compose | podman | podman-compose | kubectl) ;;
+        *) continue ;;
+      esac
+      ;;
+  esac
+  # Сегмент внутри кавычек строки — текст шаблона, не команда.
+  ((_qs_in[_ek] == 0)) || continue
   _args=("${_w[@]:$((_i + 1))}")
+  # Продолжение аргументов: следующие сегменты той же строки, начатые внутри
+  # кавычек (echo "x; $T", printf '%s | %s' a "$T") — только для поиска
+  # значения секрета у echo/printf/printenv: блоков прибавляется, хвост строки
+  # не прячется (это не склейка — те сегменты судятся и сами).
+  _eargs=("${_args[@]}")
+  for ((_ej = _ek + 1; _ej < ${#_qs_seg[@]}; _ej++)); do
+    ((_qs_in[_ej] == 1 && _qs_ln[_ej] == _qs_ln[_ek])) || break
+    read -ra _w2 <<< "${_qs_seg[_ej]}"
+    _eargs+=("${_w2[@]}")
+  done
 
   # Голые printenv/env/export/set/declare печатают всё окружение. У env
   # аргумент-команда (env FOO=1 cmd) — запуск, а не вывод; -u/-C берут
@@ -2367,6 +2534,8 @@ while IFS= read -r _seg; do
   _skip=false
   for _t in "${_args[@]}"; do
     if ${_skip}; then _skip=false; continue; fi
+    # Одна кавычка — конец строки оболочки (bash -c '…; env '), не аргумент.
+    [[ -n "${_t//[\"\']/}" ]] || continue
     case "${_c0}:${_t}" in
       env:-u|env:--unset|env:-C|env:--chdir) _skip=true ;;
       env:*=*) ;;
@@ -2374,15 +2543,44 @@ while IFS= read -r _seg; do
       *) _only_flags=false; break ;;
     esac
   done
-  case "${_c0}" in
+  case "${_c0r}" in
     printenv|env|export|declare|typeset)
       if ${_only_flags}; then
-        block "вывод переменных окружения (${_c0} без аргументов) может раскрыть секреты"
+        block "вывод переменных окружения (${_c0r} без аргументов) может раскрыть секреты"
       fi
       ;;
     set)
       if [[ ${#_args[@]} -eq 0 ]]; then
         block "вывод переменных окружения (set без аргументов) может раскрыть секреты"
+      fi
+      ;;
+    *) ;;
+  esac
+  # Значение секретной переменной (2.19.0): printenv <секретное имя>,
+  # echo/printf со ссылкой на неё; длина ${#ИМЯ} и наличие ${ИМЯ:+…} —
+  # свободны. За обёрткой (timeout echo …) — не судится (в истории 0).
+  case "${_c0r}" in
+    printenv)
+      for _t in "${_eargs[@]}"; do
+        # Имя без кавычек: printenv "GH_TOKEN" — то же имя (ревью PR #90).
+        _t="${_t//[\"\']/}"
+        [[ "${_t}" != -* ]] || continue
+        # shellcheck disable=SC2310 # функция — условие, а не проверка ошибки
+        if _sec_name "${_t}"; then
+          block "вывод значения секретной переменной ${_t} (printenv) — значение попало бы в транскрипт; наличие — [ -n \"\$ИМЯ\" ], длина — \${#ИМЯ}"
+        fi
+      done
+      ;;
+    echo | printf)
+      # Куски '…' — текст ($ не раскрывается): echo 'export T=$T' | tee f —
+      # не вывод значения; "…" (с \" внутри) — целиком, апостроф в нём — литерал.
+      _ea="${_eargs[*]}"
+      if [[ "${_ea}" == *\'* && "${_ea}" == *"\$"* ]]; then
+        _ea="$(sed -zE "s/(\"([^\"\\\\]|\\\\.)*\")|'[^']*'/\\1/g" <<< "${_ea}")"
+      fi
+      # shellcheck disable=SC2310 # функция — условие, а не проверка ошибки
+      if [[ "${_ea}" == *"\$"* ]] && _sec_ref "${_ea}"; then
+        block "вывод значения секретной переменной (${_c0r} \$ИМЯ) — значение попало бы в транскрипт; наличие — [ -n \"\$ИМЯ\" ], длина — \${#ИМЯ}"
       fi
       ;;
     *) ;;
@@ -2419,7 +2617,237 @@ while IFS= read -r _seg; do
       ;;
     *) ;;
   esac
-done <<< "${_segments}"
+done
+
+# Вложенный claude с обходом разрешений (2.19.0, решение владельца 29.10):
+# --dangerously-skip-permissions, --allow-dangerously-skip-permissions, режим
+# bypassPermissions (флагом и в строке --settings). Подстрока флага плюс слово
+# claude где угодно в команде: за обёрткой (timeout 300 claude -p …), после ;
+# внутри промпта и в $( ) — тоже. Обход снимает и проверку разрешений, и хук:
+# disableBypassPermissionsMode живёт в user-настройках, а --setting-sources
+# project,local их отбрасывает. Флаги опытов (--settings, --setting-sources,
+# --permission-mode acceptEdits, CLAUDE_CONFIG_DIR=) — свободны.
+_lc="${_code,,}"
+if [[ "${_lc}" == *dangerously-skip-permissions* || "${_lc}" =~ (^|[^a-z])bypasspermissions ]]; then
+  read -ra _cw <<< "${_code//$'\n'/ }"
+  for _r in "${_cw[@]}"; do
+    _t="${_r//[\"\'\\\`()\{\}]/}"
+    [[ ! "${_t}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || _t="${_t#*=}"
+    if [[ "${_t}" =~ ^[\$\<\>]+ ]]; then _t="${_t:${#BASH_REMATCH[0]}}"; fi
+    case "${_t}" in
+      claude | */claude | claude-code | */claude-code)
+        block "вложенный claude с обходом разрешений (--dangerously-skip-permissions / bypassPermissions) — без проверки разрешений и без хука; такой прогон запускает владелец (!) или он идёт с --allowedTools"
+        ;;
+      *) ;;
+    esac
+  done
+fi
+
+# _ks_scan <сегмент> — остановка живого сервера tmux, где работает Claude
+# (2.19.0; инциденты 03.10, 10.10). Один проход по словам с состоянием:
+# - tmux: подкоманда kill-*/respawn-*/killp/killw/respawnp/respawnw без своего
+#   сокета — только на позиции подкоманды (первое слово-не-опция после
+#   глобальных опций и после \; цепочки); у подкоманд, исполняющих свой
+#   аргумент как команду tmux или клавиши (send-keys, if-shell,
+#   confirm-before, run-shell, bind-key, command-prompt, display-menu), — и в
+#   аргументах; слово tmux в аргументе (split-window 'tmux …') — вложенный
+#   вызов: снова позиция подкоманды и глобальных опций, его свой сокет не
+#   переходит на внешнюю цепочку после \;; имя окна kill-logs,
+#   путь сокета …/tmux — аргументы, не команда;
+# - pkill/killall: любой аргумент-не-опция — tmux (tmux:*, ^tmux*, …/tmux),
+#   и дальше в шаблоне нет своего сокета (pkill -f 'tmux -L t' — тестовый
+#   сервер); -S<сигнал> у pkill — опция, а не сокет;
+# - systemctl с глаголом вне белого списка чтения и словом с tmux дальше.
+# Свой сокет — глобальная опция tmux -L <имя>/-S <путь> (и слитно) до первой
+# подкоманды (-L у select-pane — «влево»), кроме default и …/default: такой
+# сокет и есть живой сервер (решение владельца 30.10; 29.10 — «достаточно
+# явного -L/-S»; все 8 рабочих kill-* истории — с -L). Слово в кавычках или
+# `…` — текст (правило _gh_quo), кроме строки оболочки: после sh/bash … и
+# опции с буквой c (-c, -lc, -e -c, --norc -c) или после eval. Имя команды —
+# сравнением по суффиксу (== */tmux), не ${t##*/}: снятие префикса
+# квадратично. Хук видит только прямые команды: скрипт-файл (инцидент 03.10) — нет.
+_ks_scan() {
+  local -a raw=()
+  local r t m="" n c sc=0 sock=0 pend=0 pk=0 pa=0 sk=0 vb=0 sub=0 any=0 gv=0 keys=0 nest=0 ns=0 own
+  read -ra raw <<< "$1"
+  for r in "${raw[@]}" ""; do
+    t="${r//[\"\'\\\`()\{\}]/}"
+    [[ ! "${t}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || t="${t#*=}"
+    if [[ "${t}" =~ ^[\$\<\>]+ ]]; then t="${t:${#BASH_REMATCH[0]}}"; fi
+    c=1
+    if [[ "${r}" == [\"\'\`]* ]] && ((sc != 2)); then c=0; fi
+    # Строка оболочки: sc=1 — было имя оболочки, sc=2 — следующее слово и
+    # есть команда (после опции с c или после eval).
+    case "${t}" in
+      sh | */sh | bash | */bash | zsh | */zsh | dash | */dash | ksh | */ksh) sc=1 ;;
+      eval) sc=2 ;;
+      --*) ;;
+      -*c*) ((sc != 1)) || sc=2 ;;
+      -*) ;;
+      *) ((sc != 2)) || sc=0 ;;
+    esac
+    # Начало команды — слово tmux/pkill/killall/systemctl вне другой такой
+    # команды; конец — пустое слово (конец сегмента) или \; вне tmux.
+    n=""
+    if ((c)) && [[ -z "${m}" ]]; then
+      case "${t}" in
+        tmux | */tmux) n=tmux ;;
+        pkill | */pkill) n=pkill ;;
+        killall | */killall) n=killall ;;
+        systemctl | */systemctl) n=systemctl ;;
+        *) ;;
+      esac
+    fi
+    if [[ -z "${r}" || -n "${n}" ]] || [[ "${t}" == ";" && "${m}" != tmux ]]; then
+      # Конец прежней команды: pkill/killall tmux без своего сокета.
+      if ((pk && sock == 0)); then block "${m} tmux — остановка живого сервера tmux, где работает Claude"; fi
+      m="${n}"
+      sock=0 pend=0 pk=0 pa=0 sk=0 vb=0 sub=0 any=0 gv=0 keys=0 nest=0 ns=0
+      continue
+    fi
+    [[ -n "${m}" ]] || continue
+    case "${m}" in
+      tmux)
+        # Свой сокет вложенного вызова (split-window 'tmux -L t …') — ns, он не
+        # переносится на внешнюю цепочку после \;; вложенный вызов наследует
+        # сокет внешнего (панель тестового сервера — его TMUX).
+        own=$((nest ? ns : sock))
+        # \; — следующая команда цепочки tmux: снова позиция подкоманды (и не
+        # значение -L/-S).
+        if [[ "${t}" == ";" ]]; then
+          sub=0 keys=0 nest=0 ns=0 pend=0 gv=0
+          continue
+        fi
+        if ((pend)); then
+          pend=0
+          if [[ "${t}" != default && "${t}" != */default ]]; then
+            if ((nest)); then ns=1; else sock=1; fi
+          fi
+          continue
+        fi
+        if ((gv)); then
+          gv=0
+          continue
+        fi
+        if ((sub)); then
+          if [[ "${t}" == tmux || "${t}" == */tmux ]]; then
+            sub=0 keys=0 any=0 nest=1 ns=${sock}
+            continue
+          fi
+          if ((keys && own == 0)); then
+            case "${t}" in
+              kill-?* | respawn-?* | killp | killw | respawnp | respawnw)
+                block "tmux … ${t} в аргументе подкоманды без своего сокета (-L/-S, не default) — остановка живого сервера tmux, где работает Claude"
+                ;;
+              *) ;;
+            esac
+          fi
+          continue
+        fi
+        case "${t}" in
+          -L | -S) ((any)) || pend=1 ;;
+          -L?* | -S?*)
+            if ((any == 0)) && [[ "${t:2}" != default && "${t:2}" != */default ]]; then
+              if ((nest)); then ns=1; else sock=1; fi
+            fi
+            ;;
+          -f | -c | -T) ((any)) || gv=1 ;;
+          -*) ;;
+          *)
+            sub=1 any=1
+            case "${t}" in
+              kill-?* | respawn-?* | killp | killw | respawnp | respawnw)
+                if ((own == 0)); then
+                  block "tmux ${t} без своего сокета (-L/-S, не default) — остановка живого сервера tmux, где работает Claude"
+                fi
+                ;;
+              send-keys | send | if-shell | if | confirm-before | confirm | run-shell | run | bind-key | bind | command-prompt | display-menu | menu) keys=1 ;;
+              *) ;;
+            esac
+            ;;
+        esac
+        ;;
+      pkill | killall)
+        if ((sk)); then
+          sk=0
+          continue
+        fi
+        # После шаблона tmux — свой сокет в том же шаблоне (pkill -f 'tmux -L t').
+        if ((pk)); then
+          if ((pend)); then
+            pend=0
+            if [[ "${t}" != default && "${t}" != */default ]]; then sock=1; fi
+            continue
+          fi
+          case "${t}" in
+            -L | -S) pend=1 ;;
+            -L?* | -S?*)
+              if [[ "${t:2}" != default && "${t:2}" != */default ]]; then sock=1; fi
+              ;;
+            *) ;;
+          esac
+          continue
+        fi
+        case "${t}" in
+          -u | -U | -g | -G | -P | -s | -t | -F) sk=1 ;;
+          -*) ;;
+          tmux | tmux:* | ^tmux* | */tmux) pk=1 ;;
+          *) ;;
+        esac
+        ;;
+      systemctl)
+        if ((sk)); then
+          sk=0
+          continue
+        fi
+        if ((vb)); then
+          if [[ "${t}" == *tmux* ]]; then block "systemctl … tmux — остановка или изменение юнита живого сервера tmux, где работает Claude"; fi
+          continue
+        fi
+        ((pa == 0)) || continue
+        case "${t}" in
+          -p | -t | -H | -M | -n | -o | -s) sk=1 ;;
+          -*) ;;
+          *)
+            pa=1
+            case "${t}" in
+              status | show | cat | is-active | is-enabled | is-failed | list-units | list-unit-files | list-dependencies | help) ;;
+              *) vb=1 ;;
+            esac
+            ;;
+        esac
+        ;;
+      *) ;;
+    esac
+  done
+  return 0
+}
+# Сегменты со словом tmux (_qscan): сегмент, начатый внутри кавычек строки, —
+# текст; склейка только по \ в конце сегмента той же строки (\; — цепочка
+# команд tmux, слово \; в _ks_scan), не по кавычкам. Строка со словом tmux
+# > 16 КБ — блок «разбейте» (в истории 0).
+if [[ "${_segtext}" == *tmux* ]]; then
+  for _kline in "${_elines[@]}"; do
+    [[ "${_kline}" == *tmux* ]] || continue
+    if ((${#_kline} > 16384)); then
+      block "строка со словом tmux длиннее 16 КБ — разбейте команду на несколько вызовов"
+    fi
+  done
+  _kk=0
+  while ((_kk < ${#_qs_seg[@]})); do
+    _kseg="${_qs_seg[_kk]}"
+    _kin=${_qs_in[_kk]}
+    _kln=${_qs_ln[_kk]}
+    _kk=$((_kk + 1))
+    while ((_kk < ${#_qs_seg[@]})) && ((_qs_ln[_kk] == _kln)) && [[ "${_kseg}" == *\\ ]]; do
+      _kseg+=";${_qs_seg[_kk]}"
+      _kk=$((_kk + 1))
+    done
+    ((_kin == 0)) || continue
+    [[ "${_kseg}" == *tmux* ]] || continue
+    _ks_scan "${_kseg}"
+  done
+fi
 set +f
 
 # .env-файлы — fail-closed: сегмент, в котором есть путь-токен .env или
