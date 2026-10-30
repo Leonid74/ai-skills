@@ -56,9 +56,9 @@ expect 0 'git checkout -b feat/x'                  # не охраняемая �
 expect 2 'gh pr view 123 --web'
 expect 2 'gh pr diff --web'
 expect 2 'gh pr view -w 123'
-expect 2 'gh pr diff -R evil/repo 42'
-expect 2 'gh pr view --repo=evil/repo 42'
-expect 2 'gh pr view -cw 123'                      # кластер коротких флагов
+expect 0 'gh pr diff -R evil/repo 42'             # -R/--repo сняты из барьера (2.18.0): чтение
+expect 0 'gh pr view --repo=evil/repo 42'
+expect 0 'gh pr view -cw 123'                      # кластер не разбирается (2.18.0, в истории 0)
 
 # --- gh: вне охраняемого scope (пропуск — осознанное решение) ---
 expect 0 'gh pr view 123'
@@ -1135,6 +1135,249 @@ expect 0 "rm -rf '--' /tmp/x"                               # -- в кавычк
 expect 0 'find /tmp/x -name a -delete 2> /dev/null'         # цель редиректа отдельным словом
 expect 0 'find /tmp/x -name a -delete < /dev/null'
 expect 0 "find /tmp/x -name a -fprintf /tmp/l '%p\n' -delete" # два аргумента -fprintf
+
+# --- Ф2a (2.18.0): git/gh — исполнение кода и запись ---
+# -c, --config-env, clone -c и запись git config — белый список ключей (№4 [в]); пробы — не работа (решение 29.10)
+expect 2 'git -c diff.external=/tmp/x diff HEAD~1'
+expect 2 'git -c core.pager=less log -1'
+expect 2 'git -c core.editor=vim commit'
+expect 2 'git -c core.hooksPath=/tmp/h status'
+expect 2 'git -c credential.helper=store fetch'
+expect 2 'git -c include.path=/tmp/c status'
+expect 2 'git -c core.sshCommand=x fetch'
+expect 2 'git -c protocol.file.allow=always pull -q ../src'
+expect 2 'git -c receive.advertisePushOptions=true status'
+expect 2 'git -c pager.log=less log'
+expect 2 'git --config-env=core.editor=ED commit'
+expect 2 'git --config-env core.editor=Q commit'      # значение ключа с проверкой — не видно
+expect 2 'git config core.pager less'
+expect 2 'git config set core.fsmonitor /tmp/f'
+expect 2 'git config --add include.path /tmp/c'
+expect 2 'git config --file .git/config core.hooksPath /tmp/h'
+expect 2 'git clone -c core.pager=less https://e.com/r.git'
+expect 2 'git clone --config=alias.x=y https://e.com/r.git'
+expect 0 'git -c safe.directory=/tmp/x -C /tmp/x log --oneline -1'
+expect 0 "git -c safe.directory='*' -C /srv/r log -1 --oneline"   # рабочая команда на сервере
+expect 0 "grep -n -E 'git -c|cat <<' f.md"                     # слово без точки — не ключ
+expect 0 "grep -n -E 'git (-c|config)|git ' f.sh"
+expect 0 'git -c core.quotePath=false status'
+expect 0 'git -c commit.gpgsign=false commit -q -m x'
+expect 0 'git -c core.editor=true commit -q --no-edit'
+expect 0 'git -c core.hooksPath=.git/hooks commit -q -m x'
+expect 0 'git -c diff.renames=false diff HEAD~1'
+expect 0 'git -c color.ui=always log -1'
+expect 0 'git --config-env=user.name=N commit -q -m x'
+expect 0 'git config core.autocrlf false'
+expect 0 'git config --global core.pager'                 # чтение ключа вне списка
+expect 0 "git config --get-regexp '^credential'"
+expect 0 'git config --show-origin --get core.pager'
+expect 0 'git config -l'
+expect 0 'git config --global --unset alias.x'
+expect 0 'git config get core.pager'
+expect 0 'git clone -b main --depth 1 https://e.com/r.git /tmp/r'
+# переменные перед git/gh и export в той же строке
+expect 2 'GIT_DIR=/tmp/x git status'
+expect 2 'GIT_SSH_COMMAND=x git fetch'
+expect 2 'GIT_PAGER=less git log'
+expect 2 'GIT_EDITOR=vim git commit'
+expect 2 'HOME=/tmp/h git status'
+expect 2 'LD_PRELOAD=/tmp/x.so git status'
+expect 2 'XDG_CONFIG_HOME=/tmp/c git log'
+expect 2 'env GIT_CONFIG_GLOBAL=/tmp/c git log'
+expect 2 'GIT_DIR=/tmp/x timeout 20 git status'          # присваивание перед обёрткой
+expect 2 'GH_HOST=e.com gh pr list'
+expect 2 'export GIT_DIR=/tmp/x && git status'
+expect 2 'export HOME=/tmp/h; git init -q'
+expect 2 'declare -x GIT_PAGER=less; git log'
+expect 0 'TZ=UTC git log -1'
+expect 0 'LC_ALL=C git grep -n x'
+expect 0 'GIT_EDITOR=true git rebase --continue'
+expect 0 'GIT_LITERAL_PATHSPECS=1 timeout 20 git grep -n x'
+expect 0 'GIT_PAGER=cat git log -1'
+expect 0 'GIT_AUTHOR_NAME=t GIT_COMMITTER_NAME=t git commit -qm x'
+expect 0 'GIT_CONFIG_GLOBAL=/dev/null git status'
+expect 0 'PATH=/tmp/b:$PATH git status'                   # каталог заглушек — рабочие тестовые обвязки
+expect 0 'export PATH=$PWD/../bg:$PATH; bash x.sh; git -C /r log -1'
+expect 0 'export LC_ALL=C; git status'
+expect 0 $'export HOME=/tmp/h\ngit init -q'                # другая строка — принятое ограничение
+expect 0 'export HOME=/tmp/h; ls .github'                  # слово git есть, команды git/gh в строке нет
+# опции git, запускающие программы, и учётные данные
+expect 2 'git --exec-path=/tmp/x status'
+expect 2 'git clone -u /tmp/x https://e.com/r.git'
+expect 2 'git clone --upload-pack=/tmp/x https://e.com/r.git'
+expect 2 'git fetch --upload-pack /tmp/x origin'
+expect 2 'git ls-remote --upload-pack=/tmp/x origin'
+expect 2 'git push --receive-pack=/tmp/x origin main'
+expect 2 'git push --exec=/tmp/x origin main'
+expect 2 "git clone 'ext::sh -c x' /tmp/r"
+expect 2 'git remote add o ext::x'
+expect 2 'git archive --exec=/tmp/x --remote=o HEAD'
+expect 2 'git grep -O x'
+expect 2 'git grep -nOless x'
+expect 2 'git grep --open-files-in-pager x'
+expect 2 "git rebase -x 'make' main"
+expect 2 'git rebase --exec make main'
+expect 2 'git rebase -ix make main'
+expect 2 'git bisect run make'
+expect 2 "git submodule --quiet foreach 'git status'"
+expect 2 'git init --template=/tmp/t'
+expect 2 'git clone --template=/tmp/t https://e.com/r.git'
+expect 2 'git credential fill'
+expect 2 'git-credential-store get'
+expect 0 'git --exec-path'
+expect 0 'git fetch -u origin'                             # -u у fetch — --update-head-ok
+expect 0 "git grep -n 'Bitrix24Context::fromRequest' -- app"
+expect 0 "git grep -n 'ext::' -- src"
+expect 0 "git config user.name 'Bitrix24Context::x'"      # ext:: — только в начале слова
+expect 0 'git grep -e -O -- src'
+expect 0 'git rebase -X theirs main'
+expect 0 'git submodule update --init'
+expect 0 'git bisect start'
+expect 0 'git clone https://github.com/o/r.git /tmp/r'
+expect 0 'git init -q /tmp/x'
+# gh: браузер, запись через api, токен (решение 27.10, вариант (а))
+expect 2 'gh repo view --web'
+expect 2 'gh issue list -w'
+expect 2 'gh browse'
+expect 2 'gh run view 5 --web'
+expect 2 'gh api -X PATCH repos/o/r -F delete_branch_on_merge=true'
+expect 2 'gh api --method DELETE repos/o/r/git/refs/heads/x'
+expect 2 'gh api repos/o/r/issues -f title=x'
+expect 2 'gh api -XPOST repos/o/r/issues'
+expect 2 'gh api --method=PUT repos/o/r/x'
+expect 2 'gh api --method patch repos/o/r'                 # метод без учёта регистра
+expect 2 'gh api repos/o/r/x --input body.json'
+expect 2 "gh api graphql -f query='{viewer{login}}'"       # поля без -X — POST
+expect 2 'gh auth token'
+expect 2 'gh auth status -t'
+expect 2 'gh auth status --show-token'
+expect 0 'gh api repos/o/r --jq .name'
+expect 0 "gh api -X GET search/code -f q='x repo:o/r' --jq '.items[].path'"
+expect 0 'gh api --method get repos/o/r'
+expect 0 $'cat > f.md <<\'EOF\'\ngh api -X с -f — чтение\nEOF'   # не метод — не запись
+expect 0 'gh pr list -R o/r'
+expect 0 'gh pr view 81 -R o/r --json state -q .state'
+expect 0 'gh release view -R o/r'
+expect 0 'gh run list -w build'
+expect 0 'gh repo deploy-key add k.pub -w'
+expect 0 'gh pr diff 5 -eREADME'                           # №4 [б]
+expect 0 'gh pr list -Sfew'
+expect 0 'gh auth status'
+expect 0 'gh pr checks 5 --watch'
+# --- Ф2a: правки по ревью PR #89 (xhigh) ---
+# присваивания судятся один раз на слово (курсор); захват вывода git/gh в переменную — не окружение git
+expect 0 'GIT_SHA=$(git rev-parse HEAD) GIT_BR=$(git branch --show-current) && echo "$GIT_SHA"'
+expect 0 'docker build --build-arg GIT_SHA=$(git rev-parse HEAD) --build-arg GIT_BRANCH=$(git branch --show-current) .'
+expect 0 'export GIT_SHA=$(git rev-parse --short HEAD)'
+expect 0 'export GIT_SHA="$(git rev-parse --short HEAD)"; echo "$GIT_SHA"'
+expect 0 'export GH_LOGIN=`gh api user --jq .login`'
+expect 2 'export HOME=$(mktemp -d); git init -q'
+expect 2 'GIT_DIR=$(pwd)/x git status'
+expect 2 'git status; GIT_DIR=/tmp/x git log'                     # присваивание между двумя git
+expect 2 'TZ=UTC LC_ALL=C git status; GIT_DIR=/tmp/x git log'      # курсор — заново в каждом сегменте
+expect 2 'git status && x=1 GIT_DIR=/tmp/x git log'
+expect 2 'git -C /r status 2>&1 GIT_DIR=/tmp/x git log'
+expect 2 'GIT_DIR=/tmp/x git-upload-pack /r'                      # ветка git-<подкоманда>
+expect 0 'GIT_PAGER=cat git-log -1'
+expect 2 'export GH_HOST=e.com; gh pr list'                       # export перед gh
+expect 2 'typeset -x GIT_DIR=/tmp/x; git status'
+expect 0 'GIT_PAGER="cat" git log -1'                             # значение в кавычках
+expect 0 "GIT_EDITOR='true' git commit -q --amend"
+# верификатор правок: слово-присваивание, которое само опознано командой, судит следующая команда; захват — только GIT_*/GH_*
+expect 2 'GIT_DIR=/tmp/x/git git status'
+expect 2 'HOME=/tmp/h/gh gh auth status'
+expect 2 'HOME=$(git rev-parse --show-toplevel) git log -1'
+expect 2 'export HOME=$(git rev-parse --show-toplevel); git log -1'
+expect 0 'r=$(git rev-parse HEAD) git log -1'
+expect 2 'export GIT_X=$(mktemp -d); git init -q'                 # иная подстановка в GIT_* — судится
+# gh в кавычках — шаблон поиска, кроме bash -c
+expect 0 "grep -n 'gh auth token' README.md"
+expect 0 'rg -n "gh browse" plugins/'
+expect 0 "gh pr view 89 --json body -q .body | grep -n 'gh browse'"
+expect 0 'echo "gh browse" | wc -c'
+expect 2 'T=$(gh auth token)'
+expect 2 'T="$(gh auth token)"'
+expect 2 'bash -c "gh auth token"'
+expect 2 "bash -lc 'gh browse'"
+expect 2 'sh -c "gh auth token"'
+expect 0 "grep -c 'gh auth token' README.md"
+expect 0 "rg -c 'gh browse' plugins/"
+expect 2 '/usr/bin/gh browse'
+# текст в кавычках у gh — не флаги (кроме подстановки)
+expect 0 "gh pr close 5 -c 'дубль, см. gh browse и -w'"
+expect 0 "gh issue close 5 --comment 'закрыто: gh auth token не нужен'"
+expect 0 "gh pr review 5 --approve --body 'проверь -w и gh api -X PATCH'"
+expect 0 "gh release create v1 --notes 'gh browse --web'"
+expect 0 "gh pr edit 89 --body 'цена \$5 и gh browse'"
+expect 0 'gh pr comment 89 --body "см. $HOME и -w"'
+expect 0 "gh pr create --title t --body='цена \$5, флаг -w'"
+expect 0 'gh pr close 5 -c "don'"'"'t use -w here"'
+expect 2 "gh pr close 5 -c 'x y' -w"
+expect 2 "gh pr view 5 --jq '.a | .b' --web"
+expect 2 'gh pr comment 5 --body "$(gh auth token)"'
+expect 2 'gh pr comment 5 --body "`gh browse` x"'
+expect 2 "gh issue list '-w'"
+# экранированная кавычка в тексте не уводит разбор за конец текста
+expect 2 "gh pr comment 1 --body 'it'\\''s'; git clean -fdx; echo 'a'\\''b'"
+expect 2 "gh pr comment 1 --body 'it'\\''s ok'; git clean -fdx; gh pr comment 2 --body 'that'\\''s it'"
+expect 2 'gh pr comment 1 --body "a 5\" b"; git checkout -f main; echo "c 7\" d"'
+expect 2 'gh pr create --title "a\"" --web --body "b\""'
+expect 0 "gh pr close 5 -c 'it'\\''s gh browse'"
+expect 0 'gh pr close 5 -c "say \"gh browse -w"'
+# gh api: метод через =, поля всех видов; токен
+expect 2 'gh api -X=POST repos/o/r/issues'
+expect 2 'gh api -X=patch repos/o/r'
+expect 2 'gh api repos/o/r/issues -F title=x'
+expect 2 'gh api repos/o/r/issues --field title=x'
+expect 2 'gh api repos/o/r/issues --raw-field title=x'
+expect 2 'gh api repos/o/r/issues --raw-field=title=x'
+expect 2 'gh api repos/o/r/issues --field=title=x'
+expect 2 'gh api repos/o/r/issues -ftitle=x'
+expect 2 'gh api repos/o/r/issues -Ftitle=x'
+expect 2 'gh api repos/o/r/x --input=body.json'
+expect 2 'gh auth git-credential get'
+expect 2 'gh auth status --show-token=true'
+expect 2 'gh repo view --web=true'
+expect 2 'gh pr view 5 --exec x'                                  # барьер gh pr view
+# clone -c слитно, кластером и сокращением; ls-remote --exec; pull
+expect 2 'git clone -ccore.pager=less https://e.com/r.git'
+expect 2 'git clone -qc core.pager=less https://e.com/r.git'
+expect 2 'git clone --config core.pager=less https://e.com/r.git'
+expect 2 'git clone --conf core.pager=less https://e.com/r.git'
+expect 2 'git clone --conf=core.pager=less https://e.com/r.git'
+expect 0 'git clone -qc core.autocrlf=false https://e.com/r.git'
+expect 0 'git clone -b main -c user.name=t https://e.com/r.git'
+expect 0 'git clone -bfix/cache.v2 https://e.com/r.git'          # c в значении -b — не -c
+expect 2 'git ls-remote --exec=/tmp/x origin'
+expect 2 'git ls-remote --exec /tmp/x origin'
+expect 0 'git ls-remote --exit-code origin main'
+expect 2 'git pull --upload-pack=/tmp/x origin'
+expect 2 'git clone --reference=ext::x https://e.com/r.git'    # ext:: в значении long-опции
+# rebase -S<ключ> — значение только слитно; config -t <тип>
+expect 0 'git rebase -S0x1A2B main'
+expect 0 'git rebase -iS0xABC main'
+expect 0 'git rebase -Sx main'
+expect 2 'git rebase -S -x make main'
+expect 2 'git rebase -xS main'
+expect 2 'git config -t bool core.pager less'
+expect 2 'git config set -t bool core.pager less'
+# --config-env: значение ключа с проверкой не видно; опции config со значением; чтение
+expect 2 'git --config-env core.editor=true commit'
+expect 2 'git --config-env=core.pager=cat log'
+expect 0 'git config --file .git/x.cfg user.name t'
+expect 0 'git config -f .git/x.cfg user.name t'
+expect 0 "git config --get core.pager 'less'"
+expect 0 'git config --unset-all credential.helper store'
+expect 0 "git config --get-all remote.origin.fetch 'refs/*'"
+# потолок 16 КБ — и у команды только со словом gh
+expect 2 "gh pr list --search $(printf '%17000s' '' | tr ' ' x)"
+# время: 2 000 слов gh в сегменте — разбор линейный (проход присваиваний с начала сегмента на каждом слове — 40 с)
+_t0=${SECONDS}
+expect 0 "$(printf 'gh %.0s' {1..2000})"
+if ((SECONDS - _t0 > 15)); then
+  _fail=$((_fail + 1))
+  printf 'FAIL: разбор 2 000 слов gh — %s с (порог 15 с)\n' "$((SECONDS - _t0))"
+fi
 
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'
