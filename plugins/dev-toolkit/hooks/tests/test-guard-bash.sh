@@ -1274,6 +1274,7 @@ expect 0 'export GH_LOGIN=`gh api user --jq .login`'
 expect 2 'export HOME=$(mktemp -d); git init -q'
 expect 2 'GIT_DIR=$(pwd)/x git status'
 expect 2 'git status; GIT_DIR=/tmp/x git log'                     # присваивание между двумя git
+expect 2 'TZ=UTC LC_ALL=C git status; GIT_DIR=/tmp/x git log'      # курсор — заново в каждом сегменте
 expect 2 'git status && x=1 GIT_DIR=/tmp/x git log'
 expect 2 'git -C /r status 2>&1 GIT_DIR=/tmp/x git log'
 expect 2 'GIT_DIR=/tmp/x git-upload-pack /r'                      # ветка git-<подкоманда>
@@ -1282,6 +1283,13 @@ expect 2 'export GH_HOST=e.com; gh pr list'                       # export пе�
 expect 2 'typeset -x GIT_DIR=/tmp/x; git status'
 expect 0 'GIT_PAGER="cat" git log -1'                             # значение в кавычках
 expect 0 "GIT_EDITOR='true' git commit -q --amend"
+# верификатор правок: слово-присваивание, которое само опознано командой, судит следующая команда; захват — только GIT_*/GH_*
+expect 2 'GIT_DIR=/tmp/x/git git status'
+expect 2 'HOME=/tmp/h/gh gh auth status'
+expect 2 'HOME=$(git rev-parse --show-toplevel) git log -1'
+expect 2 'export HOME=$(git rev-parse --show-toplevel); git log -1'
+expect 0 'r=$(git rev-parse HEAD) git log -1'
+expect 2 'export GIT_X=$(mktemp -d); git init -q'                 # иная подстановка в GIT_* — судится
 # gh в кавычках — шаблон поиска, кроме bash -c
 expect 0 "grep -n 'gh auth token' README.md"
 expect 0 'rg -n "gh browse" plugins/'
@@ -1291,6 +1299,9 @@ expect 2 'T=$(gh auth token)'
 expect 2 'T="$(gh auth token)"'
 expect 2 'bash -c "gh auth token"'
 expect 2 "bash -lc 'gh browse'"
+expect 2 'sh -c "gh auth token"'
+expect 0 "grep -c 'gh auth token' README.md"
+expect 0 "rg -c 'gh browse' plugins/"
 expect 2 '/usr/bin/gh browse'
 # текст в кавычках у gh — не флаги (кроме подстановки)
 expect 0 "gh pr close 5 -c 'дубль, см. gh browse и -w'"
@@ -1306,6 +1317,13 @@ expect 2 "gh pr view 5 --jq '.a | .b' --web"
 expect 2 'gh pr comment 5 --body "$(gh auth token)"'
 expect 2 'gh pr comment 5 --body "`gh browse` x"'
 expect 2 "gh issue list '-w'"
+# экранированная кавычка в тексте не уводит разбор за конец текста
+expect 2 "gh pr comment 1 --body 'it'\\''s'; git clean -fdx; echo 'a'\\''b'"
+expect 2 "gh pr comment 1 --body 'it'\\''s ok'; git clean -fdx; gh pr comment 2 --body 'that'\\''s it'"
+expect 2 'gh pr comment 1 --body "a 5\" b"; git checkout -f main; echo "c 7\" d"'
+expect 2 'gh pr create --title "a\"" --web --body "b\""'
+expect 0 "gh pr close 5 -c 'it'\\''s gh browse'"
+expect 0 'gh pr close 5 -c "say \"gh browse -w"'
 # gh api: метод через =, поля всех видов; токен
 expect 2 'gh api -X=POST repos/o/r/issues'
 expect 2 'gh api -X=patch repos/o/r'
