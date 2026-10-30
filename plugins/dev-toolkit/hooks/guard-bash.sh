@@ -3021,15 +3021,19 @@ _f3_msg="запись из Bash в путь автозапуска кода (.gi
 # _f3_path <путь без кавычек> — _f3_res=true, если путь из класса Ф3
 # (результат в переменной, как у _env_tok_hit). Дом — ~, $HOME, ${HOME} или
 # значение HOME хука префиксом (не регексом: точка в пути дома — не маска).
-# Литерал под /tmp — не класс (фикстуры тестов).
+# Литерал под /tmp — не класс (фикстуры тестов); с компонентом .. — не под
+# /tmp (как в правиле rm). .git/hooks в пути через переменную или подстановку
+# ($T/.git/hooks — фикстура mktemp) — не класс: значение не видно, а
+# фикстуры так и пишут (принятое ограничение, как у пути через переменную).
 _f3_path() {
   local p="$1" r=""
   _f3_res=false
   case "${p}" in
+    /tmp/.. | /tmp/../* | /tmp/*/.. | /tmp/*/../*) ;;
     /tmp | /tmp/*) return 0 ;;
     *) ;;
   esac
-  if [[ "${p}" =~ (^|/)\.git/hooks(/|$) ]]; then
+  if [[ "${p}" != *'$'* && "${p}" =~ (^|/)\.git/hooks(/|$) ]]; then
     _f3_res=true
     return 0
   fi
@@ -3041,7 +3045,7 @@ _f3_path() {
     *) if [[ -n "${HOME:-}" && "${p}" == "${HOME}/"* ]]; then r="${p:${#HOME}+1}"; fi ;;
   esac
   case "${r}" in
-    .gitconfig | .config/git/config | .bashrc | .bash_profile | .bash_login | .profile | .zshrc | .zprofile | .zshenv) _f3_res=true ;;
+    .gitconfig | .config/git/config | .bashrc | .bash_profile | .bash_login | .bash_logout | .profile | .zshrc | .zprofile | .zshenv | .zlogin | .zlogout) _f3_res=true ;;
     *) ;;
   esac
   return 0
@@ -3049,12 +3053,16 @@ _f3_path() {
 
 # Предфильтр: без подстроки класса в тексте (кавычки и \ сняты) правило не
 # запускается — иначе _env_unquote шёл бы по каждому токену каждой команды.
-_f3_x="${_scmd//[\"\'\\]/}"
+# Команда длиннее _LX_MAX лексером не разбиралась — правило её не судит, и
+# замена по всей строке не нужна (на мегабайте она стоила десятки секунд).
 _f3_on=false
-case "${_f3_x}" in
-  *.git/hooks* | *.gitconfig* | *.config/git* | *.bashrc* | *.bash_profile* | *.bash_login* | *.profile* | *.zshrc* | *.zprofile* | *.zshenv*) _f3_on=true ;;
-  *) ;;
-esac
+if ! ${_lx_big}; then
+  _f3_x="${_scmd//[\"\'\\]/}"
+  case "${_f3_x}" in
+    *.git/hooks* | *.gitconfig* | *.config/git* | *.bashrc* | *.bash_profile* | *.bash_login* | *.bash_logout* | *.profile* | *.zshrc* | *.zprofile* | *.zshenv* | *.zlogin* | *.zlogout*) _f3_on=true ;;
+    *) ;;
+  esac
+fi
 
 # Локаль C на весь цикл, а не local в функциях: local LC_ALL вызывает
 # setlocale на каждом входе и выходе, и на сотнях токенов это секунды.
@@ -3083,6 +3091,8 @@ for _s in "${!_lx_from[@]}"; do
     _f3_ops=()
     _f3_t=""
     _f3_sedi=false
+    _f3_scr=false
+    _f3_skip=false
     _f3_np=false
     for ((_j = _from; _j < _to; _j++)); do
       _t="${_lx_tk[_j]}"
@@ -3092,6 +3102,12 @@ for _s in "${!_lx_from[@]}"; do
         if [[ "${_t:1}" == *'>'* ]]; then _f3_np=true; else _j=$((_j + 1)); fi
         continue
       fi
+      # Кавычки снимаются только у цели редиректа и слов писателя после его
+      # имени: у прочих слов результат не нужен, а цикл .env снимет их сам.
+      if ! ${_f3_np}; then
+        ${_f3_cmd} || continue
+        ((_j > _sc_ci)) || continue
+      fi
       _env_unquote "${_t:1}"
       if ${_f3_np}; then
         _f3_np=false
@@ -3099,17 +3115,61 @@ for _s in "${!_lx_from[@]}"; do
         ! ${_f3_res} || block "${_f3_msg}"
         continue
       fi
-      ${_f3_cmd} || continue
-      ((_j > _sc_ci)) || continue
+      if ${_f3_skip}; then
+        # Значение опции отдельным словом — не операнд.
+        _f3_skip=false
+        continue
+      fi
+      # Опции — как их читает GNU getopt: long — по однозначному префиксу
+      # (--target-dir, --in), короткие — кластером до первой буквы со значением
+      # (значение — остаток слова или следующее слово).
       case "${_tu}" in
-        -t | --target-directory) _f3_t=next ;;
-        --target-directory=*) _f3_t="${_tu#*=}" ;;
-        --in-place*) _f3_sedi=true ;;
-        -[!-]*) if [[ "${_sc_c0}" == sed && "${_tu}" == -*i* ]]; then _f3_sedi=true; fi ;;
-        -*) ;;
+        --) ;;
+        --?*)
+          _f3_n="${_tu#--}"
+          _f3_n="${_f3_n%%=*}"
+          if [[ "${_sc_c0}" == sed ]]; then
+            if [[ in-place == "${_f3_n}"* ]]; then
+              _f3_sedi=true
+            elif [[ expression == "${_f3_n}"* || file == "${_f3_n}"* || line-length == "${_f3_n}"* ]]; then
+              [[ line-length == "${_f3_n}"* ]] || _f3_scr=true
+              [[ "${_tu}" == *=* ]] || _f3_skip=true
+            fi
+          elif [[ target-directory == "${_f3_n}"* ]]; then
+            if [[ "${_tu}" == *=* ]]; then _f3_t="${_tu#*=}"; else _f3_t=next; fi
+          elif [[ suffix == "${_f3_n}"* || mode == "${_f3_n}"* || owner == "${_f3_n}"* || group == "${_f3_n}"* ]]; then
+            [[ "${_tu}" == *=* ]] || _f3_skip=true
+          fi
+          ;;
+        -?*)
+          _f3_w="${_tu#-}"
+          if [[ "${_sc_c0}" == sed ]]; then
+            # -i (суффикс — остаток слова), -e/-f (скрипт), -l (число).
+            _f3_k="${_f3_w%%[efil]*}"
+          else
+            # -t (каталог), -S (суффикс), у install ещё -m/-o/-g.
+            _f3_k="${_f3_w%%[tSmog]*}"
+          fi
+          _f3_c="${_f3_w:${#_f3_k}:1}"
+          _f3_r="${_f3_w:${#_f3_k}+1}"
+          case "${_f3_c}" in
+            i) _f3_sedi=true ;;
+            e | f)
+              _f3_scr=true
+              [[ -n "${_f3_r}" ]] || _f3_skip=true
+              ;;
+            t) if [[ -n "${_f3_r}" ]]; then _f3_t="${_f3_r}"; else _f3_t=next; fi ;;
+            l | S | m | o | g) [[ -n "${_f3_r}" ]] || _f3_skip=true ;;
+            *) ;;
+          esac
+          ;;
         *) if [[ "${_f3_t}" == next ]]; then _f3_t="${_tu}"; else _f3_ops+=("${_tu}"); fi ;;
       esac
     done
+    # Скрипт sed без -e/-f — первый операнд, не файл.
+    if [[ "${_sc_c0}" == sed ]] && ! ${_f3_scr} && ((${#_f3_ops[@]} > 0)); then
+      _f3_ops=("${_f3_ops[@]:1}")
+    fi
     _f3_chk=()
     case "${_sc_c0}" in
       cp | mv | ln | install)

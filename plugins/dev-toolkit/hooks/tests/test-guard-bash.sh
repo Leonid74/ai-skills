@@ -1597,6 +1597,48 @@ expect 0 'cp a .claude/settings.local.json'                 # настройки
 expect 0 'printf x > .git/config'                           # прочий .git — вне правила (фикстуры 4554, 14167)
 expect 0 'git commit -m "запись в ~/.bashrc и .git/hooks/pre-commit"'
 
+# --- Ф3: правки по ревью xhigh (опции по GNU getopt, скрипт sed, /tmp, классы) ---
+expect 2 'cp -vt .git/hooks pre-commit'                     # кластер с t: каталог — следующее слово
+expect 2 'ln -sft .git/hooks ../../scripts/pre-commit'
+expect 2 'cp -t.git/hooks pre-commit'                       # слитное значение -t
+expect 0 'cp -rt /tmp/b .git/hooks/pre-commit'              # источник в классе, цель под /tmp
+expect 0 'cp -vt /tmp/b ~/.bashrc'
+expect 2 'cp --target-dir=.git/hooks pre-commit'            # long-опция по однозначному префиксу
+expect 2 'cp --target-dir .git/hooks pre-commit'
+expect 0 'cp --target-dir /tmp/b ~/.bashrc'
+expect 2 "sed --in 's/a/b/' ~/.bashrc"
+expect 2 "sed --in-pl 's/a/b/' ~/.zshrc"
+expect 2 "sed --in-place=.bak 's/a/b/' ~/.bashrc"
+expect 2 'install hook .git/hooks/pre-commit -m 755'        # значение опции после цели — не операнд
+expect 2 'cp src ~/.bashrc -S .bak'
+expect 2 'install hook .git/hooks/pre-commit --mode 755'
+expect 2 'cp src ~/.bashrc --suffix .bak'
+expect 2 "sed -i --expression=s/a/b/ ~/.bashrc"             # скрипт задан опцией — первый операнд файл
+expect 0 "sed -i --expression '/.git/hooks/d' README.md"     # значение --expression — не файл
+expect 0 "sed -i -l 80 's#/.git/hooks/#/x/#' README.md"      # значение -l — не операнд
+expect 2 'sed -i -fscript.sed ~/.bashrc'
+expect 0 "sed -i 's#/.git/hooks/#/hooks/#' README.md"       # скрипт sed — не файл
+expect 0 "sed -i -e 's#/.git/hooks/#/x/#' README.md"
+expect 2 'sed -i -f /tmp/s.sed ~/.bashrc'
+expect 2 "sed -i -e 's/a/b/' -e 's/c/d/' ~/.gitconfig"
+expect 0 "sed -n -e'/alias/p' ~/.bashrc"                    # i в слитом значении -e — не -i
+expect 0 'sed -fscript.sed ~/.bashrc'
+expect 2 "sed -ni 's/a/b/' ~/.bashrc"
+expect 2 "sed -ie 's/a/b/' ~/.bashrc"                        # -i с суффиксом e
+expect 2 "sed -i 's/a/b/' ~/.bashrc /tmp/f"                  # все файлы sed, не только последний
+expect 2 'echo x | tee ~/.zshrc /tmp/log'                    # все файлы tee
+expect 2 'cp x ~/.ba"sh"rc'                                  # кавычки внутри имени класса
+expect 2 "cp x .git/'hooks'/pre-commit"
+expect 2 'cp h /tmp/../srv/repo/.git/hooks/pre-commit'       # .. после /tmp — вне /tmp
+expect 2 'echo x > /tmp/x/../../srv/repo/.git/hooks/pre-commit'
+expect 0 'cp -t /tmp/b ~/.bashrc ~/.profile'                 # при -t источники не судятся
+expect 0 'ln -s ~/.bashrc'                                   # один операнд — источник
+expect 0 $'T=$(mktemp -d) && git init -q "$T" && printf \'x\' > "$T/.git/hooks/pre-commit"'   # фикстура через переменную
+expect 0 'D=/tmp/fx; mkdir -p $D/.git/hooks && cp h $D/.git/hooks/pre-commit'
+expect 2 'echo x >> ~/.zlogin'
+expect 2 'cp x ~/.bash_logout'
+expect 2 'echo x | tee ~/.zlogout'
+
 # --- регрессия существующих правил ---
 expect 2 'rm -rf /home/x'
 expect 0 'rm -rf /tmp/x'
