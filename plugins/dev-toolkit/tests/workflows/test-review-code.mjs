@@ -190,6 +190,16 @@ function isSweep(o) {
   return o.label.startsWith("sweep-finder");
 }
 const EMPTY = { candidates: [], suppressed: [] };
+// Строка понижения модели — дословно из SKILL.md: стенд сверяет её и с текстом скилла.
+const DOWN =
+  "⚠️ ПОНИЖЕНИЕ МОДЕЛИ: `opus` не ответил — все агенты прогона шли на `sonnet` (решение владельца 31.10.2026)";
+assert.ok(
+  readFileSync(
+    new URL("../../skills/review-code/SKILL.md", import.meta.url),
+    "utf8",
+  ).includes(`«${DOWN}»`),
+  "строка понижения в SKILL.md совпадает со стендом",
+);
 
 /**
  * Вердикты по всем кандидатам промпта.
@@ -1443,15 +1453,15 @@ console.log("ok 22 сильная сессия: последняя линия б
   );
   assert.equal(edge.result.opusSilent, true, "по одному запросу и ответу");
 
-  // Ответы агентов без model за ответы на другой модели не считаются: сессия на opus, pass=1,
-  // finder'ы на opus молчат, угол 5 и верификатор (без model) работают.
+  // Сессия на opus: признак не ставится, даже если finder'ы на opus молчат (угол 5 и верификатор без
+  // model работают) — повтор без opus только у слабой сессии.
   const b = base("high", 1);
   const plain = await runScript(b, (p, o) => {
     if (o.model === "opus") return null;
     return isFinder(o) ? one : verdicts(p, () => "CONFIRMED");
   });
   assert.ok(plain.result.agents.byModel.default.count > 0);
-  assert.equal(plain.result.opusSilent, false, "ответы без model — не sonnet");
+  assert.equal(plain.result.opusSilent, false, "сессия на opus — повтора нет");
 }
 console.log("ok 23 слабая сессия без доступа к opus: признак opusSilent");
 
@@ -1904,8 +1914,10 @@ for (const [level, pass, trig] of [
     `${tag}: все в корзине sonnet`,
   );
   assert.equal(result.opusUnavailable, true);
-  assert.ok(
-    result.notes.some((n) => n.startsWith("⚠️ ПОНИЖЕНИЕ МОДЕЛИ")),
+  // Дословно и один раз: строку нельзя сокращать или перефразировать (требование владельца 31.10.2026).
+  assert.deepEqual(
+    result.notes.filter((n) => n.includes("ПОНИЖЕНИЕ МОДЕЛИ")),
+    [DOWN],
     `${tag}: строка понижения в notes`,
   );
 }
