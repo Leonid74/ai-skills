@@ -51,6 +51,17 @@ expect 0 'git log --no-merges'
 expect 0 'git blame -L 10,20 file.txt'
 expect 0 'git show HEAD --stat'
 expect 0 'git checkout -b feat/x'                  # не охраняемая подкоманда
+# формы фазы 0 review-code 2.22.0 («Правки PR и база»): барьер их не должен блокировать, иначе
+# «иная ошибка — стоп» остановит ревью каждого PR с правкой правил
+expect 0 "git diff --text --no-textconv --no-ext-diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 main -- ':(top,literal)doc/REVIEW.md'"
+expect 0 "git diff --text --no-textconv --no-ext-diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 @{upstream} -- ':(top,literal)CLAUDE.md'"
+expect 0 "git diff --text --no-textconv --no-ext-diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 0123456789abcdef0123456789abcdef01234567 -- ':(top,literal)REVIEW.md'"
+expect 0 "git diff --raw --no-ext-diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD -- ':(top,literal)doc/REVIEW.md' ':(top,literal)CLAUDE.md'"
+expect 0 "git status --porcelain --untracked-files=all -- ':(top,literal)doc/REVIEW.md' ':(top,literal)REVIEW.md'"
+expect 0 'git diff --name-status main...HEAD'
+expect 0 'git diff --name-status origin/HEAD...HEAD'
+expect 0 'git diff --name-status HEAD'
+expect 0 'gh pr view 42 --json baseRefOid,headRefOid'
 
 # --- gh pr diff/view: опасные подфлаги (блокировка) ---
 expect 2 'gh pr view 123 --web'

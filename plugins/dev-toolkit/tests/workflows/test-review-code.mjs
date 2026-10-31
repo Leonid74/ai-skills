@@ -303,6 +303,12 @@ function checkSums(a) {
     "a.php:10 передан в обычный список → не подавлен",
   );
   assert.equal(result.suppressed[0].by.length, 4);
+  // Цитату правила сессия сверяет со skip-list брифа (SKILL.md, фаза 3, «Сверка цитат подавления»).
+  assert.equal(
+    result.suppressed[0].rule,
+    "R",
+    "suppressed несёт цитату правила finder'а",
+  );
   checkSums(result.agents);
   console.log("ok 1 high pass=1");
 }
@@ -1142,6 +1148,13 @@ console.log("ok 6 проверка args");
     ["src/a.php:40"],
     "снято голосом верификатора",
   );
+  // Сверка цитат фазы 3 опирается на эти поля: цитата — evidence голоса SUPPRESSED, источник — верификация.
+  assert.equal(
+    result.suppressed[0].rule,
+    "e",
+    "цитата правила из голоса верификатора",
+  );
+  assert.deepEqual(result.suppressed[0].by, ["верификация"]);
   console.log("ok 15 xhigh: самоподавление finder'а не принято");
 }
 
