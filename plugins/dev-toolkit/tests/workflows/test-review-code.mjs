@@ -652,21 +652,34 @@ for (const [name, mut, re] of [
     // Подсказка в тексте — чтобы сессия не «чинила» поле в false ради повтора.
     /args\.securitySurface: обязательный true\|false.*false ради прохождения проверки не ставить/,
   ]),
-  ...["medium", "high"].map((level) => [
-    `securitySurface на ${level}`,
+  ...[
+    ["medium", 1],
+    ["medium", 2],
+    ["high", 1],
+    ["high", 2],
+  ].map(([level, pass]) => [
+    `securitySurface на ${level} pass=${pass}`,
     (a) => {
-      Object.assign(a, base(level, 2));
+      Object.assign(a, base(level, pass));
       a.securitySurface = true;
     },
     /args\.securitySurface: true допустимо только на xhigh\|max.*поднять уровень до пола правила 1, триггер не менять/,
   ]),
   ...["true", null, 0].map((v) => [
-    `finderFloorOff = ${JSON.stringify(v)}`,
+    `opusUnavailable = ${JSON.stringify(v)}`,
     (a) => {
-      a.finderFloorOff = v;
+      a.sessionBelowOpus = true;
+      a.opusUnavailable = v;
     },
-    /args\.finderFloorOff: ожидается true\|false/,
+    /args\.opusUnavailable: ожидается true\|false/,
   ]),
+  [
+    "opusUnavailable у сессии на opus",
+    (a) => {
+      a.opusUnavailable = true;
+    },
+    /args\.opusUnavailable: true допустимо только при sessionBelowOpus: true/,
+  ],
 ]) {
   const a = base("high", 1);
   mut(a);
@@ -1327,8 +1340,9 @@ for (const level of ["xhigh", "max"]) {
 console.log("ok 22 сильная сессия: последняя линия без model на xhigh и max");
 
 // 23. Слабая сессия, opus ей недоступен: агенты с model: opus не отвечают, остальные работают.
-// Поле opusSilent — наблюдение, а не диагноз: ни один агент на opus не дал структурного ответа, а
-// агенты на sonnet дали. На pass=1 (все роли на opus) и при общем молчании оно не ставится.
+// Поле opusSilent — наблюдение, а не диагноз: слабая сессия, и ни один агент на opus не дал структурного
+// ответа — причина (лимит, недоступность, формат) не разбирается, ставится и на pass=1, и при общем молчании
+// (решение владельца 31.10.2026: повтор на sonnet без вопроса). У сессии на opus не ставится.
 // Текст причины остановки про opus не говорит: он собирается в том числе из текста ошибок агентов.
 {
   const three = {
@@ -1370,10 +1384,18 @@ console.log("ok 22 сильная сессия: последняя линия б
   assert.equal(medium.result.opusSilent, true, "medium: угла 5 нет");
 
   const first = await scenario("high", 1, true, one, noOpus);
-  assert.equal(first.result.opusSilent, false, "pass=1: все роли на opus");
+  assert.equal(
+    first.result.opusSilent,
+    true,
+    "pass=1: все роли на opus — тоже повтор",
+  );
 
   const limit = await scenario("high", 2, true, one, () => true);
-  assert.equal(limit.result.opusSilent, false, "молчат все — это лимит");
+  assert.equal(
+    limit.result.opusSilent,
+    true,
+    "молчат все — причина не разбирается, повтор",
+  );
 
   const fine = await scenario("high", 2, true, one, () => false);
   assert.equal(fine.result.opusSilent, false, "opus отвечает");
@@ -1710,8 +1732,8 @@ console.log("ok 23 слабая сессия без доступа к opus: пр
 
 // 26. Пол finder'ов (правило 1, решение владельца 05.10.2026): на pass ≥ 2 при триггере finder-углы
 // (обе половины угла 2), их перезапуск и sweep идут на opus — по триггеру, не по уровню (xhigh — уступка
-// max мораторием); последняя линия — по признаку слабой сессии, как без триггера. finderFloorOff
-// (повтор скилла после allOpusSilent) возвращает дешёвым ролям sonnet, последнюю линию не трогает.
+// max мораторием); последняя линия — по признаку слабой сессии, как без триггера. opusUnavailable
+// (повтор скилла после opusSilent, только слабой сессии) переводит на sonnet все роли.
 for (const level of ["xhigh", "max"]) {
   for (const pass of [2, 3]) {
     for (const weak of [false, true]) {
@@ -1719,7 +1741,8 @@ for (const level of ["xhigh", "max"]) {
         const a = base(level, pass, level === "max");
         a.sessionBelowOpus = weak;
         a.securitySurface = true;
-        if (off) a.finderFloorOff = true;
+        if (off && !weak) continue;
+        if (off) a.opusUnavailable = true;
         let failed = false;
         const { result, calls } = await runScript(a, (p, o) => {
           if (isSweep(o))
@@ -1767,7 +1790,7 @@ for (const level of ["xhigh", "max"]) {
         for (const c of last)
           assert.equal(
             c.opts.model,
-            weak ? "opus" : undefined,
+            off ? "sonnet" : weak ? "opus" : undefined,
             `${tag}: ${c.opts.label}`,
           );
         if (!off)
@@ -1777,7 +1800,7 @@ for (const level of ["xhigh", "max"]) {
             `${tag}: sonnet нет`,
           );
         assert.equal(result.securitySurface, true);
-        assert.equal(result.finderFloorOff, off);
+        assert.equal(result.opusUnavailable, off);
         checkSums(result.agents);
       }
     }
@@ -1848,14 +1871,50 @@ for (const [field, value, re] of [
 }
 console.log("ok 27 белый список ключей args");
 
-// 28. allOpusSilent — спрашивали только opus и никто не ответил (слабая сессия + пол finder'ов, opus
-// недоступен): по нему скилл повторяет прогон с finderFloorOff. opusSilent при этом не ставится.
+// 28. Повтор без opus (решение владельца 31.10.2026): opusUnavailable переводит на sonnet все роли на
+// любом уровне и проходе, с триггером и без; строка понижения идёт в notes механически; на повторе
+// opusSilent не ставится (второго автоповтора нет).
+for (const [level, pass, trig] of [
+  ["medium", 1, false],
+  ["high", 1, false],
+  ["high", 2, false],
+  ["xhigh", 1, true],
+  ["xhigh", 2, false],
+  ["max", 2, true],
+]) {
+  const a = base(level, pass);
+  a.sessionBelowOpus = true;
+  a.securitySurface = trig;
+  a.opusUnavailable = true;
+  const { result, calls } = await runScript(a, (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [cand("src/a.php", 1, "x")], suppressed: [] }
+        : EMPTY;
+    return verdicts(p, () => "CONFIRMED");
+  });
+  const tag = `${level} pass=${pass} trig=${trig}`;
+  assert.ok(calls.length >= 4, `${tag}: агенты запускались`);
+  for (const c of calls)
+    assert.equal(c.opts.model, "sonnet", `${tag}: ${c.opts.label}`);
+  assert.equal(
+    result.agents.byModel.sonnet.count,
+    calls.length,
+    `${tag}: все в корзине sonnet`,
+  );
+  assert.equal(result.opusUnavailable, true);
+  assert.ok(
+    result.notes.some((n) => n.startsWith("⚠️ ПОНИЖЕНИЕ МОДЕЛИ")),
+    `${tag}: строка понижения в notes`,
+  );
+}
 {
-  const run = (level, pass, weak, trigger, off, silent) => {
-    const a = base(level, pass);
-    a.sessionBelowOpus = weak;
-    a.securitySurface = trigger;
-    if (off) a.finderFloorOff = true;
+  const run = (off, silent) => {
+    const a = base("xhigh", 2);
+    a.sessionBelowOpus = true;
+    a.securitySurface = true;
+    if (off) a.opusUnavailable = true;
     return runScript(a, (p, o) => {
       if (silent(o)) return null;
       if (isSweep(o)) return EMPTY;
@@ -1867,23 +1926,28 @@ console.log("ok 27 белый список ключей args");
     });
   };
   const noOpus = (o) => o.model === "opus";
-  const all = await run("xhigh", 2, true, true, false, noOpus);
+  const all = await run(false, noOpus);
   assert.equal(all.result.mode, "прерван");
-  assert.equal(all.result.allOpusSilent, true, "все на opus молчат");
-  assert.equal(all.result.opusSilent, false, "ответов sonnet нет");
-  // Повтор с finderFloorOff: finder'ы на sonnet отвечают, последняя линия на opus молчит.
-  const retry = await run("xhigh", 2, true, true, true, noOpus);
-  assert.equal(retry.result.allOpusSilent, false, "sonnet спрашивали");
-  assert.equal(retry.result.opusSilent, true, "вопрос «без пола модели»");
-  const noTrigger = await run("high", 2, true, false, false, () => true);
-  assert.equal(
-    noTrigger.result.allOpusSilent,
-    false,
-    "без триггера sonnet спрашивали",
+  assert.equal(all.result.opusSilent, true, "все на opus молчат — повтор");
+  assert.ok(
+    !all.result.notes.some((n) => n.startsWith("⚠️ ПОНИЖЕНИЕ МОДЕЛИ")),
+    "без повтора строки понижения нет",
   );
-  const strong = await run("xhigh", 2, false, true, false, () => true);
-  assert.equal(strong.result.allOpusSilent, false, "без model спрашивали");
-  const fine = await run("xhigh", 2, true, true, false, () => false);
-  assert.equal(fine.result.allOpusSilent, false, "opus отвечает");
+  const retry = await run(true, noOpus);
+  assert.equal(retry.result.mode, "полный", "на sonnet ответили все");
+  assert.equal(retry.result.opusSilent, false, "второго автоповтора нет");
+  const limit = await run(true, () => true);
+  assert.equal(limit.result.mode, "прерван", "молчит и sonnet — лимит");
+  assert.equal(limit.result.opusSilent, false, "opus не спрашивали");
+  // Явный лимит opus («weekly usage limit») — тоже повтор: исчерпанный лимит opus и есть «opus недоступен».
+  const weekly = await runScript(
+    Object.assign(base("high", 2), { sessionBelowOpus: true }),
+    (p, o) => {
+      if (o.model === "opus")
+        throw new Error("Opus weekly usage limit reached");
+      return isFinder(o) ? EMPTY : verdicts(p, () => "CONFIRMED");
+    },
+  );
+  assert.equal(weekly.result.opusSilent, true, "явный лимит opus — повтор");
 }
-console.log("ok 28 allOpusSilent: молчание всех opus-агентов");
+console.log("ok 28 повтор без opus: все роли на sonnet, строка понижения");

@@ -61,7 +61,7 @@ const ARGS_FIELDS = [
   "pass",
   "sessionBelowOpus",
   "securitySurface",
-  "finderFloorOff",
+  "opusUnavailable",
   "wave",
   "maxAgents",
   "context",
@@ -218,7 +218,7 @@ if (!Number.isInteger(pass) || pass < 1) {
 const sessionBelowOpus = input.sessionBelowOpus;
 if (typeof sessionBelowOpus !== "boolean") {
   throw new Error(
-    `args.sessionBelowOpus: обязательный true|false (true — пол модели включён; false — сессия на opus либо пол снят пользователем), получено «${input.sessionBelowOpus}»`,
+    `args.sessionBelowOpus: обязательный true|false (true — сессия на sonnet, haiku или неизвестной модели, пол модели последней линии включён; false — сессия на opus), получено «${input.sessionBelowOpus}»`,
   );
 }
 // Триггер правила 1 (security-поверхность или контракты) — обязателен по той же причине: умолчание false
@@ -236,12 +236,18 @@ if (securitySurface && level !== "xhigh" && level !== "max") {
     `args.securitySurface: true допустимо только на xhigh|max (пол правила 1), получен уровень «${level}» — поднять уровень до пола правила 1, триггер не менять`,
   );
 }
-// Пол finder'ов снимает только сам скилл — один повтор после молчания всех opus-агентов (allOpusSilent).
-const finderFloorOff =
-  input.finderFloorOff === undefined ? false : input.finderFloorOff;
-if (typeof finderFloorOff !== "boolean") {
+// Повтор без opus (решение владельца 31.10.2026): все роли на sonnet. Ставит только скилл — один раз за
+// прогон после opusSilent; у сессии на opus opus есть всегда, поэтому только при слабой сессии.
+const opusUnavailable =
+  input.opusUnavailable === undefined ? false : input.opusUnavailable;
+if (typeof opusUnavailable !== "boolean") {
   throw new Error(
-    `args.finderFloorOff: ожидается true|false, получено «${input.finderFloorOff}»`,
+    `args.opusUnavailable: ожидается true|false, получено «${input.opusUnavailable}»`,
+  );
+}
+if (opusUnavailable && !sessionBelowOpus) {
+  throw new Error(
+    "args.opusUnavailable: true допустимо только при sessionBelowOpus: true — у сессии на opus повтора без opus не бывает; сессия стала opus — поле снять",
   );
 }
 const wave = input.wave === undefined ? DEFAULT_WAVE : input.wave;
@@ -344,6 +350,12 @@ const stats = {
   asked: { opus: 0, sonnet: 0, default: 0 },
 };
 const notes = [];
+// Громкое уведомление о понижении (требование владельца 31.10.2026): строка идёт в «заметки» механически.
+if (opusUnavailable) {
+  notes.push(
+    "⚠️ ПОНИЖЕНИЕ МОДЕЛИ: opus не ответил — все агенты прогона шли на sonnet (решение владельца 31.10.2026)",
+  );
+}
 const degraded = [];
 // Причина остановки запуска новых агентов (лимит использования, бюджет хода) либо null.
 let halted = null;
@@ -367,10 +379,12 @@ function totalAgents() {
  */
 function modelFor(cheapRole) {
   // Последняя линия (угол 5, верификация) не должна идти на модели слабее finder'ов прохода 1.
+  // Повтор без opus — все роли на sonnet, включая последнюю линию.
+  if (opusUnavailable) return "sonnet";
   if (!cheapRole) return sessionBelowOpus ? "opus" : undefined;
   // Пол finder'ов (правило 1, решение владельца 05.10.2026): по security-поверхности и контрактам
   // повторный проход не удешевляется.
-  return pass === 1 || (securitySurface && !finderFloorOff) ? "opus" : "sonnet";
+  return pass === 1 || securitySurface ? "opus" : "sonnet";
 }
 
 /**
@@ -1241,7 +1255,7 @@ return {
   level,
   pass,
   securitySurface,
-  finderFloorOff,
+  opusUnavailable,
   wave,
   mode: halted ? "прерван" : degraded.length ? "деградированный" : "полный",
   halted,
@@ -1254,21 +1268,13 @@ return {
   rejected,
   overflow,
   failedAngles,
-  // Наблюдение, а не диагноз: ни один агент на opus не дал структурного ответа, а агенты на sonnet
-  // дали. Причину (opus недоступен сессии, лимит посреди прогона, отказы формата) скрипт не знает —
-  // скилл по этому полю лишь добавляет пользователю вариант «без пола модели». Обе модели в одном
-  // прогоне бывают только при поле модели на pass ≥ 2 без пола finder'ов (или со снятым).
+  // Наблюдение, а не диагноз: слабая сессия, opus спрашивали, и ни один opus-агент не дал структурного
+  // ответа. Причину (opus недоступен, лимит, отказы формата) скрипт не знает и не разбирает: по этому полю
+  // скилл без вопроса один раз повторяет прогон с opusUnavailable (все роли на sonnet). Явный лимит тоже
+  // в счёт: исчерпанный лимит opus — самая частая форма «opus недоступен». При opusUnavailable opus не
+  // спрашивают (все роли на sonnet), и признак сам равен false — второго автоповтора нет.
   opusSilent:
-    stats.asked.opus > 0 &&
-    stats.replied.opus === 0 &&
-    stats.replied.sonnet > 0,
-  // Тоже наблюдение: спрашивали только opus, и не ответил ни один. По нему скилл при поле модели и
-  // поле finder'ов (pass ≥ 2, триггер) один раз повторяет прогон с finderFloorOff — finder'ы на sonnet.
-  allOpusSilent:
-    stats.asked.opus > 0 &&
-    stats.replied.opus === 0 &&
-    stats.asked.sonnet === 0 &&
-    stats.asked.default === 0,
+    sessionBelowOpus && stats.asked.opus > 0 && stats.replied.opus === 0,
   sweep,
   agents: {
     total: totalAgents(),
