@@ -27,7 +27,8 @@ export const meta = {
 // Механика оркестрации скилла review-code (dev-toolkit ≥ 2.0.0). Тексты правил — ракурсы углов,
 // skip-list, инварианты, протокол верификации, формат кандидата — в скрипте НЕ дублируются: их
 // собирает скилл из своего SKILL.md и правил проекта и передаёт через args. Здесь только то, что
-// обязано быть детерминированным: состав агентов, модель (роль, проход, признак слабой сессии), волны,
+// обязано быть детерминированным: состав агентов, модель (роль, проход, признак слабой сессии, триггер
+// правила 1), волны,
 // перезапуски, группировка по локации, подсчёт голосов, счётчики для сводки.
 // Date.now()/Math.random()/new Date() не использовать — ломают resume; время меряет сессия.
 
@@ -35,7 +36,7 @@ export const meta = {
 // LEVELS — «Таблица уровней»; LENSES — линзы max (фаза 2); SECURITY_ANGLE — номер security-угла;
 // SWEEP_CAP — потолок кандидатов sweep (фаза 2.5); MERGE_* и DEFAULT_WAVE — «Оркестрация фаз 1–2.5»;
 // NO_SELF_SUPPRESS — уровни, где finder не подавляет сам (пункт 1 skip-list); FINDER_FIELDS —
-// обязательные поля кандидата («Формат кандидата»).
+// обязательные поля кандидата («Формат кандидата»); ARGS_FIELDS — таблица «Поле `args`» (режим Workflow).
 const LEVELS = {
   medium: { angles: 3, cap: 6, protocol: "skeptic", sweep: false },
   high: { angles: 5, cap: 6, protocol: "recall", sweep: false },
@@ -53,6 +54,28 @@ const DEFAULT_WAVE = 5;
 const MIN_WAVE = 2;
 const MAX_WAVE = 16;
 const MAX_PATH_LENGTH = 300;
+// Строка понижения модели — дословно как в SKILL.md (абзац «Пол модели и недоступный `opus`»).
+const DOWNGRADE_NOTE =
+  "⚠️ ПОНИЖЕНИЕ МОДЕЛИ: `opus` не ответил — все агенты прогона шли на `sonnet` (решение владельца 31.10.2026)";
+// Допустимые ключи args. Массив, а не словарь: проверка по словарю пропустила бы constructor/toString
+// через прототип. frame и extraAngles — известные и отвергаемые своими ошибками (они проверяются раньше).
+const ARGS_FIELDS = [
+  "level",
+  "pass",
+  "sessionBelowOpus",
+  "securitySurface",
+  "opusUnavailable",
+  "wave",
+  "maxAgents",
+  "context",
+  "finderRules",
+  "verifyProtocol",
+  "sweepBrief",
+  "files",
+  "angles",
+  "frame",
+  "extraAngles",
+];
 // Поля, без которых кандидат не принимается: finder обязан сам проверить триггер, потребителя и базу.
 const FINDER_FIELDS = ["trigger", "caller_checked", "base_compared"];
 // Поля кандидата по схеме ответа finder'а. Всё остальное в его записи — не данные конвейера.
@@ -193,12 +216,41 @@ const pass = input.pass === undefined ? 1 : input.pass;
 if (!Number.isInteger(pass) || pass < 1) {
   throw new Error(`args.pass: ожидается целое ≥ 1, получено «${input.pass}»`);
 }
-// Признак обязателен: молчаливое умолчание либо отключило бы пол модели, либо понизило бы
+// Признак обязателен: молчаливое умолчание либо отключило бы пол модели последней линии, либо понизило бы
 // верификацию сильной сессии до opus — оба исхода скилл обязан выбрать явно.
 const sessionBelowOpus = input.sessionBelowOpus;
 if (typeof sessionBelowOpus !== "boolean") {
   throw new Error(
-    `args.sessionBelowOpus: обязательный true|false (true — пол модели включён; false — сессия на opus либо пол снят пользователем), получено «${input.sessionBelowOpus}»`,
+    `args.sessionBelowOpus: обязательный true|false (true — сессия на sonnet, haiku или неизвестной модели, пол модели последней линии включён; false — сессия на opus), получено «${input.sessionBelowOpus}»`,
+  );
+}
+// Триггер правила 1 (security-поверхность или контракты) — обязателен по той же причине: умолчание false
+// молча сняло бы пол finder'ов, true — молча добавило бы расход. Из level не выводится: при моратории
+// уровень xhigh, а явный max бывает и без триггера.
+const securitySurface = input.securitySurface;
+if (typeof securitySurface !== "boolean") {
+  throw new Error(
+    `args.securitySurface: обязательный true|false — триггер правила 1 «Таблицы уровней» (дифф задевает security-поверхность или контракты; зоны xhigh — не триггер); значение — только по правилу 1, false ради прохождения проверки не ставить; получено «${input.securitySurface}»`,
+  );
+}
+// При триггере пол правила 1 оставляет только xhigh (уступка max) и max: иной уровень — забытый подъём.
+if (securitySurface && level !== "xhigh" && level !== "max") {
+  throw new Error(
+    `args.securitySurface: true допустимо только на xhigh|max (пол правила 1), получен уровень «${level}» — поднять уровень до пола правила 1, триггер не менять`,
+  );
+}
+// Повтор без opus (решение владельца 31.10.2026): все роли на sonnet. Ставит только скилл — один раз за
+// прогон после opusSilent; у сессии на opus opus есть всегда, поэтому только при слабой сессии.
+const opusUnavailable =
+  input.opusUnavailable === undefined ? false : input.opusUnavailable;
+if (typeof opusUnavailable !== "boolean") {
+  throw new Error(
+    `args.opusUnavailable: ожидается true|false, получено «${input.opusUnavailable}»`,
+  );
+}
+if (opusUnavailable && !sessionBelowOpus) {
+  throw new Error(
+    "args.opusUnavailable: true допустимо только при sessionBelowOpus: true — у сессии на opus повтора без opus не бывает; сессия стала opus — поле снять",
   );
 }
 const wave = input.wave === undefined ? DEFAULT_WAVE : input.wave;
@@ -237,6 +289,15 @@ if (input.extraAngles !== undefined) {
   throw new Error(
     "args.extraAngles: добавочные углы (+angles) в режиме Workflow не поддерживаются — прогон с добавкой ведёт режим Agent",
   );
+}
+// Незнакомый ключ — ошибка, а не молчаливое умолчание: опечатка (extra_angles, maxagents) иначе дала бы
+// прогон без заказанного и без ошибки.
+for (const key of Object.keys(input)) {
+  if (!ARGS_FIELDS.includes(key)) {
+    throw new Error(
+      `args.${key}: неизвестное поле (допустимы: ${ARGS_FIELDS.join(", ")}) — ключ не удалять ради повтора: исправить имя на поле из таблицы «Поле args» SKILL.md, а если такого поля нет — режим Agent`,
+    );
+  }
 }
 const files = Array.isArray(input.files) ? input.files : [];
 if (!files.length || files.some((f) => typeof f !== "string" || !f)) {
@@ -292,6 +353,10 @@ const stats = {
   asked: { opus: 0, sonnet: 0, default: 0 },
 };
 const notes = [];
+// Громкое уведомление о понижении (требование владельца 31.10.2026): строка идёт в «заметки» механически.
+if (opusUnavailable) {
+  notes.push(DOWNGRADE_NOTE);
+}
 const degraded = [];
 // Причина остановки запуска новых агентов (лимит использования, бюджет хода) либо null.
 let halted = null;
@@ -308,15 +373,19 @@ function totalAgents() {
 }
 
 /**
- * Модель агента по правилу «Модель субагентов»: роль, номер прохода и признак слабой сессии.
+ * Модель агента по правилу «Модель субагентов»: роль, номер прохода, признак слабой сессии и триггер правила 1.
  *
  * @param {boolean} cheapRole true — finder-угол (кроме угла 5) или sweep; false — угол 5, верификатор, линза.
  * @returns {string|undefined} значение opts.model либо undefined («model не передавать»).
  */
 function modelFor(cheapRole) {
   // Последняя линия (угол 5, верификация) не должна идти на модели слабее finder'ов прохода 1.
+  // Повтор без opus — все роли на sonnet, включая последнюю линию.
+  if (opusUnavailable) return "sonnet";
   if (!cheapRole) return sessionBelowOpus ? "opus" : undefined;
-  return pass === 1 ? "opus" : "sonnet";
+  // Пол finder'ов (правило 1, решение владельца 05.10.2026): по security-поверхности и контрактам
+  // повторный проход не удешевляется.
+  return pass === 1 || securitySurface ? "opus" : "sonnet";
 }
 
 /**
@@ -1186,6 +1255,8 @@ log(
 return {
   level,
   pass,
+  securitySurface,
+  opusUnavailable,
   wave,
   mode: halted ? "прерван" : degraded.length ? "деградированный" : "полный",
   halted,
@@ -1198,14 +1269,13 @@ return {
   rejected,
   overflow,
   failedAngles,
-  // Наблюдение, а не диагноз: ни один агент на opus не дал структурного ответа, а агенты на sonnet
-  // дали. Причину (opus недоступен сессии, лимит посреди прогона, отказы формата) скрипт не знает —
-  // скилл по этому полю лишь добавляет пользователю вариант «без пола модели». Обе модели в одном
-  // прогоне бывают только при поле модели на pass ≥ 2.
+  // Наблюдение, а не диагноз: слабая сессия, opus спрашивали, и ни один opus-агент не дал структурного
+  // ответа. Причину (opus недоступен, лимит, отказы формата) скрипт не знает и не разбирает: по этому полю
+  // скилл без вопроса один раз повторяет прогон с opusUnavailable (все роли на sonnet). Явный лимит тоже
+  // в счёт: исчерпанный лимит opus — самая частая форма «opus недоступен». При opusUnavailable opus не
+  // спрашивают (все роли на sonnet), и признак сам равен false — второго автоповтора нет.
   opusSilent:
-    stats.asked.opus > 0 &&
-    stats.replied.opus === 0 &&
-    stats.replied.sonnet > 0,
+    sessionBelowOpus && stats.asked.opus > 0 && stats.replied.opus === 0,
   sweep,
   agents: {
     total: totalAgents(),

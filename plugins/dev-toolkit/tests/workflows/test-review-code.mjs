@@ -1,10 +1,12 @@
 // Стенд-заглушка для workflows/review-code.js: моки agent/parallel/pipeline, сценарии отказов.
 // Запуск: node plugins/dev-toolkit/tests/workflows/test-review-code.mjs
+// Мутационная проверка: REVIEW_CODE_SCRIPT=<копия скрипта> подменяет проверяемый файл.
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 
 const RAW = readFileSync(
-  new URL("../../workflows/review-code.js", import.meta.url),
+  process.env.REVIEW_CODE_SCRIPT ||
+    new URL("../../workflows/review-code.js", import.meta.url),
   "utf8",
 );
 const SRC = RAW.replace("export const meta", "const meta");
@@ -105,6 +107,7 @@ function base(level, pass, split) {
     level,
     pass,
     sessionBelowOpus: false,
+    securitySurface: false,
     context: "DIFF",
     finderRules: "RULES",
     verifyProtocol: "PROTO",
@@ -187,6 +190,16 @@ function isSweep(o) {
   return o.label.startsWith("sweep-finder");
 }
 const EMPTY = { candidates: [], suppressed: [] };
+// Строка понижения модели — дословно из SKILL.md: стенд сверяет её и с текстом скилла.
+const DOWN =
+  "⚠️ ПОНИЖЕНИЕ МОДЕЛИ: `opus` не ответил — все агенты прогона шли на `sonnet` (решение владельца 31.10.2026)";
+assert.ok(
+  readFileSync(
+    new URL("../../skills/review-code/SKILL.md", import.meta.url),
+    "utf8",
+  ).includes(`«${DOWN}»`),
+  "строка понижения в SKILL.md совпадает со стендом",
+);
 
 /**
  * Вердикты по всем кандидатам промпта.
@@ -639,6 +652,43 @@ for (const [name, mut, re] of [
       a.sessionBelowOpus = "true";
     },
     /args\.sessionBelowOpus/,
+  ],
+  ...[undefined, "false", "true", null, 0, 1].map((v) => [
+    `securitySurface = ${JSON.stringify(v)}`,
+    (a) => {
+      if (v === undefined) delete a.securitySurface;
+      else a.securitySurface = v;
+    },
+    // Подсказка в тексте — чтобы сессия не «чинила» поле в false ради повтора.
+    /args\.securitySurface: обязательный true\|false.*false ради прохождения проверки не ставить/,
+  ]),
+  ...[
+    ["medium", 1],
+    ["medium", 2],
+    ["high", 1],
+    ["high", 2],
+  ].map(([level, pass]) => [
+    `securitySurface на ${level} pass=${pass}`,
+    (a) => {
+      Object.assign(a, base(level, pass));
+      a.securitySurface = true;
+    },
+    /args\.securitySurface: true допустимо только на xhigh\|max.*поднять уровень до пола правила 1, триггер не менять/,
+  ]),
+  ...["true", null, 0].map((v) => [
+    `opusUnavailable = ${JSON.stringify(v)}`,
+    (a) => {
+      a.sessionBelowOpus = true;
+      a.opusUnavailable = v;
+    },
+    /args\.opusUnavailable: ожидается true\|false/,
+  ]),
+  [
+    "opusUnavailable у сессии на opus",
+    (a) => {
+      a.opusUnavailable = true;
+    },
+    /args\.opusUnavailable: true допустимо только при sessionBelowOpus: true/,
   ],
 ]) {
   const a = base("high", 1);
@@ -1300,8 +1350,9 @@ for (const level of ["xhigh", "max"]) {
 console.log("ok 22 сильная сессия: последняя линия без model на xhigh и max");
 
 // 23. Слабая сессия, opus ей недоступен: агенты с model: opus не отвечают, остальные работают.
-// Поле opusSilent — наблюдение, а не диагноз: ни один агент на opus не дал структурного ответа, а
-// агенты на sonnet дали. На pass=1 (все роли на opus) и при общем молчании оно не ставится.
+// Поле opusSilent — наблюдение, а не диагноз: слабая сессия, и ни один агент на opus не дал структурного
+// ответа — причина (лимит, недоступность, формат) не разбирается, ставится и на pass=1, и при общем молчании
+// (решение владельца 31.10.2026: повтор на sonnet без вопроса). У сессии на opus не ставится.
 // Текст причины остановки про opus не говорит: он собирается в том числе из текста ошибок агентов.
 {
   const three = {
@@ -1343,10 +1394,18 @@ console.log("ok 22 сильная сессия: последняя линия б
   assert.equal(medium.result.opusSilent, true, "medium: угла 5 нет");
 
   const first = await scenario("high", 1, true, one, noOpus);
-  assert.equal(first.result.opusSilent, false, "pass=1: все роли на opus");
+  assert.equal(
+    first.result.opusSilent,
+    true,
+    "pass=1: все роли на opus — тоже повтор",
+  );
 
   const limit = await scenario("high", 2, true, one, () => true);
-  assert.equal(limit.result.opusSilent, false, "молчат все — это лимит");
+  assert.equal(
+    limit.result.opusSilent,
+    true,
+    "молчат все — причина не разбирается, повтор",
+  );
 
   const fine = await scenario("high", 2, true, one, () => false);
   assert.equal(fine.result.opusSilent, false, "opus отвечает");
@@ -1394,15 +1453,15 @@ console.log("ok 22 сильная сессия: последняя линия б
   );
   assert.equal(edge.result.opusSilent, true, "по одному запросу и ответу");
 
-  // Ответы агентов без model за ответы на другой модели не считаются: сессия на opus, pass=1,
-  // finder'ы на opus молчат, угол 5 и верификатор (без model) работают.
+  // Сессия на opus: признак не ставится, даже если finder'ы на opus молчат (угол 5 и верификатор без
+  // model работают) — повтор без opus только у слабой сессии.
   const b = base("high", 1);
   const plain = await runScript(b, (p, o) => {
     if (o.model === "opus") return null;
     return isFinder(o) ? one : verdicts(p, () => "CONFIRMED");
   });
   assert.ok(plain.result.agents.byModel.default.count > 0);
-  assert.equal(plain.result.opusSilent, false, "ответы без model — не sonnet");
+  assert.equal(plain.result.opusSilent, false, "сессия на opus — повтора нет");
 }
 console.log("ok 23 слабая сессия без доступа к opus: признак opusSilent");
 
@@ -1680,3 +1739,227 @@ console.log("ok 23 слабая сессия без доступа к opus: пр
     "ok 25 границы приёмки кандидатов, отказ при рамке и при добавочных углах",
   );
 }
+
+// 26. Пол finder'ов (правило 1, решение владельца 05.10.2026): на pass ≥ 2 при триггере finder-углы
+// (обе половины угла 2), их перезапуск и sweep идут на opus — по триггеру, не по уровню (xhigh — уступка
+// max мораторием); последняя линия — по признаку слабой сессии, как без триггера. opusUnavailable
+// (повтор скилла после opusSilent, только слабой сессии) переводит на sonnet все роли.
+for (const level of ["xhigh", "max"]) {
+  for (const pass of [2, 3]) {
+    for (const weak of [false, true]) {
+      for (const off of [false, true]) {
+        const a = base(level, pass, level === "max");
+        a.sessionBelowOpus = weak;
+        a.securitySurface = true;
+        if (off && !weak) continue;
+        if (off) a.opusUnavailable = true;
+        let failed = false;
+        const { result, calls } = await runScript(a, (p, o) => {
+          if (isSweep(o))
+            return { candidates: [cand("src/b.php", 9, "s")], suppressed: [] };
+          if (isFinder(o)) {
+            if (o.label.startsWith("угол 3") && !failed) {
+              failed = true;
+              return null;
+            }
+            return o.label.startsWith("угол 1")
+              ? { candidates: [cand("src/a.php", 7, "y")], suppressed: [] }
+              : EMPTY;
+          }
+          return verdicts(p, () => "CONFIRMED");
+        });
+        const tag = `${level} pass=${pass} weak=${weak} off=${off}`;
+        const cheap = calls.filter(
+          (c) =>
+            (isFinder(c.opts) && !c.opts.label.startsWith("угол 5")) ||
+            isSweep(c.opts),
+        );
+        // Точное число защищает от опустевшего фильтра: 8 углов (на max — 9 записей: две половины
+        // угла 2), перезапуск угла 3 и sweep.
+        assert.equal(
+          cheap.length,
+          level === "max" ? 11 : 10,
+          `${tag}: дешёвые роли`,
+        );
+        assert.ok(
+          cheap.some((c) => c.opts.label.endsWith("перезапуск")),
+          `${tag}: перезапуск finder'а состоялся`,
+        );
+        assert.ok(
+          cheap.some((c) => isSweep(c.opts)),
+          `${tag}: sweep состоялся`,
+        );
+        for (const c of cheap)
+          assert.equal(
+            c.opts.model,
+            off ? "sonnet" : "opus",
+            `${tag}: ${c.opts.label}`,
+          );
+        const last = calls.filter((c) => !cheap.includes(c));
+        assert.ok(last.length >= 3, `${tag}: угол 5 и верификаторы`);
+        for (const c of last)
+          assert.equal(
+            c.opts.model,
+            off ? "sonnet" : weak ? "opus" : undefined,
+            `${tag}: ${c.opts.label}`,
+          );
+        if (!off)
+          assert.equal(
+            result.agents.byModel.sonnet.count,
+            0,
+            `${tag}: sonnet нет`,
+          );
+        assert.equal(result.securitySurface, true);
+        assert.equal(result.opusUnavailable, off);
+        checkSums(result.agents);
+      }
+    }
+  }
+}
+// Без триггера на pass ≥ 2 — прежний sonnet и на max (вектор 21: ["max", 2, "sonnet", 9]); на pass=1
+// триггер ничего не меняет.
+{
+  const a = base("xhigh", 1);
+  a.securitySurface = true;
+  const { calls } = await runScript(a, (p, o) =>
+    isFinder(o) || isSweep(o) ? EMPTY : verdicts(p, () => "CONFIRMED"),
+  );
+  for (const c of calls.filter(
+    (x) => isFinder(x.opts) && !x.opts.label.startsWith("угол 5"),
+  ))
+    assert.equal(c.opts.model, "opus", `pass=1: ${c.opts.label}`);
+}
+console.log("ok 26 пол finder'ов по триггеру правила 1");
+
+// 27. Белый список ключей args (№49): незнакомый ключ рядом с валидными — ошибка до запуска агентов,
+// с подсказкой не удалять ключ; frame и extraAngles сохраняют свои ошибки (проверяются раньше).
+for (const [key, value] of [
+  ["extra_angles", [7]],
+  ["Pass", 2],
+  ["maxagents", 3],
+  ["securitysurface", true],
+  ["constructor", 1],
+  ["toString", "x"],
+]) {
+  const a = base("high", 1);
+  a[key] = value;
+  let launched = 0;
+  await assert.rejects(
+    runScript(a, () => {
+      launched++;
+      return null;
+    }),
+    new RegExp(
+      `args\\.${key}: неизвестное поле .*ключ не удалять ради повтора`,
+    ),
+    `ключ ${key}`,
+  );
+  assert.equal(launched, 0, `${key}: ни одного агента`);
+}
+for (const [field, value, re] of [
+  ["frame", "| a |", /args\.frame: рамка/],
+  ["extraAngles", [7], /args\.extraAngles: добавочные углы/],
+]) {
+  const a = base("high", 1);
+  a[field] = value;
+  a.extra_angles = [7];
+  await assert.rejects(
+    runScript(a, () => null),
+    re,
+    `${field} + опечатка`,
+  );
+}
+{
+  // Ключ со значением undefined (не доходит через JSON, но возможен в объекте) — как отсутствие.
+  const a = base("high", 1);
+  a.frame = undefined;
+  a.extraAngles = undefined;
+  const { result } = await runScript(a, (p, o) =>
+    isFinder(o) ? EMPTY : verdicts(p, () => "CONFIRMED"),
+  );
+  assert.equal(result.mode, "полный");
+}
+console.log("ok 27 белый список ключей args");
+
+// 28. Повтор без opus (решение владельца 31.10.2026): opusUnavailable переводит на sonnet все роли на
+// любом уровне и проходе, с триггером и без; строка понижения идёт в notes механически; на повторе
+// opusSilent не ставится (второго автоповтора нет).
+for (const [level, pass, trig] of [
+  ["medium", 1, false],
+  ["high", 1, false],
+  ["high", 2, false],
+  ["xhigh", 1, true],
+  ["xhigh", 2, false],
+  ["max", 2, true],
+]) {
+  const a = base(level, pass);
+  a.sessionBelowOpus = true;
+  a.securitySurface = trig;
+  a.opusUnavailable = true;
+  const { result, calls } = await runScript(a, (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [cand("src/a.php", 1, "x")], suppressed: [] }
+        : EMPTY;
+    return verdicts(p, () => "CONFIRMED");
+  });
+  const tag = `${level} pass=${pass} trig=${trig}`;
+  assert.ok(calls.length >= 4, `${tag}: агенты запускались`);
+  for (const c of calls)
+    assert.equal(c.opts.model, "sonnet", `${tag}: ${c.opts.label}`);
+  assert.equal(
+    result.agents.byModel.sonnet.count,
+    calls.length,
+    `${tag}: все в корзине sonnet`,
+  );
+  assert.equal(result.opusUnavailable, true);
+  // Дословно и один раз: строку нельзя сокращать или перефразировать (требование владельца 31.10.2026).
+  assert.deepEqual(
+    result.notes.filter((n) => n.includes("ПОНИЖЕНИЕ МОДЕЛИ")),
+    [DOWN],
+    `${tag}: строка понижения в notes`,
+  );
+}
+{
+  const run = (off, silent) => {
+    const a = base("xhigh", 2);
+    a.sessionBelowOpus = true;
+    a.securitySurface = true;
+    if (off) a.opusUnavailable = true;
+    return runScript(a, (p, o) => {
+      if (silent(o)) return null;
+      if (isSweep(o)) return EMPTY;
+      if (isFinder(o))
+        return o.label.startsWith("угол 1")
+          ? { candidates: [cand("src/a.php", 1, "x")], suppressed: [] }
+          : EMPTY;
+      return verdicts(p, () => "CONFIRMED");
+    });
+  };
+  const noOpus = (o) => o.model === "opus";
+  const all = await run(false, noOpus);
+  assert.equal(all.result.mode, "прерван");
+  assert.equal(all.result.opusSilent, true, "все на opus молчат — повтор");
+  assert.ok(
+    !all.result.notes.some((n) => n.startsWith("⚠️ ПОНИЖЕНИЕ МОДЕЛИ")),
+    "без повтора строки понижения нет",
+  );
+  const retry = await run(true, noOpus);
+  assert.equal(retry.result.mode, "полный", "на sonnet ответили все");
+  assert.equal(retry.result.opusSilent, false, "второго автоповтора нет");
+  const limit = await run(true, () => true);
+  assert.equal(limit.result.mode, "прерван", "молчит и sonnet — лимит");
+  assert.equal(limit.result.opusSilent, false, "opus не спрашивали");
+  // Явный лимит opus («weekly usage limit») — тоже повтор: исчерпанный лимит opus и есть «opus недоступен».
+  const weekly = await runScript(
+    Object.assign(base("high", 2), { sessionBelowOpus: true }),
+    (p, o) => {
+      if (o.model === "opus")
+        throw new Error("Opus weekly usage limit reached");
+      return isFinder(o) ? EMPTY : verdicts(p, () => "CONFIRMED");
+    },
+  );
+  assert.equal(weekly.result.opusSilent, true, "явный лимит opus — повтор");
+}
+console.log("ok 28 повтор без opus: все роли на sonnet, строка понижения");

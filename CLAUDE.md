@@ -58,7 +58,8 @@ bash plugins/dev-toolkit/hooks/tests/test-post-compact-reminder.sh
 ```
 
 Для workflow-скрипта (`plugins/dev-toolkit/workflows/review-code.js`) — стенд-заглушка; `node --check`
-к нему неприменим (top-level `return` — штатная форма workflow-скрипта):
+к нему неприменим (top-level `return` — штатная форма workflow-скрипта). Мутационная проверка —
+`REVIEW_CODE_SCRIPT=<копия скрипта>`:
 
 ```bash
 node plugins/dev-toolkit/tests/workflows/test-review-code.mjs
@@ -143,7 +144,12 @@ tmux-команды при этом не было, так что запрет «
   `LENSES` (линзы `max`), `SECURITY_ANGLE`, `SWEEP_CAP` (фаза 2.5), `NO_SELF_SUPPRESS` (пункт 1
   skip-list), `MERGE_THRESHOLD`/`MERGE_MAX`, `DEFAULT_WAVE`/`MIN_WAVE`/`MAX_WAVE`, `MAX_PATH_LENGTH`
   и перечень корней security-категорий в `isSecurity` («Оркестрация фаз 1–2.5»), `FINDER_FIELDS`
-  («Формат кандидата»).
+  («Формат кандидата»), `ARGS_FIELDS` (таблица «Поле `args`»; незнакомый ключ — ошибка, №49).
+- Пол finder'ов (2.21.0, решение 05.10.2026) — от поля `args.securitySurface` (триггер правила 1), **не от
+  `level`**: при моратории уровень `xhigh`, а явный `max` бывает без триггера. Поле обязательное, без
+  умолчания. `opusUnavailable` (только при `sessionBelowOpus: true`) переводит на `sonnet` **все** роли — повтор
+  скилла по `opusSilent` (решение владельца 31.10.2026: «opus недоступен — всех на sonnet без вопросов»); строку
+  «⚠️ ПОНИЖЕНИЕ МОДЕЛИ» скрипт кладёт в `notes` сам — не убирать: громкое уведомление — требование владельца.
 - Рамку использования скрипт **не применяет** (решение 13.10.2026, версия 2.12.0): поле
   `args.frame` отвергается ошибкой, прогон с рамкой ведёт только режим `Agent` по тексту
   `SKILL.md`. Молча принимать поле нельзя — рамка осталась бы без исполнителя. Возвращать рамку в
