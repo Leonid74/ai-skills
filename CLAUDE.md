@@ -144,7 +144,9 @@ tmux-команды при этом не было, так что запрет «
   `LENSES` (линзы `max`), `SECURITY_ANGLE`, `SWEEP_CAP` (фаза 2.5), `NO_SELF_SUPPRESS` (пункт 1
   skip-list), `MERGE_THRESHOLD`/`MERGE_MAX`, `DEFAULT_WAVE`/`MIN_WAVE`/`MAX_WAVE`, `MAX_PATH_LENGTH`
   и перечень корней security-категорий в `isSecurity` («Оркестрация фаз 1–2.5»), `FINDER_FIELDS`
-  («Формат кандидата»), `ARGS_FIELDS` (таблица «Поле `args`»; незнакомый ключ — ошибка, №49).
+  («Формат кандидата»), `ARGS_FIELDS` (таблица «Поле `args`»; незнакомый ключ — ошибка, №49), `TAIL_DONOR_MIN`
+  («Темп запуска» п. 1), `FINDER_SKIP_SCENARIO`/`FINDER_SKIP_CATEGORY` (заглушки записи finder'а: пункт 1 skip-list,
+  фаза 3).
 - Пол finder'ов (2.21.0, решение 05.10.2026) — от поля `args.securitySurface` (триггер правила 1), **не от
   `level`**: при моратории уровень `xhigh`, а явный `max` бывает без триггера. Поле обязательное, без
   умолчания. `opusUnavailable` (только при `sessionBelowOpus: true`) переводит на `sonnet` **все** роли — повтор

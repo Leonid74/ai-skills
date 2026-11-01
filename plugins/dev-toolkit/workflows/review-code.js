@@ -36,7 +36,9 @@ export const meta = {
 // LEVELS — «Таблица уровней»; LENSES — линзы max (фаза 2); SECURITY_ANGLE — номер security-угла;
 // SWEEP_CAP — потолок кандидатов sweep (фаза 2.5); MERGE_* и DEFAULT_WAVE — «Оркестрация фаз 1–2.5»;
 // NO_SELF_SUPPRESS — уровни, где finder не подавляет сам (пункт 1 skip-list); FINDER_FIELDS —
-// обязательные поля кандидата («Формат кандидата»); ARGS_FIELDS — таблица «Поле `args`» (режим Workflow).
+// обязательные поля кандидата («Формат кандидата»); ARGS_FIELDS — таблица «Поле `args`» (режим Workflow);
+// TAIL_DONOR_MIN — «Темп запуска» п. 1; FINDER_SKIP_SCENARIO/FINDER_SKIP_CATEGORY — заглушки записи finder'а
+// (пункт 1 skip-list, фаза 3 «Сверка цитат подавления»).
 const LEVELS = {
   medium: { angles: 3, cap: 6, protocol: "skeptic", sweep: false },
   high: { angles: 5, cap: 6, protocol: "recall", sweep: false },
@@ -54,6 +56,12 @@ const DEFAULT_WAVE = 5;
 const MIN_WAVE = 2;
 const MAX_WAVE = 16;
 const MAX_PATH_LENGTH = 300;
+// Хвост из одного агента забирает задание у предыдущей волны, если в ней не меньше стольких.
+const TAIL_DONOR_MIN = 3;
+// Заглушки записи, у которой своего сценария нет (подавление finder'ом), — дословно как в SKILL.md.
+const FINDER_SKIP_SCENARIO =
+  "finder отнёс кандидата к skip-list; сценарий отказа не указан";
+const FINDER_SKIP_CATEGORY = "suppressed-by-finder";
 // Строка понижения модели — дословно как в SKILL.md (абзац «Пол модели и недоступный `opus`»).
 const DOWNGRADE_NOTE =
   "⚠️ ПОНИЖЕНИЕ МОДЕЛИ: `opus` не ответил — все агенты прогона шли на `sonnet` (решение владельца 31.10.2026)";
@@ -488,7 +496,7 @@ function waveBounds(n) {
   const b = [];
   for (let i = 0; i < n; i += wave) b.push([i, Math.min(wave, n - i)]);
   const last = b.length - 1;
-  if (last >= 1 && b[last][1] === 1 && b[last - 1][1] >= 3) {
+  if (last >= 1 && b[last][1] === 1 && b[last - 1][1] >= TAIL_DONOR_MIN) {
     b[last - 1][1] -= 1;
     b[last] = [b[last][0] - 1, 2];
   }
@@ -929,11 +937,10 @@ function accept(reply, source, cap) {
         file: s.file,
         line: s.line,
         summary: s.summary,
-        failure_scenario:
-          "finder отнёс кандидата к skip-list; сценарий отказа не указан",
+        failure_scenario: FINDER_SKIP_SCENARIO,
         // Признак — по тому же isSecurity, по которому запись поднята: и по категории, иначе он терялся бы
         // в подсчёте голосов.
-        category: isSecurity(s) ? "security" : "suppressed-by-finder",
+        category: isSecurity(s) ? "security" : FINDER_SKIP_CATEGORY,
         security: isSecurity(s),
         skip_note: `под skip-list: ${s.rule}`,
         promoted: true,
@@ -1414,9 +1421,8 @@ for (const s of suppressedRaw) {
       file: s.file,
       line: s.line,
       summary: s.summary,
-      failure_scenario:
-        "finder отнёс кандидата к skip-list; сценарий отказа не указан",
-      category: "suppressed-by-finder",
+      failure_scenario: FINDER_SKIP_SCENARIO,
+      category: FINDER_SKIP_CATEGORY,
       by: [],
       rules: [],
     });
