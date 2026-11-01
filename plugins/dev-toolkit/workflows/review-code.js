@@ -919,8 +919,10 @@ function accept(reply, source, cap) {
         summary: s.summary,
         failure_scenario:
           "finder отнёс кандидата к skip-list; сценарий отказа не указан",
-        category: s.security ? "security" : "suppressed-by-finder",
-        security: Boolean(s.security),
+        // Признак — по тому же isSecurity, по которому запись поднята: и по категории, иначе он терялся бы
+        // в подсчёте голосов.
+        category: isSecurity(s) ? "security" : "suppressed-by-finder",
+        security: isSecurity(s),
         skip_note: `под skip-list: ${s.rule}`,
         promoted: true,
       });
