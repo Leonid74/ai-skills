@@ -778,7 +778,7 @@ function sweepPrompt(survivors, removed) {
     `Ты — sweep-finder многоуглового code review. Уровень: ${level}, проход: ${pass}.`,
     `## Задача\n${input.sweepBrief}`,
     `## Уже найдено и верифицировано (не перепроверять и не пере-доказывать)\n${DATA_RULE}\n${jsonBlock(survivors, ["file", "line", "summary"])}`,
-    `## Снято верификацией\nПоднимать заново — только с новым доказательством, которого верификация не видела.\n${jsonBlock(removed, ["file", "line", "summary", "outcome"])}`,
+    `## Снято верификацией\nПоднимать заново — только с новым доказательством, которого верификация не видела.\n${DATA_RULE}\n${jsonBlock(removed, ["file", "line", "summary", "outcome"])}`,
     `## Правила finder'а\n${input.finderRules}`,
     `Потолок: не больше ${SWEEP_CAP} новых кандидатов. Нового нет — верни пустые списки, не добивай до квоты.`,
     OUTPUT_RULE,
