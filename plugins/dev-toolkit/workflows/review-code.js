@@ -1194,6 +1194,17 @@ async function verifyAll(candidates, phaseTitle) {
     // несколько проходов. Цикл без корня не снимает никого; опровергнутая или подавленная цель цепочку
     // рвёт. Каждый проход снимает хотя бы одного — цикл while конечен.
     const byId = new Map(judged.map((c) => [c.id, c]));
+    // Security-кандидат (признак после подсчёта голосов) не снимается как дубль кандидата без признака:
+    // такая пометка снимается до цикла, и он становится корнем для своих дублей — исход не зависит от порядка.
+    for (const c of judged) {
+      const twin = c.duplicateOf ? byId.get(c.duplicateOf) : null;
+      if (twin && c.security && !twin.security) {
+        notes.push(
+          `${c.id} (${locKey(c)}) — security-кандидат не снят как дубль ${twin.id} без признака security`,
+        );
+        c.duplicateOf = undefined;
+      }
+    }
     let changed = true;
     while (changed) {
       changed = false;
