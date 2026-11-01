@@ -1053,13 +1053,14 @@ async function verifyAll(candidates, phaseTitle) {
           );
         } else {
           // Согласные записи одного id — один голос; признак security — из любой из них (пункт 4 skip-list:
-          // хватает одного голоса), иначе вторая запись с security терялась бы.
+          // хватает одного голоса), иначе вторая запись с security терялась бы. Признак без значения или с
+          // нераспознанным значением — «да» (пункт 4): «нет» только у явного false.
           const v = matches[0];
           votes.push({
             lens: t.lens,
             verdict: v.verdict,
             evidence: v.evidence,
-            security: matches.some((m) => Boolean(m.security)),
+            security: matches.some((m) => m.security !== false),
             // Цитаты правила всех согласных записей (для SUPPRESSED): сверяется каждая.
             quotes: [...new Set(matches.map((m) => m.evidence))],
             duplicate_of: v.duplicate_of,
