@@ -1086,15 +1086,26 @@ async function verifyAll(candidates, phaseTitle) {
         `верификация локации ${group.key} неполная: не отработал(и) ${missed.join(", ")}`,
       );
     }
-    // Дубль по механизму снимается, только если его более конкретный близнец сам выжил.
-    const alive = new Set(
-      judged
-        .filter((c) => c.outcome === "survived" && !c.duplicateOf)
-        .map((c) => c.id),
-    );
-    for (const c of judged) {
-      if (c.outcome === "survived" && c.duplicateOf && alive.has(c.duplicateOf))
-        c.outcome = "duplicate";
+    // Дубль по механизму снимается, только если его более конкретный близнец выжил сам (корень без
+    // своего duplicateOf) либо уже снят как дубль выжившего корня: цепочка A → B → C снимается до C за
+    // несколько проходов. Цикл без корня не снимает никого; опровергнутая или подавленная цель цепочку
+    // рвёт. Каждый проход снимает хотя бы одного — цикл while конечен.
+    const byId = new Map(judged.map((c) => [c.id, c]));
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const c of judged) {
+        if (c.outcome !== "survived" || !c.duplicateOf) continue;
+        const twin = byId.get(c.duplicateOf);
+        const twinKept =
+          twin &&
+          ((twin.outcome === "survived" && !twin.duplicateOf) ||
+            twin.outcome === "duplicate");
+        if (twinKept) {
+          c.outcome = "duplicate";
+          changed = true;
+        }
+      }
     }
     judgedAll.push(...judged);
   });
