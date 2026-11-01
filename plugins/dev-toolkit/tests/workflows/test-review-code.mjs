@@ -3013,3 +3013,36 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   );
   console.log("ok 44 путь от агента в выводе — через showPath");
 }
+
+// 45. Ответ finder'а не по форме целиком (по ревью П6, 9#2, 7#5): ответ — не объект, нет ключа candidates, candidates: null —
+//     деградация с причиной; нет только suppressed — пустой список без деградации.
+{
+  const runWith = (reply) =>
+    runScript(base("high", 1), (p, o) => {
+      if (isFinder(o)) return o.label.startsWith("угол 1 ") ? reply : EMPTY;
+      return verdicts(p, () => "PLAUSIBLE");
+    });
+  for (const [reply, why] of [
+    [[cand("src/a.php", 1, "в массиве")], /угол1: ответ не объект/],
+    ["строка", /угол1: ответ не объект/],
+    [
+      { findings: [cand("src/a.php", 1, "не тот ключ")] },
+      /угол1: в ответе нет candidates/,
+    ],
+    [{ candidates: null, suppressed: [] }, /угол1: candidates не список/],
+  ]) {
+    const { result } = await runWith(reply);
+    assert.equal(result.mode, "деградированный", JSON.stringify(reply));
+    assert.ok(
+      result.degraded.some((d) => why.test(d)),
+      `${why}: ${result.degraded}`,
+    );
+  }
+  const onlyCandidates = await runWith({ candidates: [] });
+  assert.equal(
+    onlyCandidates.result.mode,
+    "полный",
+    "нет suppressed — пусто без деградации",
+  );
+  console.log("ok 45 ответ finder'а не по форме целиком");
+}
