@@ -2803,3 +2803,50 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   );
   console.log("ok 39 точный дубль");
 }
+
+// 40. Запись без строкового пути (по ревью П6, 1#1): suppressed или кандидат без file / с file: null — отклонены с видимым следом
+//     (rejected), прогон деградированный; подавленной локации-фантома «undefined» нет.
+{
+  for (const bad of [
+    { rule: "R", summary: "x", security: false },
+    {},
+    { ...sup("src/a.php", 3), file: null },
+  ]) {
+    const { result } = await runScript(base("medium", 1), (p, o) => {
+      if (isFinder(o))
+        return o.label.startsWith("угол 1 ")
+          ? { candidates: [], suppressed: [bad] }
+          : EMPTY;
+      return verdicts(p, () => "PLAUSIBLE");
+    });
+    assert.deepEqual(
+      result.suppressed,
+      [],
+      `нет фантома: ${JSON.stringify(bad)}`,
+    );
+    assert.equal(result.rejected.length, 1);
+    assert.equal(result.mode, "деградированный");
+  }
+  const noFile = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 5 ")
+        ? {
+            candidates: [
+              { ...cand("src/a.php", 1, "без пути", true), file: undefined },
+            ],
+            suppressed: [],
+          }
+        : EMPTY;
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.deepEqual(
+    noFile.result.rejected.map((r) => r.summary),
+    ["без пути"],
+  );
+  assert.equal(
+    noFile.result.mode,
+    "деградированный",
+    "кандидат без пути — видимая деградация",
+  );
+  console.log("ok 40 запись без строкового пути");
+}
