@@ -618,7 +618,8 @@ function locKey(c) {
 }
 
 /**
- * Считается ли кандидат security-находкой по сведениям finder'а: по флагу либо по категории.
+ * Считается ли кандидат security-находкой по сведениям finder'а: по флагу либо по категории. Флаг без
+ * значения или с нераспознанным значением — «да» (пункт 4 skip-list), «нет» — только явный false.
  * От признака зависит: может ли skip-list снять кандидата (пункт 4), поднимается ли запись
  * suppressed на medium/high и идёт ли на верификацию кандидат без обязательных полей. Во всех трёх
  * случаях признак только добавляет верификацию — ошибка в широкую сторону безопасна, поэтому
@@ -630,7 +631,7 @@ function locKey(c) {
  */
 function isSecurity(c) {
   return (
-    Boolean(c.security) ||
+    c.security !== false ||
     /secur|secret|inject|auth|xss|csrf|ssrf|travers|leak|crypt|privil|permission|credential/i.test(
       String(c.category || ""),
     )
