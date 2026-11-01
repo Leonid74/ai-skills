@@ -886,6 +886,34 @@ console.log("ok 6 проверка args");
     "security-находка не снята противоречивым ответом",
   );
   assert.ok(result.notes.some((n) => n.includes("противоречивые вердикты")));
+
+  // Согласные записи одного id — один голос, признак security — из любой записи (№16 [2]).
+  const twice = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? {
+            candidates: [cand("src/a.php", 12, "двойной ответ")],
+            suppressed: [],
+          }
+        : EMPTY;
+    return {
+      verdicts: [
+        {
+          id: "угол1#1",
+          verdict: "SUPPRESSED",
+          evidence: "R",
+          security: false,
+        },
+        { id: "угол1#1", verdict: "SUPPRESSED", evidence: "R", security: true },
+      ],
+    };
+  });
+  assert.deepEqual(
+    twice.result.survivors.map((s) => s.summary),
+    ["двойной ответ"],
+    "security из второй согласной записи не потерян — SUPPRESSED не засчитан",
+  );
+  assert.deepEqual(twice.result.suppressed, []);
   console.log("ok 9 текст кандидата как данные");
 }
 
