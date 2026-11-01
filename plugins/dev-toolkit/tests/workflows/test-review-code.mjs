@@ -2542,3 +2542,31 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   );
   console.log("ok 35 снятое верификацией в промпте sweep — данные");
 }
+
+// 36. Выжившая запись, поднятая из suppressed (№30): фаза 3 выводит её находкой с заглушкой сценария и
+//     пометкой «проверить вручную» — опора текста: признак promoted, skip_note, заглушка и категория.
+{
+  const { result } = await runScript(base("xhigh", 1), (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [], suppressed: [sup("src/a.php", 7)] }
+        : EMPTY;
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.equal(result.survivors.length, 1);
+  const s = result.survivors[0];
+  assert.equal(
+    s.promoted,
+    true,
+    "признак поднятой записи доходит до выжившего",
+  );
+  assert.equal(s.skip_note, "под skip-list: R");
+  assert.equal(
+    s.failure_scenario,
+    "finder отнёс кандидата к skip-list; сценарий отказа не указан",
+  );
+  assert.equal(s.category, "suppressed-by-finder");
+  assert.equal(s.verdict, "PLAUSIBLE");
+  console.log("ok 36 выжившая поднятая запись");
+}
