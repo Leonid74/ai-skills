@@ -1105,8 +1105,9 @@ async function verifyAll(candidates, phaseTitle) {
     // Недостающие голоса: отказавшие дважды (twice) — отказ; прочие при остановке — недоделанные.
     const missedOwn = own.filter((x) => !x.reply);
     const failedOwn = missedOwn.filter((x) => twice.has(x.k));
-    const allFailed =
-      missedOwn.length > 0 && failedOwn.length === missedOwn.length;
+    // Все недостающие голоса — отказы дважды; пустой набор тоже: верификатор ответил, но без вердикта —
+    // это деградация, а не недоделанное (resume вернёт тот же ответ).
+    const allFailed = failedOwn.length === missedOwn.length;
     const judged = group.candidates.map((c) => {
       const votes = [];
       for (const { t, reply, list } of own) {
@@ -1150,13 +1151,14 @@ async function verifyAll(candidates, phaseTitle) {
       degraded.push(
         `локация ${group.key} без голосов верификации: кандидатов ${unverified}, оставлены PLAUSIBLE`,
       );
-    } else if (unverified) {
+    } else {
       // Голосов нет из-за остановки по лимиту, а не из-за отказа верификаторов — это режим «прерван».
-      unverifiedPending += unverified;
-    } else if (failedOwn.length) {
-      notes.push(
-        `верификация локации ${group.key} неполная: не отработал(и) ${failedOwn.map((x) => x.t.lens || "верификатор").join(", ")}`,
-      );
+      if (unverified) unverifiedPending += unverified;
+      // Отказавшие дважды названы и тогда, когда группа недоделана: в сводке они отдельно от недоделанного.
+      if (failedOwn.length)
+        notes.push(
+          `верификация локации ${showPath(group.key)} неполная: не отработал(и) ${failedOwn.map((x) => x.t.lens || "верификатор").join(", ")}`,
+        );
     }
     // Дубль по механизму снимается, только если его более конкретный близнец выжил сам (корень без
     // своего duplicateOf) либо уже снят как дубль выжившего корня: цепочка A → B → C снимается до C за

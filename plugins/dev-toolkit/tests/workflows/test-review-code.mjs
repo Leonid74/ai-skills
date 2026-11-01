@@ -2710,6 +2710,12 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
     ),
     "линза, отказавшая дважды до остановки, названа",
   );
+  assert.ok(
+    !mixed.result.notes.some(
+      (n) => n.includes("неполная") && /безопасность|воспроизводимость/.test(n),
+    ),
+    "недоделанные линзы отказавшими не названы",
+  );
   checkSums(mixed.result.agents);
 
   const six = {
