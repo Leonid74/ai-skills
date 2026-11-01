@@ -355,6 +355,8 @@ const degraded = [];
 let halted = null;
 // Что осталось несделанным при остановке по лимиту — чтобы сессия знала, что продолжать через resume.
 const pending = { angles: [], unverifiedCandidates: 0, sweep: false };
+// Кандидаты без голосов из-за остановки (их верификаторы не отработали и не отказали) — для pending.
+let unverifiedPending = 0;
 
 /**
  * Общее число запущенных агентов — производное счётчиков, а не отдельное состояние.
@@ -481,10 +483,14 @@ function waveBounds(n) {
  * использования, а не на отказ агентов: перезапуск не тратится, запуск останавливается.
  *
  * @param {Array<object>} tasks задания в порядке ценности (самые важные первыми).
- * @returns {Promise<Array<object|null>>} ответы в порядке заданий; null — отказ либо не запускался.
+ * @returns {Promise<{replies: Array<object|null>, twice: Set<number>}>} ответы в порядке заданий (null — отказ
+ *   либо не запускался) и индексы заданий, честно отказавших дважды: перезапуск состоялся, не сгорел об
+ *   лимит и в его волне прогон не остановился. Остальные задания без ответа при остановке — недоделанные
+ *   (pending), а не отказавшие: флаг halted один на прогон и причину отдельного задания не хранит.
  */
 async function runWaves(tasks) {
   const out = new Array(tasks.length).fill(null);
+  const twice = new Set();
   for (const [i, size] of waveBounds(tasks.length)) {
     if (halted) break;
     const chunk = tasks.slice(i, i + size);
@@ -530,6 +536,8 @@ async function runWaves(tasks) {
         if (r.skipped) return;
         if (r.limit || silentRestart) stats.limitHits += 1;
         else countLaunch(tasks[k], true);
+        // Сосед явного лимита в той же волне перезапуска — скорее жертва того же лимита: недоделан.
+        if (!r.reply && !halted) twice.add(k);
         // Одиночная волна: молчание агента от лимита не отличить — отказ, но с приметой для resume.
         if (
           size === 1 &&
@@ -545,7 +553,7 @@ async function runWaves(tasks) {
       });
     }
   }
-  return out;
+  return { replies: out, twice };
 }
 
 // ---------- нормализация и группировка ----------
@@ -1069,20 +1077,22 @@ async function verifyAll(candidates, phaseTitle) {
       roleName: lens ? "линзы max" : "верификаторы",
     })),
   );
-  const replies = await runWaves(tasks);
+  const { replies, twice } = await runWaves(tasks);
   const judgedAll = [];
   groups.forEach((group, g) => {
     const groupIds = new Set(group.candidates.map((c) => c.id));
     const own = tasks
-      .map((t, k) => ({ t, reply: replies[k] }))
+      .map((t, k) => ({ t, k, reply: replies[k] }))
       .filter((x) => x.t.g === g)
       .map((x) => ({
         ...x,
         list: x.reply ? objectsOf(x.reply, "verdicts", x.t.label) : [],
       }));
-    const missed = own
-      .filter((x) => !x.reply)
-      .map((x) => x.t.lens || "верификатор");
+    // Недостающие голоса: отказавшие дважды (twice) — отказ; прочие при остановке — недоделанные.
+    const missedOwn = own.filter((x) => !x.reply);
+    const failedOwn = missedOwn.filter((x) => twice.has(x.k));
+    const allFailed =
+      missedOwn.length > 0 && failedOwn.length === missedOwn.length;
     const judged = group.candidates.map((c) => {
       const votes = [];
       for (const { t, reply, list } of own) {
@@ -1121,15 +1131,17 @@ async function verifyAll(candidates, phaseTitle) {
       };
     });
     const unverified = judged.filter((c) => c.unverified).length;
-    if (halted) {
-      // Голосов нет из-за остановки по лимиту, а не из-за отказа верификаторов — это режим «прерван».
-    } else if (unverified) {
+    if (unverified && (allFailed || !halted)) {
+      // Все верификаторы локации честно отказали дважды — деградация и при остановке по лимиту.
       degraded.push(
         `локация ${group.key} без голосов верификации: кандидатов ${unverified}, оставлены PLAUSIBLE`,
       );
-    } else if (missed.length) {
+    } else if (unverified) {
+      // Голосов нет из-за остановки по лимиту, а не из-за отказа верификаторов — это режим «прерван».
+      unverifiedPending += unverified;
+    } else if (failedOwn.length) {
       notes.push(
-        `верификация локации ${group.key} неполная: не отработал(и) ${missed.join(", ")}`,
+        `верификация локации ${group.key} неполная: не отработал(и) ${failedOwn.map((x) => x.t.lens || "верификатор").join(", ")}`,
       );
     }
     // Дубль по механизму снимается, только если его более конкретный близнец выжил сам (корень без
@@ -1194,19 +1206,21 @@ const finderTasks = orderedAngles
     (a, b) =>
       launchRank(a.angle) - launchRank(b.angle) || a.angle.n - b.angle.n,
   );
-const finderReplies = await runWaves(finderTasks);
+const { replies: finderReplies, twice: finderTwice } =
+  await runWaves(finderTasks);
 
 const failedAngles = [];
 let pool = [];
 // Кандидаты принимаются в порядке номеров углов, а не порядке запуска — id и дедуп детерминированы.
 const byNumber = finderTasks
-  .map((t, k) => ({ t, reply: finderReplies[k] }))
+  .map((t, k) => ({ t, k, reply: finderReplies[k] }))
   .sort((a, b) =>
     a.t.source.localeCompare(b.t.source, "ru", { numeric: true }),
   );
-for (const { t, reply } of byNumber) {
+for (const { t, k, reply } of byNumber) {
   if (!reply) {
-    if (halted) {
+    // Угол, честно отказавший дважды до остановки, — отказ, а не недоделанное.
+    if (halted && !finderTwice.has(k)) {
       pending.angles.push(`угол ${t.angle.n} «${t.angle.title}»`);
       continue;
     }
@@ -1243,7 +1257,11 @@ if (cfg.sweep && !halted) {
   const removedNow = judged.filter(
     (c) => c.outcome === "refuted" || c.outcome === "suppressed",
   );
-  const [reply] = await runWaves([
+  // Sweep — единственное задание своего runWaves: остановить прогон может только он сам, поэтому
+  // «отказал дважды» и «прерван» здесь различает один halted.
+  const {
+    replies: [reply],
+  } = await runWaves([
     {
       prompt: sweepPrompt(survivorsNow, removedNow),
       label: "sweep-finder",
@@ -1282,7 +1300,7 @@ if (cfg.sweep && !halted) {
 
 phase("Сводка");
 if (halted) {
-  pending.unverifiedCandidates = judged.filter((c) => c.unverified).length;
+  pending.unverifiedCandidates = unverifiedPending;
 }
 if (maxAgents !== null && totalAgents() > maxAgents) {
   notes.push(
