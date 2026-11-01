@@ -2678,3 +2678,68 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   assert.match(mixed.result.halted, /не ответил ни один/);
   console.log("ok 37 тихий лимит и упавшие агенты");
 }
+
+// 38. Группа верификации без голосов (по ревью П6, 4#2, 1#3): отказавшие дважды линзы смешанной группы названы и при остановке;
+//     верификатор, ответивший без вердикта, — деградация, а не недоделанное; нота «неполная» — по отказавшим.
+{
+  const twoLocs = (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o)) {
+      if (o.label.startsWith("угол 1 "))
+        return { candidates: [cand("src/a.php", 1, "a1")], suppressed: [] };
+      if (o.label.startsWith("угол 3 "))
+        return { candidates: [cand("src/b.php", 2, "b2")], suppressed: [] };
+      return EMPTY;
+    }
+    return verdicts(p, () => "PLAUSIBLE");
+  };
+  const mixed = await runScript(base("max", 1), (p, o) => {
+    if (o.label.startsWith("линза «корректность» · src/b.php:2"))
+      throw new Error("prompt is too long");
+    if (o.label.startsWith("линза «безопасность» · src/b.php:2"))
+      throw new Error("usage limit reached");
+    if (o.label.startsWith("линза «воспроизводимость» · src/b.php:2"))
+      return null;
+    return twoLocs(p, o);
+  });
+  assert.equal(mixed.result.mode, "прерван");
+  assert.equal(mixed.result.pending.unverifiedCandidates, 1);
+  assert.ok(
+    mixed.result.notes.some(
+      (n) => n.includes("неполная") && n.includes("корректность"),
+    ),
+    "линза, отказавшая дважды до остановки, названа",
+  );
+  checkSums(mixed.result.agents);
+
+  const six = {
+    candidates: [1, 2, 3, 4, 5, 6].map((n) => cand("src/a.php", n, `м${n}`)),
+    suppressed: [],
+  };
+  const noVerdict = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o)) return o.label.startsWith("угол 1 ") ? six : EMPTY;
+    if (o.label === "верификатор · src/a.php:1") return { verdicts: [] };
+    if (/src\/a\.php:[56]$/.test(o.label)) return null;
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.equal(noVerdict.result.mode, "прерван");
+  assert.ok(
+    noVerdict.result.degraded.some(
+      (d) => d.includes("src/a.php:1") && d.includes("без голосов"),
+    ),
+    "ответ без вердикта — деградация и при остановке",
+  );
+  assert.equal(noVerdict.result.pending.unverifiedCandidates, 2);
+
+  const lens = await runScript(base("max", 1), (p, o) => {
+    if (o.label.startsWith("линза «безопасность»")) return null;
+    return twoLocs(p, o);
+  });
+  assert.ok(
+    lens.result.notes.some(
+      (n) => n.includes("неполная") && n.includes("безопасность"),
+    ),
+    "нота «неполная» без остановки",
+  );
+  console.log("ok 38 группа верификации без голосов");
+}
