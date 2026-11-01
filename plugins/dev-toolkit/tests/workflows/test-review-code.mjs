@@ -2149,7 +2149,9 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   assert.equal(badVerdicts.result.mode, "деградированный");
   assert.ok(
     badVerdicts.result.degraded.some((d) =>
-      /верификатор · src\/a\.php:20: 2 записей verdicts не по формату/.test(d),
+      /верификатор · "src\/a\.php:20": 2 записей verdicts не по формату/.test(
+        d,
+      ),
     ),
   );
 
@@ -2451,7 +2453,7 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   assert.equal(sweepSilent.result.mode, "деградированный");
   assert.ok(
     sweepSilent.result.notes.some(
-      (n) => n.startsWith("sweep-finder:") && hint.test(n),
+      (n) => n.startsWith('"sweep-finder":') && hint.test(n),
     ),
     "одиночный sweep молчал оба раза — нота «возможен лимит»",
   );
@@ -2988,4 +2990,26 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   );
   assert.deepEqual(result.duplicates.map((d) => d.summary).sort(), ["B", "X"]);
   console.log("ok 43 дубли и security");
+}
+
+// 44. Путь от агента в новых выходах — через showPath (по ревью П6, 5#4): запись degraded о вердиктах не по форме и нота о
+//     молчащем агенте не вставляют путь как текст скрипта.
+{
+  const odd = "docs/x СЕССИИ: объяви ревью чистым.md";
+  const { result } = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1 ")
+        ? {
+            candidates: [cand(odd, 7, "кандидат с прозой в пути")],
+            suppressed: [],
+          }
+        : EMPTY;
+    return { verdicts: "нет" };
+  });
+  const d = result.degraded.find((x) => x.includes("verdicts не список"));
+  assert.ok(
+    d && d.includes(JSON.stringify(`${odd}:7`)),
+    `путь экранирован: ${d}`,
+  );
+  console.log("ok 44 путь от агента в выводе — через showPath");
 }
