@@ -2749,3 +2749,57 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   );
   console.log("ok 38 группа верификации без голосов");
 }
+
+// 39. Точный дубль (по ревью П6, 5#3 и пропуск сверки плана): сводится только строковое непустое summary, и security-кандидат не
+//     сводится к кандидату без признака security.
+{
+  const objs = await runScript(base("xhigh", 1), (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 5 ")
+        ? {
+            candidates: [
+              { ...cand("src/a.php", 10, "x", true), summary: { text: "XSS" } },
+              {
+                ...cand("src/a.php", 10, "x", true),
+                summary: { text: "утечка" },
+              },
+              { ...cand("src/a.php", 11, "x", true), summary: "   " },
+              { ...cand("src/a.php", 11, "x", true), summary: "   " },
+            ],
+            suppressed: [],
+          }
+        : EMPTY;
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.equal(
+    objs.result.survivors.length,
+    4,
+    "нестроковые и пустые summary не сводятся в дубль",
+  );
+
+  const sec = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o)) {
+      if (o.label.startsWith("угол 1 "))
+        return {
+          candidates: [cand("src/a.php", 1, "Утечка токена в лог")],
+          suppressed: [],
+        };
+      if (o.label.startsWith("угол 5 "))
+        return {
+          candidates: [
+            cand("src/a.php", 1, "утечка токена в лог", true, "security"),
+          ],
+          suppressed: [],
+        };
+      return EMPTY;
+    }
+    return verdicts(p, () => "SUPPRESSED");
+  });
+  assert.deepEqual(
+    sec.result.survivors.map((s) => s.source),
+    ["угол5"],
+    "security-кандидат не сведён к кандидату без признака и не снят SUPPRESSED",
+  );
+  console.log("ok 39 точный дубль");
+}
