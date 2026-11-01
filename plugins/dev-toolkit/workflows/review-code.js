@@ -781,6 +781,33 @@ function reject(item, source) {
 }
 
 /**
+ * Записи списка из ответа агента, годные к разбору: только объекты. Ответ не по форме (список не
+ * массив, элемент — строка, число, null, массив) скрипт не роняет: отброшенное называется в degraded,
+ * прогон становится деградированным. Ключа нет — пустой список без деградации, как раньше.
+ *
+ * @param {object} reply ответ агента.
+ * @param {string} key имя списка (candidates, suppressed, verdicts).
+ * @param {string} source метка источника для degraded.
+ * @returns {Array<object>} записи-объекты в исходном порядке.
+ */
+function objectsOf(reply, key, source) {
+  const list = reply[key];
+  if (list === undefined) return [];
+  if (!Array.isArray(list)) {
+    degraded.push(`${source}: ${key} не список — отброшено целиком`);
+    return [];
+  }
+  const ok = list.filter(
+    (x) => x !== null && typeof x === "object" && !Array.isArray(x),
+  );
+  if (ok.length < list.length)
+    degraded.push(
+      `${source}: ${list.length - ok.length} записей ${key} не по формату (не объект) — отброшены`,
+    );
+  return ok;
+}
+
+/**
  * Обязательные поля, которые агент оставил пустыми.
  *
  * @param {object} c кандидат.
@@ -808,8 +835,12 @@ function missingFields(c) {
  * @returns {Array<object>} принятые кандидаты.
  */
 function accept(reply, source, cap) {
+  // Записи не по форме отбрасываются до среза по потолку: признаков у них нет, вытеснить кого-то они
+  // не могут (ловушка «поля — после среза» — о признаках самого finder'а), а срез по ним упал бы сам.
+  const ownRaw = objectsOf(reply, "candidates", source);
+  const supRaw = objectsOf(reply, "suppressed", source);
   const promoted = [];
-  for (const s of reply.suppressed || []) {
+  for (const s of supRaw) {
     const norm = normalizePath(s.file);
     if (norm.status === "unsafe") {
       reject(s, source);
@@ -837,7 +868,7 @@ function accept(reply, source, cap) {
   // Из записи finder'а берутся только поля схемы. Служебные ключи (promoted, relatedLocation и
   // любые другие) ставит скрипт: принятые от агента, они отключили бы проверку обязательных
   // полей или вернулись бы сессии как отметка скрипта.
-  const own = (reply.candidates || []).map((c) =>
+  const own = ownRaw.map((c) =>
     Object.fromEntries(
       CANDIDATE_FIELDS.filter((f) => f in c).map((f) => [f, c[f]]),
     ),
@@ -896,7 +927,10 @@ function accept(reply, source, cap) {
         `${source}: у security-кандидата ${norm.path}:${c.line} не заполнены обязательные поля (${missing.join(", ")}) — отправлен на верификацию`,
       );
     const cand = { ...c, file: norm.path, source, id: `${source}#${i + 1}` };
-    const k = `${locKey(cand)}|${cand.summary.trim().toLowerCase()}`;
+    // summary не строкой — не отбраковка: security-кандидат иначе потерялся бы до верификации.
+    const k = `${locKey(cand)}|${String(cand.summary ?? "")
+      .trim()
+      .toLowerCase()}`;
     if (seen.has(k)) {
       notes.push(
         `${source}: точный дубль кандидата ${locKey(cand)} от «${seen.get(k)}» отброшен`,
@@ -994,16 +1028,20 @@ async function verifyAll(candidates, phaseTitle) {
     const groupIds = new Set(group.candidates.map((c) => c.id));
     const own = tasks
       .map((t, k) => ({ t, reply: replies[k] }))
-      .filter((x) => x.t.g === g);
+      .filter((x) => x.t.g === g)
+      .map((x) => ({
+        ...x,
+        list: x.reply ? objectsOf(x.reply, "verdicts", x.t.label) : [],
+      }));
     const missed = own
       .filter((x) => !x.reply)
       .map((x) => x.t.lens || "верификатор");
     const judged = group.candidates.map((c) => {
       const votes = [];
-      for (const { t, reply } of own) {
+      for (const { t, reply, list } of own) {
         if (!reply) continue;
         const who = t.lens ? `линза «${t.lens}»` : "верификатор";
-        const matches = (reply.verdicts || []).filter((x) => x.id === c.id);
+        const matches = list.filter((x) => x.id === c.id);
         if (!matches.length) {
           notes.push(
             `${who} не вернул вердикт по ${c.id} (${locKey(c)}) — учтён как отсутствующий голос`,
