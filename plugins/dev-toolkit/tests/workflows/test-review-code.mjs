@@ -2079,7 +2079,9 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   const { result, calls } = await runScript(base("xhigh", 1), (p, o) => {
     if (isSweep(o)) return EMPTY;
     if (isFinder(o)) {
-      schemaKeys ??= Object.keys(o.schema.properties.candidates.items.properties);
+      schemaKeys ??= Object.keys(
+        o.schema.properties.candidates.items.properties,
+      );
       return o.label.startsWith("угол 1")
         ? { candidates: [full], suppressed: [] }
         : EMPTY;

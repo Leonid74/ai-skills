@@ -78,18 +78,6 @@ const ARGS_FIELDS = [
 ];
 // Поля, без которых кандидат не принимается: finder обязан сам проверить триггер, потребителя и базу.
 const FINDER_FIELDS = ["trigger", "caller_checked", "base_compared"];
-// Поля кандидата по схеме ответа finder'а. Всё остальное в его записи — не данные конвейера.
-const CANDIDATE_FIELDS = [
-  "file",
-  "line",
-  "summary",
-  "failure_scenario",
-  "category",
-  "security",
-  ...FINDER_FIELDS,
-  "skip_note",
-];
-
 const CANDIDATES_SCHEMA = {
   type: "object",
   properties: {
@@ -169,6 +157,11 @@ const CANDIDATES_SCHEMA = {
   },
   required: ["candidates", "suppressed"],
 };
+// Поля кандидата — ключи схемы ответа finder'а, без ручной копии: поле, добавленное в схему, приёмка
+// не отбросит. Всё остальное в его записи — не данные конвейера.
+const CANDIDATE_FIELDS = Object.keys(
+  CANDIDATES_SCHEMA.properties.candidates.items.properties,
+);
 
 const VERDICTS_SCHEMA = {
   type: "object",
