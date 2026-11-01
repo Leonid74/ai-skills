@@ -36,7 +36,9 @@ export const meta = {
 // LEVELS — «Таблица уровней»; LENSES — линзы max (фаза 2); SECURITY_ANGLE — номер security-угла;
 // SWEEP_CAP — потолок кандидатов sweep (фаза 2.5); MERGE_* и DEFAULT_WAVE — «Оркестрация фаз 1–2.5»;
 // NO_SELF_SUPPRESS — уровни, где finder не подавляет сам (пункт 1 skip-list); FINDER_FIELDS —
-// обязательные поля кандидата («Формат кандидата»); ARGS_FIELDS — таблица «Поле `args`» (режим Workflow).
+// обязательные поля кандидата («Формат кандидата»); ARGS_FIELDS — таблица «Поле `args`» (режим Workflow);
+// TAIL_DONOR_MIN — «Темп запуска» п. 1; FINDER_SKIP_SCENARIO/FINDER_SKIP_CATEGORY — заглушки записи finder'а
+// (пункт 1 skip-list, фаза 3 «Сверка цитат подавления»).
 const LEVELS = {
   medium: { angles: 3, cap: 6, protocol: "skeptic", sweep: false },
   high: { angles: 5, cap: 6, protocol: "recall", sweep: false },
@@ -54,6 +56,12 @@ const DEFAULT_WAVE = 5;
 const MIN_WAVE = 2;
 const MAX_WAVE = 16;
 const MAX_PATH_LENGTH = 300;
+// Хвост из одного агента забирает задание у предыдущей волны, если в ней не меньше стольких.
+const TAIL_DONOR_MIN = 3;
+// Заглушки записи, у которой своего сценария нет (подавление finder'ом), — дословно как в SKILL.md.
+const FINDER_SKIP_SCENARIO =
+  "finder отнёс кандидата к skip-list; сценарий отказа не указан";
+const FINDER_SKIP_CATEGORY = "suppressed-by-finder";
 // Строка понижения модели — дословно как в SKILL.md (абзац «Пол модели и недоступный `opus`»).
 const DOWNGRADE_NOTE =
   "⚠️ ПОНИЖЕНИЕ МОДЕЛИ: `opus` не ответил — все агенты прогона шли на `sonnet` (решение владельца 31.10.2026)";
@@ -78,18 +86,6 @@ const ARGS_FIELDS = [
 ];
 // Поля, без которых кандидат не принимается: finder обязан сам проверить триггер, потребителя и базу.
 const FINDER_FIELDS = ["trigger", "caller_checked", "base_compared"];
-// Поля кандидата по схеме ответа finder'а. Всё остальное в его записи — не данные конвейера.
-const CANDIDATE_FIELDS = [
-  "file",
-  "line",
-  "summary",
-  "failure_scenario",
-  "category",
-  "security",
-  ...FINDER_FIELDS,
-  "skip_note",
-];
-
 const CANDIDATES_SCHEMA = {
   type: "object",
   properties: {
@@ -169,6 +165,11 @@ const CANDIDATES_SCHEMA = {
   },
   required: ["candidates", "suppressed"],
 };
+// Поля кандидата — ключи схемы ответа finder'а, без ручной копии: поле, добавленное в схему, приёмка
+// не отбросит. Всё остальное в его записи — не данные конвейера.
+const CANDIDATE_FIELDS = Object.keys(
+  CANDIDATES_SCHEMA.properties.candidates.items.properties,
+);
 
 const VERDICTS_SCHEMA = {
   type: "object",
@@ -362,6 +363,8 @@ const degraded = [];
 let halted = null;
 // Что осталось несделанным при остановке по лимиту — чтобы сессия знала, что продолжать через resume.
 const pending = { angles: [], unverifiedCandidates: 0, sweep: false };
+// Кандидаты без голосов из-за остановки (их верификаторы не отработали и не отказали) — для pending.
+let unverifiedPending = 0;
 
 /**
  * Общее число запущенных агентов — производное счётчиков, а не отдельное состояние.
@@ -424,11 +427,13 @@ function countLaunch(task, restart) {
  *
  * @param {{prompt: string, label: string, phase: string, schema: object, model: (string|undefined), role: string, roleName: string}} task задание.
  * @param {boolean} restart true — это перезапуск отказавшего агента.
- * @returns {Promise<{reply: (object|null), limit: boolean, skipped: boolean}>} ответ агента; limit — запуск
- *   сгорел об лимит; skipped — агент не запускался, потому что прогон уже остановлен.
+ * @returns {Promise<{reply: (object|null), limit: boolean, skipped: boolean, crashed: boolean}>} ответ агента;
+ *   limit — запуск сгорел об лимит; skipped — агент не запускался, потому что прогон уже остановлен;
+ *   crashed — агент упал исключением не про лимит (это не молчание).
  */
 async function run(task, restart) {
-  if (halted) return { reply: null, limit: false, skipped: true };
+  if (halted)
+    return { reply: null, limit: false, skipped: true, crashed: false };
   const agentOpts = {
     label: restart ? `${task.label} · перезапуск` : task.label,
     phase: task.phase,
@@ -445,43 +450,87 @@ async function run(task, restart) {
     if (looksLikeLimit(e)) {
       halted = `запуск агентов остановлен: ${e && e.message ? e.message : e}`;
       log(halted);
-      return { reply: null, limit: true, skipped: false };
+      return { reply: null, limit: true, skipped: false, crashed: false };
     }
     log(`агент «${agentOpts.label}» упал: ${e && e.message ? e.message : e}`);
-    reply = null;
+    return { reply: null, limit: false, skipped: false, crashed: true };
   }
   if (reply) stats.replied[bucket] += 1;
-  return { reply: reply || null, limit: false, skipped: false };
+  return { reply: reply || null, limit: false, skipped: false, crashed: false };
+}
+
+// Пустой результат parallel (thunk не вернул значения) — как отказ без ответа.
+const NO_RESULT = { reply: null, limit: false, skipped: false, crashed: false };
+// Хвост остановки по молчанию: причину скрипт не видит — это примета для сессии и пользователя.
+const SILENT_TAIL =
+  "похоже на лимит использования (ошибки лимита не было: возможен и отказ агентов по формату)";
+
+/**
+ * Волна без единого ответа — признак лимита использования (SKILL.md, «Темп запуска», п. 4). Одно правило
+ * для первой волны и волны перезапуска. Упавший исключением не про лимит — не молчание: волна, где все без
+ * ответа упали, — отказы агентов, а не лимит (цена: нераспознанный текст ошибки лимита у всех даст отказы);
+ * падение рядом с молчанием — лимит. Волна из одного агента лимит не распознаёт.
+ *
+ * @param {Array<{reply: (object|null), crashed: boolean}>} results итоги запусков волны.
+ * @returns {boolean} true — запуск новых агентов надо остановить.
+ */
+function silentWave(results) {
+  return (
+    !halted &&
+    results.length >= 2 &&
+    results.every((r) => !r.reply) &&
+    results.some((r) => !r.crashed)
+  );
+}
+
+/**
+ * Нарезка заданий на волны: подряд по wave, но без хвоста из одного агента — последний кусок из одного
+ * забирает задание у предыдущего, если тот не меньше трёх ([5,1] → [4,2]). Первые волны остаются
+ * полными (порядок по ценности, «Темп запуска» п. 3). Хвост из одного остаётся при wave = 2 и нечётном
+ * числе заданий и у единственного задания (sweep, одна группа верификации — кроме max, где у группы три линзы).
+ *
+ * @param {number} n число заданий.
+ * @returns {Array<[number, number]>} пары «начало, размер».
+ */
+function waveBounds(n) {
+  const b = [];
+  for (let i = 0; i < n; i += wave) b.push([i, Math.min(wave, n - i)]);
+  const last = b.length - 1;
+  if (last >= 1 && b[last][1] === 1 && b[last - 1][1] >= TAIL_DONOR_MIN) {
+    b[last - 1][1] -= 1;
+    b[last] = [b[last][0] - 1, 2];
+  }
+  return b;
 }
 
 /**
  * Исполняет задания волнами: волна → дождаться всех → перезапуск отказавших отдельной волной →
- * следующая волна. Если в волне из двух и более агентов не ответил ни один — это похоже на лимит
- * использования, а не на отказ агентов: перезапуск не тратится, запуск останавливается.
+ * следующая волна. Если в волне из двух и более агентов не ответил ни один и хоть один молчал (не упал
+ * исключением) — это похоже на лимит использования, а не на отказ агентов: перезапуск не тратится, запуск
+ * останавливается (silentWave).
  *
  * @param {Array<object>} tasks задания в порядке ценности (самые важные первыми).
- * @returns {Promise<Array<object|null>>} ответы в порядке заданий; null — отказ либо не запускался.
+ * @returns {Promise<{replies: Array<object|null>, twice: Set<number>}>} ответы в порядке заданий (null — отказ
+ *   либо не запускался) и индексы заданий, честно отказавших дважды: перезапуск состоялся, не сгорел об
+ *   лимит и в его волне прогон не остановился. Остальные задания без ответа при остановке — недоделанные
+ *   (pending), а не отказавшие: флаг halted один на прогон и причину отдельного задания не хранит.
  */
 async function runWaves(tasks) {
   const out = new Array(tasks.length).fill(null);
-  for (let i = 0; i < tasks.length; i += wave) {
+  const twice = new Set();
+  for (const [i, size] of waveBounds(tasks.length)) {
     if (halted) break;
-    const chunk = tasks.slice(i, i + wave);
+    const chunk = tasks.slice(i, i + size);
     const results = await parallel(chunk.map((t) => () => run(t, false)));
-    const launched = results.map(
-      (r) => r || { reply: null, limit: false, skipped: false },
-    );
+    const launched = results.map((r) => r || NO_RESULT);
     const failed = [];
     launched.forEach((r, j) => {
       out[i + j] = r.reply;
       if (!r.reply) failed.push(i + j);
     });
-    // Волна из двух и более агентов без единого ответа — лимит, а не отказ агентов (SKILL.md,
-    // «Темп запуска», пункт 4). Размер волны не меньше двух гарантирует проверка args.wave.
-    const silentLimit =
-      !halted && chunk.length >= 2 && failed.length === chunk.length;
+    const silentLimit = silentWave(launched);
     if (silentLimit) {
-      halted = `запуск агентов остановлен: в волне из ${chunk.length} агентов не ответил ни один — похоже на лимит использования`;
+      halted = `запуск агентов остановлен: в волне из ${chunk.length} агентов не ответил ни один — ${SILENT_TAIL}`;
       log(halted);
     }
     launched.forEach((r, j) => {
@@ -494,19 +543,40 @@ async function runWaves(tasks) {
       log(
         `не дали структурного результата: ${failed.map((k) => tasks[k].label).join("; ")} — перезапуск`,
       );
-      const again = await parallel(
-        failed.map((k) => () => run(tasks[k], true)),
-      );
+      const again = (
+        await parallel(failed.map((k) => () => run(tasks[k], true)))
+      ).map((r) => r || NO_RESULT);
+      // Волна перезапуска — тоже волна (то же правило): перезапуски в limitHits, а не в агенты (цена: два
+      // агента, дважды отказавшие по формату, тоже дают «прерван»).
+      const silentRestart = silentWave(again);
+      if (silentRestart) {
+        halted = `запуск агентов остановлен: в волне перезапуска из ${failed.length} агентов не ответил ни один — ${SILENT_TAIL}`;
+        log(halted);
+      }
       failed.forEach((k, j) => {
-        const r = again[j] || { reply: null, limit: false, skipped: false };
+        const r = again[j];
         out[k] = r.reply;
         if (r.skipped) return;
-        if (r.limit) stats.limitHits += 1;
+        if (r.limit || silentRestart) stats.limitHits += 1;
         else countLaunch(tasks[k], true);
+        // Сосед явного лимита в той же волне перезапуска — скорее жертва того же лимита: недоделан.
+        if (!r.reply && !halted) twice.add(k);
+        // Одиночная волна: молчание агента от лимита не отличить — отказ, но с приметой для resume.
+        if (
+          size === 1 &&
+          !r.reply &&
+          !r.limit &&
+          !r.crashed &&
+          !launched[0].crashed &&
+          !silentRestart
+        )
+          notes.push(
+            `${showPath(tasks[k].label)}: агент молчал оба раза — возможен лимит использования; проверить и при необходимости продолжить через resume`,
+          );
       });
     }
   }
-  return out;
+  return { replies: out, twice };
 }
 
 // ---------- нормализация и группировка ----------
@@ -518,10 +588,12 @@ async function runWaves(tasks) {
  * @returns {{path: string, status: string}} status: 'diff' — файл из диффа; 'repo' — repo-relative путь
  *   вне диффа (например, call-site); 'unsafe' — всё, что не похоже на путь внутри репозитория:
  *   пустая строка, управляющие символы, чрезмерная длина, пробел по краям, схема URL, начало с
- *   ~/$/%, сегмент «..», абсолютный путь, не опознанный как файл диффа.
+ *   ~/$/%, сегмент «..», абсолютный путь, не опознанный как файл диффа, нестроковое значение.
  */
 function normalizePath(raw) {
-  const p = String(raw).replace(/\\/g, "/").replace(/^\.\//, "");
+  // Нестроковый путь (нет поля, null, число) — не путь: иначе String() дал бы локацию «undefined».
+  if (typeof raw !== "string") return { path: String(raw), status: "unsafe" };
+  const p = raw.replace(/\\/g, "/").replace(/^\.\//, "");
   if (files.includes(p)) return { path: p, status: "diff" };
   // Строка пришла от агента, читавшего недоверенный дифф, и дальше попадёт в метки и находки:
   // сначала отсекается всё, что не похоже на путь (пусто, управляющие символы и переводы строк,
@@ -555,7 +627,8 @@ function locKey(c) {
 }
 
 /**
- * Считается ли кандидат security-находкой по сведениям finder'а: по флагу либо по категории.
+ * Считается ли кандидат security-находкой по сведениям finder'а: по флагу либо по категории. Флаг без
+ * значения или с нераспознанным значением — «да» (пункт 4 skip-list), «нет» — только явный false.
  * От признака зависит: может ли skip-list снять кандидата (пункт 4), поднимается ли запись
  * suppressed на medium/high и идёт ли на верификацию кандидат без обязательных полей. Во всех трёх
  * случаях признак только добавляет верификацию — ошибка в широкую сторону безопасна, поэтому
@@ -567,7 +640,7 @@ function locKey(c) {
  */
 function isSecurity(c) {
   return (
-    Boolean(c.security) ||
+    c.security !== false ||
     /secur|secret|inject|auth|xss|csrf|ssrf|travers|leak|crypt|privil|permission|credential/i.test(
       String(c.category || ""),
     )
@@ -731,7 +804,7 @@ function sweepPrompt(survivors, removed) {
     `Ты — sweep-finder многоуглового code review. Уровень: ${level}, проход: ${pass}.`,
     `## Задача\n${input.sweepBrief}`,
     `## Уже найдено и верифицировано (не перепроверять и не пере-доказывать)\n${DATA_RULE}\n${jsonBlock(survivors, ["file", "line", "summary"])}`,
-    `## Снято верификацией\nПоднимать заново — только с новым доказательством, которого верификация не видела.\n${jsonBlock(removed, ["file", "line", "summary", "outcome"])}`,
+    `## Снято верификацией\nПоднимать заново — только с новым доказательством, которого верификация не видела.\n${DATA_RULE}\n${jsonBlock(removed, ["file", "line", "summary", "outcome"])}`,
     `## Правила finder'а\n${input.finderRules}`,
     `Потолок: не больше ${SWEEP_CAP} новых кандидатов. Нового нет — верни пустые списки, не добивай до квоты.`,
     OUTPUT_RULE,
@@ -747,6 +820,9 @@ const rejected = [];
 // Локации кандидатов, отклонённых из-за незаполненных полей: finder передал их в обычный список,
 // поэтому подавленными по skip-list они не считаются (пункт 1), хотя до верификации не дошли.
 const fieldRejected = new Set();
+// Локации своих кандидатов finder'а, срезанных сверх потолка: finder передал их в обычный список, поэтому
+// подавленными по skip-list они не считаются (пункт 1), хотя до верификации не дошли (видны в overflow).
+const cutLocations = new Set();
 const overflow = [];
 let suppressedRaw = [];
 
@@ -768,6 +844,11 @@ function showPath(raw) {
  * @param {string} source метка источника.
  */
 function reject(item, source) {
+  // Записи без строкового пути — ответ не по форме: прогон деградирует, а не просто теряет запись.
+  if (typeof item.file !== "string")
+    degraded.push(
+      `${source}: запись без строкового пути (file) отклонена — см. rejected`,
+    );
   rejected.push({
     file: showPath(item.file),
     line: item.line,
@@ -778,6 +859,34 @@ function reject(item, source) {
   notes.push(
     `${source}: запись с путём вне репозитория отклонена без верификации (${showPath(item.file)})`,
   );
+}
+
+/**
+ * Записи списка из ответа агента, годные к разбору: только объекты. Ответ не по форме (список не
+ * массив, элемент — строка, число, null, массив) скрипт не роняет: отброшенное называется в degraded,
+ * прогон становится деградированным. Ключа нет — пустой список без деградации (обязательный candidates
+ * проверяет accept).
+ *
+ * @param {object} reply ответ агента.
+ * @param {string} key имя списка (candidates, suppressed, verdicts).
+ * @param {string} source метка источника для degraded.
+ * @returns {Array<object>} записи-объекты в исходном порядке.
+ */
+function objectsOf(reply, key, source) {
+  const list = reply[key];
+  if (list === undefined) return [];
+  if (!Array.isArray(list)) {
+    degraded.push(`${source}: ${key} не список — отброшено целиком`);
+    return [];
+  }
+  const ok = list.filter(
+    (x) => x !== null && typeof x === "object" && !Array.isArray(x),
+  );
+  if (ok.length < list.length)
+    degraded.push(
+      `${source}: ${list.length - ok.length} записей ${key} не по формату (не объект) — отброшены`,
+    );
+  return ok;
 }
 
 /**
@@ -802,14 +911,28 @@ function missingFields(c) {
  * среза по потолку, так что признак security чужого места не занимает. У записи, поднятой из
  * suppressed, этих полей нет по построению — её судит верификация.
  *
- * @param {object} reply ответ по CANDIDATES_SCHEMA.
+ * Ответ целиком не объект или без candidates — не по форме: запись в degraded (кандидатов не принято).
+ *
+ * @param {object} reply ответ по CANDIDATES_SCHEMA (форма проверяется здесь же).
  * @param {string} source метка источника (угол/sweep) — попадает в находку и в id.
  * @param {number} cap потолок кандидатов.
  * @returns {Array<object>} принятые кандидаты.
  */
 function accept(reply, source, cap) {
+  // Ответ целиком не объект (массив, строка) или без обязательного candidates — не по форме: находки угла
+  // иначе пропали бы при «полном» прогоне. Отсутствующий suppressed — пустой список.
+  if (reply === null || typeof reply !== "object" || Array.isArray(reply)) {
+    degraded.push(`${source}: ответ не объект — отброшен целиком`);
+    return [];
+  }
+  if (reply.candidates === undefined)
+    degraded.push(`${source}: в ответе нет candidates — кандидатов не принято`);
+  // Записи не по форме отбрасываются до среза по потолку: признаков у них нет, вытеснить кого-то они
+  // не могут (ловушка «поля — после среза» — о признаках самого finder'а), а срез по ним упал бы сам.
+  const ownRaw = objectsOf(reply, "candidates", source);
+  const supRaw = objectsOf(reply, "suppressed", source);
   const promoted = [];
-  for (const s of reply.suppressed || []) {
+  for (const s of supRaw) {
     const norm = normalizePath(s.file);
     if (norm.status === "unsafe") {
       reject(s, source);
@@ -818,10 +941,11 @@ function accept(reply, source, cap) {
         file: s.file,
         line: s.line,
         summary: s.summary,
-        failure_scenario:
-          "finder отнёс кандидата к skip-list; сценарий отказа не указан",
-        category: s.security ? "security" : "suppressed-by-finder",
-        security: Boolean(s.security),
+        failure_scenario: FINDER_SKIP_SCENARIO,
+        // Признак — по тому же isSecurity, по которому запись поднята: и по категории, иначе он терялся бы
+        // в подсчёте голосов.
+        category: isSecurity(s) ? "security" : FINDER_SKIP_CATEGORY,
+        security: isSecurity(s),
         skip_note: `под skip-list: ${s.rule}`,
         promoted: true,
       });
@@ -837,13 +961,18 @@ function accept(reply, source, cap) {
   // Из записи finder'а берутся только поля схемы. Служебные ключи (promoted, relatedLocation и
   // любые другие) ставит скрипт: принятые от агента, они отключили бы проверку обязательных
   // полей или вернулись бы сессии как отметка скрипта.
-  const own = (reply.candidates || []).map((c) =>
+  const own = ownRaw.map((c) =>
     Object.fromEntries(
       CANDIDATE_FIELDS.filter((f) => f in c).map((f) => [f, c[f]]),
     ),
   );
   const kept = [...own.slice(0, cap), ...promoted.slice(0, cap)];
   const cut = [...own.slice(cap), ...promoted.slice(cap)];
+  for (const c of own.slice(cap)) {
+    const norm = normalizePath(c.file);
+    if (norm.status !== "unsafe")
+      cutLocations.add(locKey({ file: norm.path, line: c.line }));
+  }
   if (cut.length) {
     degraded.push(
       `${source}: возвращено ${own.length + promoted.length} кандидатов, сверх потолка ${cap} срезано ${cut.length} — см. overflow`,
@@ -896,14 +1025,21 @@ function accept(reply, source, cap) {
         `${source}: у security-кандидата ${norm.path}:${c.line} не заполнены обязательные поля (${missing.join(", ")}) — отправлен на верификацию`,
       );
     const cand = { ...c, file: norm.path, source, id: `${source}#${i + 1}` };
-    const k = `${locKey(cand)}|${cand.summary.trim().toLowerCase()}`;
-    if (seen.has(k)) {
-      notes.push(
-        `${source}: точный дубль кандидата ${locKey(cand)} от «${seen.get(k)}» отброшен`,
-      );
-      return;
+    // Точный дубль — только при строковом непустом summary: нестроковое или пустое не отбраковывает и не
+    // сводит разных кандидатов в один. Признак security — часть ключа: security-кандидат не сводится к
+    // кандидату без признака (иначе угол с меньшим номером снял бы находку угла 5).
+    const text =
+      typeof cand.summary === "string" ? cand.summary.trim().toLowerCase() : "";
+    if (text) {
+      const k = `${locKey(cand)}|${isSecurity(cand) ? "s" : "-"}|${text}`;
+      if (seen.has(k)) {
+        notes.push(
+          `${source}: точный дубль кандидата ${locKey(cand)} от «${seen.get(k)}» отброшен`,
+        );
+        return;
+      }
+      seen.set(k, source);
     }
-    seen.set(k, source);
     out.push(cand);
   });
   if (withoutFields)
@@ -921,13 +1057,16 @@ function accept(reply, source, cap) {
  * отработала) пороги снятия не смягчаются, а CONFIRMED требует не меньше двух голосов CONFIRMED.
  *
  * @param {object} c кандидат.
- * @param {Array<{lens: (string|null), verdict: string, evidence: string, security: boolean, duplicate_of: (string|undefined)}>} votes голоса.
+ * @param {Array<{lens: (string|null), verdict: string, evidence: string, security: boolean, quotes: Array<string>, duplicate_of: (string|undefined)}>} votes
+ *   голоса; quotes — различные цитаты всех согласных записей голоса.
  * @param {number} expected сколько голосов ожидалось (1 либо 3).
  * @param {Set<string>} groupIds id кандидатов этой же группы.
- * @returns {object} исход: outcome, verdict, rule, security, partial, duplicateOf.
+ * @param {boolean} [securityHint] признак security из голоса, не засчитанного из-за противоречивых записей.
+ * @returns {object} исход: outcome, verdict, rules (все цитаты голосов SUPPRESSED), security, partial, duplicateOf.
  */
-function tally(c, votes, expected, groupIds) {
-  const security = isSecurity(c) || votes.some((v) => v.security);
+function tally(c, votes, expected, groupIds, securityHint = false) {
+  const security =
+    isSecurity(c) || securityHint || votes.some((v) => v.security);
   const count = (name) => votes.filter((v) => v.verdict === name).length;
   const majority = expected > 1 ? 2 : 1;
   const partial = votes.length > 0 && votes.length < expected;
@@ -936,7 +1075,15 @@ function tally(c, votes, expected, groupIds) {
   if (!security && count("SUPPRESSED") >= majority) {
     return {
       outcome: "suppressed",
-      rule: votes.find((v) => v.verdict === "SUPPRESSED").evidence,
+      // Все цитаты: сессия сверяет каждую (фаза 3), одна непрошедшая — подавление не засчитано.
+      rules: votes
+        .filter((v) => v.verdict === "SUPPRESSED")
+        .flatMap((v) =>
+          v.quotes.map((rule) => ({
+            by: v.lens ? `линза «${v.lens}»` : "верификатор",
+            rule,
+          })),
+        ),
       security,
       partial,
     };
@@ -988,37 +1135,60 @@ async function verifyAll(candidates, phaseTitle) {
       roleName: lens ? "линзы max" : "верификаторы",
     })),
   );
-  const replies = await runWaves(tasks);
+  const { replies, twice } = await runWaves(tasks);
   const judgedAll = [];
   groups.forEach((group, g) => {
     const groupIds = new Set(group.candidates.map((c) => c.id));
     const own = tasks
-      .map((t, k) => ({ t, reply: replies[k] }))
-      .filter((x) => x.t.g === g);
-    const missed = own
-      .filter((x) => !x.reply)
-      .map((x) => x.t.lens || "верификатор");
+      .map((t, k) => ({ t, k, reply: replies[k] }))
+      .filter((x) => x.t.g === g)
+      .map((x) => ({
+        ...x,
+        // Источник для текста degraded — с экранированной локацией: путь в ключе группы пришёл от агента.
+        list: x.reply
+          ? objectsOf(
+              x.reply,
+              "verdicts",
+              `${x.t.lens ? `линза «${x.t.lens}»` : "верификатор"} · ${showPath(group.key)}`,
+            )
+          : [],
+      }));
+    // Недостающие голоса: отказавшие дважды (twice) — отказ; прочие при остановке — недоделанные.
+    const missedOwn = own.filter((x) => !x.reply);
+    const failedOwn = missedOwn.filter((x) => twice.has(x.k));
+    // Все недостающие голоса — отказы дважды; пустой набор тоже: верификатор ответил, но без вердикта —
+    // это деградация, а не недоделанное (resume вернёт тот же ответ).
+    const allFailed = failedOwn.length === missedOwn.length;
     const judged = group.candidates.map((c) => {
       const votes = [];
-      for (const { t, reply } of own) {
+      // Признак security из противоречивых записей: голос не засчитан, но «да» хотя бы в одной записи —
+      // это голос security (пункт 4 skip-list), и SUPPRESSED других голосов его не снимает.
+      let securityHint = false;
+      for (const { t, reply, list } of own) {
         if (!reply) continue;
         const who = t.lens ? `линза «${t.lens}»` : "верификатор";
-        const matches = (reply.verdicts || []).filter((x) => x.id === c.id);
+        const matches = list.filter((x) => x.id === c.id);
         if (!matches.length) {
           notes.push(
             `${who} не вернул вердикт по ${c.id} (${locKey(c)}) — учтён как отсутствующий голос`,
           );
         } else if (matches.some((m) => m.verdict !== matches[0].verdict)) {
+          if (matches.some((m) => m.security !== false)) securityHint = true;
           notes.push(
             `${who} вернул противоречивые вердикты по ${c.id} (${locKey(c)}) — голос не засчитан`,
           );
         } else {
+          // Согласные записи одного id — один голос; признак security — из любой из них (пункт 4 skip-list:
+          // хватает одного голоса), иначе вторая запись с security терялась бы. Признак без значения или с
+          // нераспознанным значением — «да» (пункт 4): «нет» только у явного false.
           const v = matches[0];
           votes.push({
             lens: t.lens,
             verdict: v.verdict,
             evidence: v.evidence,
-            security: Boolean(v.security),
+            security: matches.some((m) => m.security !== false),
+            // Цитаты правила всех согласных записей (для SUPPRESSED): сверяется каждая.
+            quotes: [...new Set(matches.map((m) => m.evidence))],
             duplicate_of: v.duplicate_of,
           });
         }
@@ -1027,30 +1197,55 @@ async function verifyAll(candidates, phaseTitle) {
         ...c,
         votes,
         unverified: votes.length === 0,
-        ...tally(c, votes, lenses.length, groupIds),
+        ...tally(c, votes, lenses.length, groupIds, securityHint),
       };
     });
     const unverified = judged.filter((c) => c.unverified).length;
-    if (halted) {
-      // Голосов нет из-за остановки по лимиту, а не из-за отказа верификаторов — это режим «прерван».
-    } else if (unverified) {
+    if (unverified && (allFailed || !halted)) {
+      // Все верификаторы локации честно отказали дважды — деградация и при остановке по лимиту.
       degraded.push(
         `локация ${group.key} без голосов верификации: кандидатов ${unverified}, оставлены PLAUSIBLE`,
       );
-    } else if (missed.length) {
-      notes.push(
-        `верификация локации ${group.key} неполная: не отработал(и) ${missed.join(", ")}`,
-      );
+    } else {
+      // Голосов нет из-за остановки по лимиту, а не из-за отказа верификаторов — это режим «прерван».
+      if (unverified) unverifiedPending += unverified;
+      // Отказавшие дважды названы и тогда, когда группа недоделана: в сводке они отдельно от недоделанного.
+      if (failedOwn.length)
+        notes.push(
+          `верификация локации ${showPath(group.key)} неполная: не отработал(и) ${failedOwn.map((x) => x.t.lens || "верификатор").join(", ")}`,
+        );
     }
-    // Дубль по механизму снимается, только если его более конкретный близнец сам выжил.
-    const alive = new Set(
-      judged
-        .filter((c) => c.outcome === "survived" && !c.duplicateOf)
-        .map((c) => c.id),
-    );
+    // Дубль по механизму снимается, только если его более конкретный близнец выжил сам (корень без
+    // своего duplicateOf) либо уже снят как дубль выжившего корня: цепочка A → B → C снимается до C за
+    // несколько проходов. Цикл без корня не снимает никого; опровергнутая или подавленная цель цепочку
+    // рвёт. Каждый проход снимает хотя бы одного — цикл while конечен.
+    const byId = new Map(judged.map((c) => [c.id, c]));
+    // Security-кандидат (признак после подсчёта голосов) не снимается как дубль кандидата без признака:
+    // такая пометка снимается до цикла, и он становится корнем для своих дублей — исход не зависит от порядка.
     for (const c of judged) {
-      if (c.outcome === "survived" && c.duplicateOf && alive.has(c.duplicateOf))
-        c.outcome = "duplicate";
+      const twin = c.duplicateOf ? byId.get(c.duplicateOf) : null;
+      if (twin && c.security && !twin.security) {
+        notes.push(
+          `${c.id} (${showPath(locKey(c))}) — security-кандидат не снят как дубль ${twin.id} без признака security`,
+        );
+        c.duplicateOf = undefined;
+      }
+    }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const c of judged) {
+        if (c.outcome !== "survived" || !c.duplicateOf) continue;
+        const twin = byId.get(c.duplicateOf);
+        const twinKept =
+          twin &&
+          ((twin.outcome === "survived" && !twin.duplicateOf) ||
+            twin.outcome === "duplicate");
+        if (twinKept) {
+          c.outcome = "duplicate";
+          changed = true;
+        }
+      }
     }
     judgedAll.push(...judged);
   });
@@ -1093,19 +1288,21 @@ const finderTasks = orderedAngles
     (a, b) =>
       launchRank(a.angle) - launchRank(b.angle) || a.angle.n - b.angle.n,
   );
-const finderReplies = await runWaves(finderTasks);
+const { replies: finderReplies, twice: finderTwice } =
+  await runWaves(finderTasks);
 
 const failedAngles = [];
 let pool = [];
 // Кандидаты принимаются в порядке номеров углов, а не порядке запуска — id и дедуп детерминированы.
 const byNumber = finderTasks
-  .map((t, k) => ({ t, reply: finderReplies[k] }))
+  .map((t, k) => ({ t, k, reply: finderReplies[k] }))
   .sort((a, b) =>
     a.t.source.localeCompare(b.t.source, "ru", { numeric: true }),
   );
-for (const { t, reply } of byNumber) {
+for (const { t, k, reply } of byNumber) {
   if (!reply) {
-    if (halted) {
+    // Угол, честно отказавший дважды до остановки, — отказ, а не недоделанное.
+    if (halted && !finderTwice.has(k)) {
       pending.angles.push(`угол ${t.angle.n} «${t.angle.title}»`);
       continue;
     }
@@ -1142,7 +1339,11 @@ if (cfg.sweep && !halted) {
   const removedNow = judged.filter(
     (c) => c.outcome === "refuted" || c.outcome === "suppressed",
   );
-  const [reply] = await runWaves([
+  // Sweep — единственное задание своего runWaves: остановить прогон может только он сам, поэтому
+  // «отказал дважды» и «прерван» здесь различает один halted.
+  const {
+    replies: [reply],
+  } = await runWaves([
     {
       prompt: sweepPrompt(survivorsNow, removedNow),
       label: "sweep-finder",
@@ -1181,7 +1382,7 @@ if (cfg.sweep && !halted) {
 
 phase("Сводка");
 if (halted) {
-  pending.unverifiedCandidates = judged.filter((c) => c.unverified).length;
+  pending.unverifiedCandidates = unverifiedPending;
 }
 if (maxAgents !== null && totalAgents() > maxAgents) {
   notes.push(
@@ -1190,7 +1391,7 @@ if (maxAgents !== null && totalAgents() > maxAgents) {
 }
 const survivors = judged
   .filter((c) => c.outcome === "survived")
-  .map(({ id, outcome, rule, duplicateOf, ...rest }) => rest);
+  .map(({ id, outcome, rules, duplicateOf, ...rest }) => rest);
 /**
  * Краткая форма кандидата для списков снятого.
  *
@@ -1205,10 +1406,16 @@ const duplicates = judged
   .filter((c) => c.outcome === "duplicate")
   .map((c) => ({ ...short(c), duplicateOf: c.duplicateOf }));
 
-// Подавленное считается по локациям; локация, которую хоть один finder передал в обычный список, —
-// не подавлена (пункт 1 skip-list): её судьбу решила верификация либо отклонение по обязательным
-// полям (тогда она видна в rejected).
-const poolLocations = new Set([...judged.map(locKey), ...fieldRejected]);
+// Подавление finder'ом считается по локациям; локация, которую хоть один finder передал в обычный
+// список, — не подавлена (пункт 1 skip-list): её судьбу решила верификация либо отклонение по
+// обязательным полям (тогда она видна в rejected). В записи — цитата каждого подавившего finder'а:
+// сессия сверяет каждую (фаза 3). Полей сценария у записи suppressed нет по схеме — заглушка по
+// прецеденту поднятой записи.
+const poolLocations = new Set([
+  ...judged.map(locKey),
+  ...fieldRejected,
+  ...cutLocations,
+]);
 const suppressedMap = new Map();
 for (const s of suppressedRaw) {
   const k = locKey(s);
@@ -1217,23 +1424,31 @@ for (const s of suppressedRaw) {
     suppressedMap.set(k, {
       file: s.file,
       line: s.line,
-      rule: s.rule,
       summary: s.summary,
-      by: [s.by],
+      failure_scenario: FINDER_SKIP_SCENARIO,
+      category: FINDER_SKIP_CATEGORY,
+      by: [],
+      rules: [],
     });
-  else suppressedMap.get(k).by.push(s.by);
+  const entry = suppressedMap.get(k);
+  entry.by.push(s.by);
+  entry.rules.push({ by: s.by, rule: s.rule, summary: s.summary });
 }
-for (const c of judged.filter((x) => x.outcome === "suppressed")) {
-  const k = locKey(c);
-  if (!suppressedMap.has(k))
-    suppressedMap.set(k, {
-      file: c.file,
-      line: c.line,
-      rule: c.rule,
-      summary: c.summary,
-      by: ["верификация"],
-    });
-}
+// Снятое верификацией — запись на кандидата, со своими полями: два кандидата одной локации — две
+// записи, иначе второй пропал бы из результата, а цитата первого прошла бы сверку за обоих.
+const suppressedByVerify = judged
+  .filter((c) => c.outcome === "suppressed")
+  .map((c) => ({
+    file: c.file,
+    line: c.line,
+    summary: c.summary,
+    failure_scenario: c.failure_scenario,
+    category: c.category,
+    source: c.source,
+    by: ["верификация"],
+    rules: c.rules,
+  }));
+const suppressedOut = [...suppressedMap.values(), ...suppressedByVerify];
 
 /**
  * Корзина модели для сводки: число агентов и роли.
@@ -1249,7 +1464,7 @@ function bucketView(b) {
 }
 
 log(
-  `итог: выжило ${survivors.length}, опровергнуто ${refuted.length}, подавлено локаций ${suppressedMap.size}, агентов ${totalAgents()}`,
+  `итог: выжило ${survivors.length}, опровергнуто ${refuted.length}, подавлено записей ${suppressedOut.length}, агентов ${totalAgents()}`,
 );
 
 return {
@@ -1265,7 +1480,7 @@ return {
   survivors,
   refuted,
   duplicates,
-  suppressed: [...suppressedMap.values()],
+  suppressed: suppressedOut,
   rejected,
   overflow,
   failedAngles,
