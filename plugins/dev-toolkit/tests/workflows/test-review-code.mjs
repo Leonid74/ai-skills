@@ -1061,6 +1061,60 @@ console.log("ok 6 проверка args");
     result.duplicates.map((d) => d.summary),
     ["отсутствует null-check"],
   );
+
+  // Цепочка duplicate_of снимается до выжившего корня (№45 (в)); цикл не снимает никого; опровергнутая
+  // цель цепочку рвёт. Кандидаты A, B, C — углы 1, 2, 3 одной локации, в порядке приёмки.
+  const chain = async (links, pick = () => "CONFIRMED") =>
+    (
+      await runScript(base("high", 1), (p, o) => {
+        if (isFinder(o)) {
+          const m = o.label.match(/^угол ([123]) /);
+          return m
+            ? {
+                candidates: [cand("src/a.php", 10, `кандидат ${m[1]}`)],
+                suppressed: [],
+              }
+            : EMPTY;
+        }
+        return {
+          verdicts: candidatesOf(p).map((c) => ({
+            id: c.id,
+            verdict: pick(c),
+            evidence: "e",
+            security: false,
+            duplicate_of: links[c.id] || "",
+          })),
+        };
+      })
+    ).result;
+  const abc = await chain({ "угол1#1": "угол2#1", "угол2#1": "угол3#1" });
+  assert.deepEqual(
+    abc.survivors.map((s) => s.summary),
+    ["кандидат 3"],
+    "A→B→C: выжил только корень C",
+  );
+  assert.deepEqual(
+    abc.duplicates.map((d) => [d.summary, d.duplicateOf]),
+    [
+      ["кандидат 1", "угол2#1"],
+      ["кандидат 2", "угол3#1"],
+    ],
+    "в duplicates — непосредственная цель",
+  );
+  const loop = await chain({ "угол1#1": "угол2#1", "угол2#1": "угол1#1" });
+  assert.deepEqual(
+    loop.survivors.map((s) => s.summary),
+    ["кандидат 1", "кандидат 2", "кандидат 3"],
+    "цикл A↔B не снимает никого",
+  );
+  const broken = await chain({ "угол1#1": "угол2#1" }, (c) =>
+    c.id === "угол2#1" ? "REFUTED" : "CONFIRMED",
+  );
+  assert.deepEqual(
+    broken.survivors.map((s) => s.summary),
+    ["кандидат 1", "кандидат 3"],
+    "A→B, B опровергнут — A выжил",
+  );
   console.log("ok 12 дубль по механизму");
 }
 
