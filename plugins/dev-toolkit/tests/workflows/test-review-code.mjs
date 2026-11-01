@@ -2265,3 +2265,40 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   );
   console.log("ok 31 цитаты подавления");
 }
+
+// 32. Голос без признака security или с нераспознанным значением — «да» (пункт 4 skip-list): его
+//     SUPPRESSED не снимает кандидата. Только false — «нет».
+{
+  for (const value of [undefined, "false", null, 0]) {
+    const { result } = await runScript(base("high", 1), (p, o) => {
+      if (isFinder(o))
+        return o.label.startsWith("угол 1")
+          ? {
+              candidates: [cand("src/a.php", 90, "без признака")],
+              suppressed: [],
+            }
+          : EMPTY;
+      const v = { id: "угол1#1", verdict: "SUPPRESSED", evidence: "R" };
+      if (value !== undefined) v.security = value;
+      return { verdicts: [v] };
+    });
+    assert.equal(
+      result.survivors.length,
+      1,
+      `security=${String(value)} — «да», SUPPRESSED не засчитан`,
+    );
+  }
+  const { result } = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [cand("src/a.php", 91, "явное нет")], suppressed: [] }
+        : EMPTY;
+    return verdicts(p, () => "SUPPRESSED");
+  });
+  assert.equal(
+    result.suppressed.length,
+    1,
+    "security=false — подавление засчитано",
+  );
+  console.log("ok 32 голос без признака security — «да»");
+}
