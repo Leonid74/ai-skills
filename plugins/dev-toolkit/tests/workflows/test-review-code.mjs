@@ -3046,3 +3046,91 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   );
   console.log("ok 45 ответ finder'а не по форме целиком");
 }
+
+// 46. Границы, закреплённые по ревью П6 (7#3, 7#6, 7#7): нота «молчал оба раза» не ставится при исключении на одном из запусков
+//     и при лимите на перезапуске; одинаковые цитаты согласных записей — одна; заглушка сценария у записи finder'а; хвост [2,1]
+//     при wave = 2.
+{
+  const hint = /агент молчал оба раза/;
+  const sweepRuns = (first, second) => {
+    let n = 0;
+    return (p, o) => {
+      if (isSweep(o)) return (n++ === 0 ? first : second)();
+      return isFinder(o) ? EMPTY : verdicts(p, () => "PLAUSIBLE");
+    };
+  };
+  const boom = (m) => () => {
+    throw new Error(m);
+  };
+  const silent = () => null;
+  for (const [first, second, what] of [
+    [boom("агент упал"), silent, "исключение, затем молчание"],
+    [silent, boom("агент упал"), "молчание, затем исключение"],
+    [silent, boom("usage limit reached"), "молчание, затем лимит"],
+  ]) {
+    const { result } = await runScript(
+      base("xhigh", 1),
+      sweepRuns(first, second),
+    );
+    assert.ok(!result.notes.some((n) => hint.test(n)), `нет ноты: ${what}`);
+  }
+
+  const sameQuote = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1 ")
+        ? { candidates: [cand("src/a.php", 5, "одна цитата")], suppressed: [] }
+        : EMPTY;
+    return {
+      verdicts: [
+        {
+          id: "угол1#1",
+          verdict: "SUPPRESSED",
+          evidence: "R",
+          security: false,
+        },
+        {
+          id: "угол1#1",
+          verdict: "SUPPRESSED",
+          evidence: "R",
+          security: false,
+        },
+      ],
+    };
+  });
+  assert.deepEqual(
+    sameQuote.result.suppressed[0].rules.map((r) => r.rule),
+    ["R"],
+    "одинаковые цитаты — одна",
+  );
+
+  const stub = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1 ")
+        ? { candidates: [], suppressed: [sup("src/b.php", 4)] }
+        : EMPTY;
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.equal(
+    stub.result.suppressed[0].failure_scenario,
+    "finder отнёс кандидата к skip-list; сценарий отказа не указан",
+  );
+
+  const w2 = base("max", 1);
+  w2.wave = 2;
+  const tail = await runScript(w2, (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1 ")
+        ? { candidates: [cand("src/a.php", 1, "x")], suppressed: [] }
+        : EMPTY;
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.deepEqual(
+    tail.waves
+      .filter((w) => w.every((l) => l.startsWith("линза")))
+      .map((w) => w.length),
+    [2, 1],
+    "wave = 2, три линзы — [2,1]",
+  );
+  console.log("ok 46 границы ноты, цитат, заглушки и хвоста");
+}
