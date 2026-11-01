@@ -18,7 +18,8 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
  * @param {object} args значение глобала args скрипта.
  * @param {(prompt: string, opts: object) => (object|null)} behave ответ агента; может бросить исключение.
  * @param {boolean} [staggered] отвечать с разной задержкой — чтобы скользящее окно отличалось от волн.
- * @returns {Promise<{result: object, calls: Array<{prompt: string, opts: object}>, maxInFlight: number, barrierViolations: number}>} результат и журнал вызовов.
+ * @returns {Promise<{result: object, calls: Array<{prompt: string, opts: object}>, maxInFlight: number, barrierViolations: number, waves: Array<Array<string>>}>} результат,
+ *   журнал вызовов и волны — метки агентов, стартовавших вместе (новая волна — старт при пустом «полёте»).
  */
 async function runScript(args, behave, staggered = false) {
   const calls = [];
@@ -28,10 +29,14 @@ async function runScript(args, behave, staggered = false) {
   // ещё никто не ответил; старт после чьего-то ответа при непустом «полёте» — скользящее окно.
   let answeredInWave = 0;
   let barrierViolations = 0;
+  const waves = [];
   const agent = async (prompt, opts) => {
     calls.push({ prompt, opts });
-    if (inFlight === 0) answeredInWave = 0;
-    else if (answeredInWave > 0) barrierViolations += 1;
+    if (inFlight === 0) {
+      answeredInWave = 0;
+      waves.push([]);
+    } else if (answeredInWave > 0) barrierViolations += 1;
+    waves[waves.length - 1].push(opts.label);
     const delay = staggered ? (calls.length % 3) * 3 : 0;
     inFlight += 1;
     maxInFlight = Math.max(maxInFlight, inFlight);
@@ -71,7 +76,7 @@ async function runScript(args, behave, staggered = false) {
     { total: null },
     null,
   );
-  return { result, calls, maxInFlight, barrierViolations };
+  return { result, calls, maxInFlight, barrierViolations, waves };
 }
 
 /**
@@ -1535,16 +1540,17 @@ console.log("ok 22 сильная сессия: последняя линия б
   });
   assert.equal(thrown.result.opusSilent, true, "opus отказал исключением");
 
-  // Границы: одного запроса к opus и одного ответа на sonnet достаточно. Отвечает только угол 1,
-  // единственный верификатор падает исключением про лимит — перезапуска нет.
+  // Границы: одного запроса к opus и одного ответа на sonnet достаточно. Молчит только угол 3 (волна
+  // перезапуска из двух молчащих — уже лимит, №45 (а)), единственный верификатор падает исключением про
+  // лимит — перезапуска нет.
   const edge = await scenario("medium", 2, true, one, (o) => {
     if (o.model === "opus") throw new Error("429 too many requests");
-    return isFinder(o) && !o.label.startsWith("угол 1");
+    return isFinder(o) && o.label.startsWith("угол 3");
   });
   assert.equal(
     edge.result.agents.byModel.sonnet.count,
-    5,
-    "угол 1 и два отказа с перезапуском",
+    4,
+    "углы 1, 2 и отказ угла 3 с перезапуском",
   );
   assert.equal(edge.result.opusSilent, true, "по одному запросу и ответу");
 
@@ -2355,4 +2361,100 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
     "security=false — подавление засчитано",
   );
   console.log("ok 32 голос без признака security — «да»");
+}
+
+// 33. Тихий лимит (№45 (а)): хвоста из одного агента нет (последний кусок из одного забирает задание у
+//     предыдущего), волна перезапуска без единого ответа — тоже лимит; агент, запущенный волной из одного
+//     и молчавший оба раза, — отказ с нотой «возможен лимит» (ноты нет у агента из волны в пять и при
+//     исключении агента).
+{
+  const twoLocs = (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o)) {
+      const m = o.label.match(/^угол ([12]) /);
+      return m
+        ? {
+            candidates: [cand("src/a.php", Number(m[1]) * 10, `л${m[1]}`)],
+            suppressed: [],
+          }
+        : EMPTY;
+    }
+    return verdicts(p, () => "PLAUSIBLE");
+  };
+  const lensWaves = (waves) =>
+    waves
+      .filter((w) => w.every((l) => l.startsWith("линза")))
+      .map((w) => w.length);
+  const even = await runScript(base("max", 1), twoLocs);
+  assert.deepEqual(
+    lensWaves(even.waves),
+    [4, 2],
+    "шесть линз — волны [4,2], не [5,1]",
+  );
+
+  let lensCalls = 0;
+  const tail = await runScript(base("max", 1), (p, o) => {
+    if (o.label.startsWith("линза") && ++lensCalls > 4) return null;
+    return twoLocs(p, o);
+  });
+  assert.equal(tail.result.mode, "прерван", "молчащий хвост — лимит");
+  assert.equal(
+    tail.result.agents.restarts.verifiers,
+    0,
+    "перезапуск не потрачен",
+  );
+  assert.equal(tail.result.agents.limitHits, 2);
+
+  const restart = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o) && /^угол [12] /.test(o.label)) return null;
+    return isFinder(o) ? EMPTY : verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.equal(
+    restart.result.mode,
+    "прерван",
+    "волна перезапуска без ответа — лимит",
+  );
+  assert.match(
+    restart.result.halted,
+    /волне перезапуска из 2 агентов не ответил ни один/,
+  );
+  assert.deepEqual(restart.result.failedAngles, []);
+  assert.equal(restart.result.pending.angles.length, 2);
+  assert.equal(restart.result.agents.restarts.angles, 0);
+  assert.equal(restart.result.agents.limitHits, 2);
+  checkSums(restart.result.agents);
+
+  const hint = /агент молчал оба раза — возможен лимит использования/;
+  const sweepSilent = await runScript(base("xhigh", 1), (p, o) => {
+    if (isSweep(o)) return null;
+    return isFinder(o) ? EMPTY : verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.equal(sweepSilent.result.mode, "деградированный");
+  assert.ok(
+    sweepSilent.result.notes.some(
+      (n) => n.startsWith("sweep-finder:") && hint.test(n),
+    ),
+    "одиночный sweep молчал оба раза — нота «возможен лимит»",
+  );
+  const sweepCrash = await runScript(base("xhigh", 1), (p, o) => {
+    if (isSweep(o)) throw new Error("агент упал");
+    return isFinder(o) ? EMPTY : verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.ok(
+    !sweepCrash.result.notes.some((n) => hint.test(n)),
+    "исключение агента — не молчание",
+  );
+  const inFive = await runScript(base("high", 2), (p, o) => {
+    if (isFinder(o) && o.label.startsWith("угол 4")) return null;
+    return isFinder(o) ? EMPTY : verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.deepEqual(
+    inFive.result.failedAngles.map((f) => f.n),
+    [4],
+  );
+  assert.ok(
+    !inFive.result.notes.some((n) => hint.test(n)),
+    "у агента из волны в пять ноты нет",
+  );
+  console.log("ok 33 тихий лимит: хвост, волна перезапуска, одиночный агент");
 }
