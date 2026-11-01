@@ -562,7 +562,7 @@ async function runWaves(tasks) {
           !silentRestart
         )
           notes.push(
-            `${tasks[k].label}: агент молчал оба раза — возможен лимит использования; проверить и при необходимости продолжить через resume`,
+            `${showPath(tasks[k].label)}: агент молчал оба раза — возможен лимит использования; проверить и при необходимости продолжить через resume`,
           );
       });
     }
@@ -1125,7 +1125,14 @@ async function verifyAll(candidates, phaseTitle) {
       .filter((x) => x.t.g === g)
       .map((x) => ({
         ...x,
-        list: x.reply ? objectsOf(x.reply, "verdicts", x.t.label) : [],
+        // Источник для текста degraded — с экранированной локацией: путь в ключе группы пришёл от агента.
+        list: x.reply
+          ? objectsOf(
+              x.reply,
+              "verdicts",
+              `${x.t.lens ? `линза «${x.t.lens}»` : "верификатор"} · ${showPath(group.key)}`,
+            )
+          : [],
       }));
     // Недостающие голоса: отказавшие дважды (twice) — отказ; прочие при остановке — недоделанные.
     const missedOwn = own.filter((x) => !x.reply);
