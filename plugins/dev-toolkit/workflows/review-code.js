@@ -988,17 +988,21 @@ function accept(reply, source, cap) {
         `${source}: у security-кандидата ${norm.path}:${c.line} не заполнены обязательные поля (${missing.join(", ")}) — отправлен на верификацию`,
       );
     const cand = { ...c, file: norm.path, source, id: `${source}#${i + 1}` };
-    // summary не строкой — не отбраковка: security-кандидат иначе потерялся бы до верификации.
-    const k = `${locKey(cand)}|${String(cand.summary ?? "")
-      .trim()
-      .toLowerCase()}`;
-    if (seen.has(k)) {
-      notes.push(
-        `${source}: точный дубль кандидата ${locKey(cand)} от «${seen.get(k)}» отброшен`,
-      );
-      return;
+    // Точный дубль — только при строковом непустом summary: нестроковое или пустое не отбраковывает и не
+    // сводит разных кандидатов в один. Признак security — часть ключа: security-кандидат не сводится к
+    // кандидату без признака (иначе угол с меньшим номером снял бы находку угла 5).
+    const text =
+      typeof cand.summary === "string" ? cand.summary.trim().toLowerCase() : "";
+    if (text) {
+      const k = `${locKey(cand)}|${isSecurity(cand) ? "s" : "-"}|${text}`;
+      if (seen.has(k)) {
+        notes.push(
+          `${source}: точный дубль кандидата ${locKey(cand)} от «${seen.get(k)}» отброшен`,
+        );
+        return;
+      }
+      seen.set(k, source);
     }
-    seen.set(k, source);
     out.push(cand);
   });
   if (withoutFields)
