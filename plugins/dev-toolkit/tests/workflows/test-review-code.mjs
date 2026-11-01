@@ -2458,3 +2458,63 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   );
   console.log("ok 33 тихий лимит: хвост, волна перезапуска, одиночный агент");
 }
+
+// 34. Честный двойной отказ до остановки по лимиту остаётся отказом (№45 (г)): угол — в failedAngles, а не
+//     в pending; группа верификации без голосов — в degraded; сосед явного лимита в волне перезапуска — pending.
+{
+  const early = await runScript(base("xhigh", 1), (p, o) => {
+    if (!isFinder(o)) return verdicts(p, () => "PLAUSIBLE");
+    if (o.label.startsWith("угол 5")) return null;
+    return /^угол [1-4] /.test(o.label) ? EMPTY : null;
+  });
+  assert.equal(early.result.mode, "прерван");
+  assert.deepEqual(
+    early.result.failedAngles.map((f) => f.n),
+    [5],
+    "угол 5 отказал дважды до остановки",
+  );
+  assert.ok(
+    !early.result.pending.angles.some((a) => a.startsWith("угол 5 ")),
+    "отказавший угол не выдан за недоделанный",
+  );
+  assert.equal(early.result.pending.angles.length, 4);
+  assert.ok(early.result.degraded.some((d) => d.startsWith("угол 5 ")));
+
+  const six = {
+    candidates: [1, 2, 3, 4, 5, 6].map((n) => cand("src/a.php", n, `м${n}`)),
+    suppressed: [],
+  };
+  const groups = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o)) return o.label.startsWith("угол 1") ? six : EMPTY;
+    if (o.label.startsWith("верификатор · src/a.php:1")) return null;
+    if (/src\/a\.php:[56]$/.test(o.label)) return null;
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.equal(groups.result.mode, "прерван");
+  assert.ok(
+    groups.result.degraded.some((d) =>
+      d.startsWith("локация src/a.php:1 без голосов"),
+    ),
+    "группа, отказавшая дважды до остановки, — в degraded",
+  );
+  assert.equal(
+    groups.result.pending.unverifiedCandidates,
+    2,
+    "недоделанные — только группы, не дошедшие до верификации",
+  );
+
+  const sibling = await runScript(base("high", 1), (p, o) => {
+    if (o.label === "угол 1 · угол-1 · перезапуск")
+      throw new Error("usage limit reached");
+    if (/^угол [12] /.test(o.label)) return null;
+    return isFinder(o) ? EMPTY : verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.equal(sibling.result.mode, "прерван");
+  assert.deepEqual(
+    sibling.result.failedAngles,
+    [],
+    "сосед явного лимита — не отказ",
+  );
+  assert.equal(sibling.result.pending.angles.length, 2);
+  console.log("ok 34 двойной отказ до остановки по лимиту");
+}
