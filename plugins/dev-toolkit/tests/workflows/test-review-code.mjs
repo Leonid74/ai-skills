@@ -1120,6 +1120,15 @@ console.log("ok 6 проверка args");
     ["кандидат 1", "кандидат 3"],
     "A→B, B опровергнут — A выжил",
   );
+  const rootRefuted = await chain(
+    { "угол1#1": "угол2#1", "угол2#1": "угол3#1" },
+    (c) => (c.id === "угол3#1" ? "REFUTED" : "CONFIRMED"),
+  );
+  assert.deepEqual(
+    rootRefuted.survivors.map((s) => s.summary),
+    ["кандидат 1", "кандидат 2"],
+    "A→B→C, корень C опровергнут — цепочка порвана, A и B выжили",
+  );
   console.log("ok 12 дубль по механизму");
 }
 
@@ -2099,6 +2108,11 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
     [],
     "строка в suppressed не стала подавленной локацией",
   );
+  assert.deepEqual(
+    sups.result.survivors.map((s) => s.summary),
+    ["полный кандидат"],
+    "полный кандидат рядом с мусором в suppressed судится",
+  );
   assert.equal(sups.result.mode, "деградированный");
   assert.ok(
     sups.result.degraded.some((d) =>
@@ -2417,6 +2431,11 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   assert.match(
     restart.result.halted,
     /волне перезапуска из 2 агентов не ответил ни один/,
+  );
+  assert.match(
+    restart.result.halted,
+    /ошибки лимита не было/,
+    "остановка по молчанию называет, что ошибки лимита не было",
   );
   assert.deepEqual(restart.result.failedAngles, []);
   assert.equal(restart.result.pending.angles.length, 2);
