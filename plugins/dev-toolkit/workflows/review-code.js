@@ -811,6 +811,9 @@ const rejected = [];
 // Локации кандидатов, отклонённых из-за незаполненных полей: finder передал их в обычный список,
 // поэтому подавленными по skip-list они не считаются (пункт 1), хотя до верификации не дошли.
 const fieldRejected = new Set();
+// Локации своих кандидатов finder'а, срезанных сверх потолка: finder передал их в обычный список, поэтому
+// подавленными по skip-list они не считаются (пункт 1), хотя до верификации не дошли (видны в overflow).
+const cutLocations = new Set();
 const overflow = [];
 let suppressedRaw = [];
 
@@ -946,6 +949,11 @@ function accept(reply, source, cap) {
   );
   const kept = [...own.slice(0, cap), ...promoted.slice(0, cap)];
   const cut = [...own.slice(cap), ...promoted.slice(cap)];
+  for (const c of own.slice(cap)) {
+    const norm = normalizePath(c.file);
+    if (norm.status !== "unsafe")
+      cutLocations.add(locKey({ file: norm.path, line: c.line }));
+  }
   if (cut.length) {
     degraded.push(
       `${source}: возвращено ${own.length + promoted.length} кандидатов, сверх потолка ${cap} срезано ${cut.length} — см. overflow`,
@@ -1366,7 +1374,11 @@ const duplicates = judged
 // обязательным полям (тогда она видна в rejected). В записи — цитата каждого подавившего finder'а:
 // сессия сверяет каждую (фаза 3). Полей сценария у записи suppressed нет по схеме — заглушка по
 // прецеденту поднятой записи.
-const poolLocations = new Set([...judged.map(locKey), ...fieldRejected]);
+const poolLocations = new Set([
+  ...judged.map(locKey),
+  ...fieldRejected,
+  ...cutLocations,
+]);
 const suppressedMap = new Map();
 for (const s of suppressedRaw) {
   const k = locKey(s);
