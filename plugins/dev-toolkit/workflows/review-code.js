@@ -951,7 +951,7 @@ function accept(reply, source, cap) {
  * @param {Array<{lens: (string|null), verdict: string, evidence: string, security: boolean, duplicate_of: (string|undefined)}>} votes голоса.
  * @param {number} expected сколько голосов ожидалось (1 либо 3).
  * @param {Set<string>} groupIds id кандидатов этой же группы.
- * @returns {object} исход: outcome, verdict, rule, security, partial, duplicateOf.
+ * @returns {object} исход: outcome, verdict, rules (все цитаты голосов SUPPRESSED), security, partial, duplicateOf.
  */
 function tally(c, votes, expected, groupIds) {
   const security = isSecurity(c) || votes.some((v) => v.security);
@@ -963,7 +963,15 @@ function tally(c, votes, expected, groupIds) {
   if (!security && count("SUPPRESSED") >= majority) {
     return {
       outcome: "suppressed",
-      rule: votes.find((v) => v.verdict === "SUPPRESSED").evidence,
+      // Все цитаты: сессия сверяет каждую (фаза 3), одна непрошедшая — подавление не засчитано.
+      rules: votes
+        .filter((v) => v.verdict === "SUPPRESSED")
+        .flatMap((v) =>
+          v.quotes.map((rule) => ({
+            by: v.lens ? `линза «${v.lens}»` : "верификатор",
+            rule,
+          })),
+        ),
       security,
       partial,
     };
@@ -1052,6 +1060,8 @@ async function verifyAll(candidates, phaseTitle) {
             verdict: v.verdict,
             evidence: v.evidence,
             security: matches.some((m) => Boolean(m.security)),
+            // Цитаты правила всех согласных записей (для SUPPRESSED): сверяется каждая.
+            quotes: [...new Set(matches.map((m) => m.evidence))],
             duplicate_of: v.duplicate_of,
           });
         }
@@ -1223,7 +1233,7 @@ if (maxAgents !== null && totalAgents() > maxAgents) {
 }
 const survivors = judged
   .filter((c) => c.outcome === "survived")
-  .map(({ id, outcome, rule, duplicateOf, ...rest }) => rest);
+  .map(({ id, outcome, rules, duplicateOf, ...rest }) => rest);
 /**
  * Краткая форма кандидата для списков снятого.
  *
@@ -1238,9 +1248,11 @@ const duplicates = judged
   .filter((c) => c.outcome === "duplicate")
   .map((c) => ({ ...short(c), duplicateOf: c.duplicateOf }));
 
-// Подавленное считается по локациям; локация, которую хоть один finder передал в обычный список, —
-// не подавлена (пункт 1 skip-list): её судьбу решила верификация либо отклонение по обязательным
-// полям (тогда она видна в rejected).
+// Подавление finder'ом считается по локациям; локация, которую хоть один finder передал в обычный
+// список, — не подавлена (пункт 1 skip-list): её судьбу решила верификация либо отклонение по
+// обязательным полям (тогда она видна в rejected). В записи — цитата каждого подавившего finder'а:
+// сессия сверяет каждую (фаза 3). Полей сценария у записи suppressed нет по схеме — заглушка по
+// прецеденту поднятой записи.
 const poolLocations = new Set([...judged.map(locKey), ...fieldRejected]);
 const suppressedMap = new Map();
 for (const s of suppressedRaw) {
@@ -1250,23 +1262,32 @@ for (const s of suppressedRaw) {
     suppressedMap.set(k, {
       file: s.file,
       line: s.line,
-      rule: s.rule,
       summary: s.summary,
-      by: [s.by],
+      failure_scenario:
+        "finder отнёс кандидата к skip-list; сценарий отказа не указан",
+      category: "suppressed-by-finder",
+      by: [],
+      rules: [],
     });
-  else suppressedMap.get(k).by.push(s.by);
+  const entry = suppressedMap.get(k);
+  entry.by.push(s.by);
+  entry.rules.push({ by: s.by, rule: s.rule, summary: s.summary });
 }
-for (const c of judged.filter((x) => x.outcome === "suppressed")) {
-  const k = locKey(c);
-  if (!suppressedMap.has(k))
-    suppressedMap.set(k, {
-      file: c.file,
-      line: c.line,
-      rule: c.rule,
-      summary: c.summary,
-      by: ["верификация"],
-    });
-}
+// Снятое верификацией — запись на кандидата, со своими полями: два кандидата одной локации — две
+// записи, иначе второй пропал бы из результата, а цитата первого прошла бы сверку за обоих.
+const suppressedByVerify = judged
+  .filter((c) => c.outcome === "suppressed")
+  .map((c) => ({
+    file: c.file,
+    line: c.line,
+    summary: c.summary,
+    failure_scenario: c.failure_scenario,
+    category: c.category,
+    source: c.source,
+    by: ["верификация"],
+    rules: c.rules,
+  }));
+const suppressedOut = [...suppressedMap.values(), ...suppressedByVerify];
 
 /**
  * Корзина модели для сводки: число агентов и роли.
@@ -1282,7 +1303,7 @@ function bucketView(b) {
 }
 
 log(
-  `итог: выжило ${survivors.length}, опровергнуто ${refuted.length}, подавлено локаций ${suppressedMap.size}, агентов ${totalAgents()}`,
+  `итог: выжило ${survivors.length}, опровергнуто ${refuted.length}, подавлено записей ${suppressedOut.length}, агентов ${totalAgents()}`,
 );
 
 return {
@@ -1298,7 +1319,7 @@ return {
   survivors,
   refuted,
   duplicates,
-  suppressed: [...suppressedMap.values()],
+  suppressed: suppressedOut,
   rejected,
   overflow,
   failedAngles,
