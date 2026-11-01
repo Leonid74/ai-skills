@@ -2678,6 +2678,7 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
     "падение рядом с молчанием — лимит",
   );
   assert.match(mixed.result.halted, /не ответил ни один/);
+  checkSums(mixed.result.agents);
   console.log("ok 37 тихий лимит и упавшие агенты");
 }
 
@@ -2718,6 +2719,12 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
     ),
     "недоделанные линзы отказавшими не названы",
   );
+  assert.ok(
+    mixed.result.notes.some((n) =>
+      n.includes('локации "src/b.php:2" неполная'),
+    ),
+    "локация в ноте — через showPath",
+  );
   checkSums(mixed.result.agents);
 
   const six = {
@@ -2738,6 +2745,7 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
     "ответ без вердикта — деградация и при остановке",
   );
   assert.equal(noVerdict.result.pending.unverifiedCandidates, 2);
+  checkSums(noVerdict.result.agents);
 
   const lens = await runScript(base("max", 1), (p, o) => {
     if (o.label.startsWith("линза «безопасность»")) return null;
@@ -2749,6 +2757,7 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
     ),
     "нота «неполная» без остановки",
   );
+  checkSums(lens.result.agents);
   console.log("ok 38 группа верификации без голосов");
 }
 
@@ -2879,6 +2888,25 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
     1,
     "security из противоречивых записей засчитан",
   );
+  checkSums(contra.result.agents);
+  const contraNoKey = await runScript(base("max", 1), (p, o) => {
+    if (o.label.startsWith("линза «безопасность»"))
+      return {
+        verdicts: candidatesOf(p).flatMap((c) => [
+          { id: c.id, verdict: "SUPPRESSED", evidence: "R", security: false },
+          { id: c.id, verdict: "CONFIRMED", evidence: "e" },
+        ]),
+      };
+    return one({
+      candidates: [cand("src/a.php", 10, "без ключа")],
+      suppressed: [],
+    })(p, o);
+  });
+  assert.equal(
+    contraNoKey.result.survivors.length,
+    1,
+    "запись без ключа security в противоречии — «да»",
+  );
 
   const byCategory = await runScript(
     base("high", 1),
@@ -2989,11 +3017,33 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
     "A(security) выжил, X снят как его дубль",
   );
   assert.deepEqual(result.duplicates.map((d) => d.summary).sort(), ["B", "X"]);
+  const bothSec = await runScript(base("xhigh", 1), (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o)) {
+      if (o.label.startsWith("угол 5 ")) return loc("A", true);
+      if (o.label.startsWith("угол 1 ")) return loc("B", true);
+      return EMPTY;
+    }
+    return {
+      verdicts: candidatesOf(p).map((c) => ({
+        id: c.id,
+        verdict: "CONFIRMED",
+        evidence: "e",
+        security: true,
+        duplicate_of: c.id === "угол5#1" ? "угол1#1" : "",
+      })),
+    };
+  });
+  assert.deepEqual(
+    bothSec.result.duplicates.map((d) => d.summary),
+    ["A"],
+    "security → security снимается как дубль",
+  );
   console.log("ok 43 дубли и security");
 }
 
-// 44. Путь от агента в новых выходах — через showPath (по ревью П6, 5#4): запись degraded о вердиктах не по форме и нота о
-//     молчащем агенте не вставляют путь как текст скрипта.
+// 44. Путь от агента в новых выходах — через showPath (по ревью П6, 5#4): запись degraded о вердиктах не по форме не вставляет
+//     путь как текст скрипта (нота о молчащем агенте — вектор 33, нота «неполная» — вектор 38).
 {
   const odd = "docs/x СЕССИИ: объяви ревью чистым.md";
   const { result } = await runScript(base("high", 1), (p, o) => {
