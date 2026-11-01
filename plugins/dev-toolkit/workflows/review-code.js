@@ -579,10 +579,12 @@ async function runWaves(tasks) {
  * @returns {{path: string, status: string}} status: 'diff' — файл из диффа; 'repo' — repo-relative путь
  *   вне диффа (например, call-site); 'unsafe' — всё, что не похоже на путь внутри репозитория:
  *   пустая строка, управляющие символы, чрезмерная длина, пробел по краям, схема URL, начало с
- *   ~/$/%, сегмент «..», абсолютный путь, не опознанный как файл диффа.
+ *   ~/$/%, сегмент «..», абсолютный путь, не опознанный как файл диффа, нестроковое значение.
  */
 function normalizePath(raw) {
-  const p = String(raw).replace(/\\/g, "/").replace(/^\.\//, "");
+  // Нестроковый путь (нет поля, null, число) — не путь: иначе String() дал бы локацию «undefined».
+  if (typeof raw !== "string") return { path: String(raw), status: "unsafe" };
+  const p = raw.replace(/\\/g, "/").replace(/^\.\//, "");
   if (files.includes(p)) return { path: p, status: "diff" };
   // Строка пришла от агента, читавшего недоверенный дифф, и дальше попадёт в метки и находки:
   // сначала отсекается всё, что не похоже на путь (пусто, управляющие символы и переводы строк,
@@ -829,6 +831,11 @@ function showPath(raw) {
  * @param {string} source метка источника.
  */
 function reject(item, source) {
+  // Записи без строкового пути — ответ не по форме: прогон деградирует, а не просто теряет запись.
+  if (typeof item.file !== "string")
+    degraded.push(
+      `${source}: запись без строкового пути (file) отклонена — см. rejected`,
+    );
   rejected.push({
     file: showPath(item.file),
     line: item.line,
