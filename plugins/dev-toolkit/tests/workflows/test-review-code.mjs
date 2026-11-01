@@ -2850,3 +2850,142 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   );
   console.log("ok 40 запись без строкового пути");
 }
+
+// 41. Признак security (по ревью П6, 5#1, 6#2, 4#1): из противоречивых записей линзы; у записи, поднятой по категории; у finder'а
+//     без признака или с нераспознанным значением — «да». Во всех случаях голос SUPPRESSED кандидата не снимает.
+{
+  const one = (c) => (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o)) return o.label.startsWith("угол 1 ") ? c : EMPTY;
+    return verdicts(p, () => "SUPPRESSED");
+  };
+  const contra = await runScript(base("max", 1), (p, o) => {
+    if (o.label.startsWith("линза «безопасность»"))
+      return {
+        verdicts: candidatesOf(p).flatMap((c) => [
+          { id: c.id, verdict: "SUPPRESSED", evidence: "R", security: false },
+          { id: c.id, verdict: "CONFIRMED", evidence: "e", security: true },
+        ]),
+      };
+    return one({
+      candidates: [cand("src/a.php", 10, "противоречие")],
+      suppressed: [],
+    })(p, o);
+  });
+  assert.equal(
+    contra.result.survivors.length,
+    1,
+    "security из противоречивых записей засчитан",
+  );
+
+  const byCategory = await runScript(
+    base("high", 1),
+    one({
+      candidates: [],
+      suppressed: [{ ...sup("src/a.php", 7), category: "auth-bypass" }],
+    }),
+  );
+  assert.equal(
+    byCategory.result.survivors.length,
+    1,
+    "поднятая по категории запись не снята",
+  );
+  assert.equal(byCategory.result.survivors[0].category, "security");
+
+  const { security: _drop, ...noKey } = cand(
+    "src/a.php",
+    12,
+    "без ключа security",
+  );
+  const finderNoKey = await runScript(
+    base("high", 1),
+    one({ candidates: [noKey], suppressed: [] }),
+  );
+  assert.equal(
+    finderNoKey.result.survivors.length,
+    1,
+    "finder без признака — «да»",
+  );
+  const supNoKey = await runScript(
+    base("high", 1),
+    one({
+      candidates: [],
+      suppressed: [(({ security, ...r }) => r)(sup("src/a.php", 13))],
+    }),
+  );
+  assert.equal(
+    supNoKey.result.survivors.length,
+    1,
+    "suppressed без признака поднят и не снят",
+  );
+  console.log("ok 41 признак security");
+}
+
+// 42. Локация кандидата, срезанного в overflow, не подавлена (по ревью П6, 5#6): finder передал её в обычный список.
+{
+  const { result } = await runScript(base("medium", 1), (p, o) => {
+    if (isFinder(o)) {
+      if (o.label.startsWith("угол 1 "))
+        return {
+          candidates: [1, 2, 3, 4, 5, 6]
+            .map((n) => cand("src/a.php", n, `c${n}`))
+            .concat([cand("src/b.php", 99, "за потолком")]),
+          suppressed: [],
+        };
+      if (o.label.startsWith("угол 2 "))
+        return { candidates: [], suppressed: [sup("src/b.php", 99)] };
+      return EMPTY;
+    }
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.deepEqual(
+    result.overflow.map((x) => `${x.file}:${x.line}`),
+    ["src/b.php:99"],
+  );
+  assert.deepEqual(
+    result.suppressed,
+    [],
+    "локация из overflow подавленной не считается",
+  );
+  console.log("ok 42 overflow и подавление");
+}
+
+// 43. Security-кандидат не снимается как дубль кандидата без признака (по ревью П6, 5#2); защищённый — корень для своих дублей.
+{
+  const loc = (summary, security = false) => ({
+    candidates: [cand("src/a.php", 10, summary, security)],
+    suppressed: [],
+  });
+  const links = {
+    "угол1#1": "угол5#1",
+    "угол5#1": "угол2#1",
+    "угол2#1": "угол3#1",
+  };
+  const { result } = await runScript(base("xhigh", 1), (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o)) {
+      const m = o.label.match(/^угол (\d) /);
+      if (m[1] === "1") return loc("X");
+      if (m[1] === "2") return loc("B");
+      if (m[1] === "3") return loc("C");
+      if (m[1] === "5") return loc("A", true);
+      return EMPTY;
+    }
+    return {
+      verdicts: candidatesOf(p).map((c) => ({
+        id: c.id,
+        verdict: "CONFIRMED",
+        evidence: "e",
+        security: false,
+        duplicate_of: links[c.id] || "",
+      })),
+    };
+  });
+  assert.deepEqual(
+    result.survivors.map((s) => s.summary).sort(),
+    ["A", "C"],
+    "A(security) выжил, X снят как его дубль",
+  );
+  assert.deepEqual(result.duplicates.map((d) => d.summary).sort(), ["B", "X"]);
+  console.log("ok 43 дубли и security");
+}
