@@ -304,10 +304,10 @@ function checkSums(a) {
   );
   assert.equal(result.suppressed[0].by.length, 4);
   // Цитату правила сессия сверяет со skip-list брифа (SKILL.md, фаза 3, «Сверка цитат подавления»).
-  assert.equal(
-    result.suppressed[0].rule,
-    "R",
-    "suppressed несёт цитату правила finder'а",
+  assert.deepEqual(
+    result.suppressed[0].rules.map((r) => r.rule),
+    ["R", "R", "R", "R"],
+    "suppressed несёт цитату правила каждого подавившего finder'а",
   );
   checkSums(result.agents);
   console.log("ok 1 high pass=1");
@@ -1177,9 +1177,9 @@ console.log("ok 6 проверка args");
     "снято голосом верификатора",
   );
   // Сверка цитат фазы 3 опирается на эти поля: цитата — evidence голоса SUPPRESSED, источник — верификация.
-  assert.equal(
-    result.suppressed[0].rule,
-    "e",
+  assert.deepEqual(
+    result.suppressed[0].rules,
+    [{ by: "верификатор", rule: "e" }],
     "цитата правила из голоса верификатора",
   );
   assert.deepEqual(result.suppressed[0].by, ["верификация"]);
@@ -2130,4 +2130,138 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   assert.equal(seen.failure_scenario, "сценарий отказа F");
   assert.equal(seen.skip_note, "под skip-list: Q");
   console.log("ok 30 все поля схемы кандидата");
+}
+
+// 31. Цитаты подавления (остаток П7 (2)): в suppressed — все цитаты (каждого finder'а, каждой линзы, каждой
+//     согласной записи), снятые верификацией — запись на кандидата со своими полями.
+{
+  const supWith = (file, line, rule) => ({ ...sup(file, line), rule });
+  // (а) max: три линзы SUPPRESSED с разными цитатами — три цитаты с метками линз, поля кандидата.
+  const lenses = await runScript(base("max", 1, true), (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? {
+            candidates: [
+              {
+                ...cand("src/a.php", 50, "снимут линзы"),
+                failure_scenario: "F50",
+                category: "docs",
+              },
+            ],
+            suppressed: [],
+          }
+        : EMPTY;
+    const lens = o.label.match(/линза «([^»]+)»/)[1];
+    return {
+      verdicts: candidatesOf(p).map((c) => ({
+        id: c.id,
+        verdict: "SUPPRESSED",
+        evidence: `правило линзы ${lens}`,
+        security: false,
+      })),
+    };
+  });
+  assert.equal(lenses.result.suppressed.length, 1);
+  const L = lenses.result.suppressed[0];
+  assert.deepEqual(
+    L.rules.map((r) => r.by).sort(),
+    [
+      "линза «безопасность»",
+      "линза «воспроизводимость»",
+      "линза «корректность»",
+    ],
+    "цитата каждой линзы с меткой",
+  );
+  assert.deepEqual(L.rules.map((r) => r.rule).sort(), [
+    "правило линзы безопасность",
+    "правило линзы воспроизводимость",
+    "правило линзы корректность",
+  ]);
+  assert.equal(L.failure_scenario, "F50", "сценарий кандидата в записи");
+  assert.equal(L.category, "docs", "категория кандидата в записи");
+  assert.equal(L.source, "угол1");
+
+  // (б) high: два finder'а подавили одну локацию разными правилами — обе цитаты.
+  const two = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o)) {
+      if (o.label.startsWith("угол 1"))
+        return {
+          candidates: [],
+          suppressed: [supWith("src/a.php", 60, "один")],
+        };
+      if (o.label.startsWith("угол 3"))
+        return {
+          candidates: [],
+          suppressed: [supWith("src/a.php", 60, "два")],
+        };
+      return EMPTY;
+    }
+    return verdicts(p, () => "PLAUSIBLE");
+  });
+  assert.deepEqual(
+    two.result.suppressed.map((x) => x.rules),
+    [
+      [
+        { by: "угол1", rule: "один", summary: "подавлено src/a.php:60" },
+        { by: "угол3", rule: "два", summary: "подавлено src/a.php:60" },
+      ],
+    ],
+    "цитата каждого подавившего finder'а",
+  );
+  assert.equal(
+    two.result.suppressed[0].category,
+    "suppressed-by-finder",
+    "у записи finder'а — заглушка категории",
+  );
+
+  // (в) два кандидата одной локации, оба SUPPRESSED, — две записи, второй не теряется.
+  const pair = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? {
+            candidates: [
+              cand("src/a.php", 70, "первый"),
+              cand("src/a.php", 70, "второй"),
+            ],
+            suppressed: [],
+          }
+        : EMPTY;
+    return verdicts(p, () => "SUPPRESSED");
+  });
+  assert.deepEqual(
+    pair.result.suppressed.map((x) => x.summary).sort(),
+    ["второй", "первый"],
+    "снятые верификацией — запись на кандидата",
+  );
+
+  // (г) один id, две согласные записи SUPPRESSED с разными цитатами — обе цитаты.
+  const dbl = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [cand("src/a.php", 80, "две цитаты")], suppressed: [] }
+        : EMPTY;
+    return {
+      verdicts: [
+        {
+          id: "угол1#1",
+          verdict: "SUPPRESSED",
+          evidence: "Q1",
+          security: false,
+        },
+        {
+          id: "угол1#1",
+          verdict: "SUPPRESSED",
+          evidence: "Q2",
+          security: false,
+        },
+      ],
+    };
+  });
+  assert.deepEqual(
+    dbl.result.suppressed[0].rules.map((r) => r.rule),
+    ["Q1", "Q2"],
+    "цитаты обеих согласных записей",
+  );
+  console.log("ok 31 цитаты подавления");
 }
