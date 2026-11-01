@@ -1044,12 +1044,14 @@ async function verifyAll(candidates, phaseTitle) {
             `${who} вернул противоречивые вердикты по ${c.id} (${locKey(c)}) — голос не засчитан`,
           );
         } else {
+          // Согласные записи одного id — один голос; признак security — из любой из них (пункт 4 skip-list:
+          // хватает одного голоса), иначе вторая запись с security терялась бы.
           const v = matches[0];
           votes.push({
             lens: t.lens,
             verdict: v.verdict,
             evidence: v.evidence,
-            security: Boolean(v.security),
+            security: matches.some((m) => Boolean(m.security)),
             duplicate_of: v.duplicate_of,
           });
         }
