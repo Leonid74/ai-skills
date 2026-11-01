@@ -2589,3 +2589,92 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   assert.equal(s.verdict, "PLAUSIBLE");
   console.log("ok 36 выжившая поднятая запись");
 }
+
+// 37. Тихий лимит и упавшие агенты (по ревью П6, 1#2): волна, где все без ответа упали исключением не про лимит, — отказы, а не
+//     лимит; падение рядом с молчанием — лимит; частичный ответ волны перезапуска — отказ одного; явный лимит в волне перезапуска
+//     сохраняет свой текст и счёт.
+{
+  const tooLong = () => {
+    throw new Error("prompt is too long");
+  };
+  const empty = (p, o) =>
+    isFinder(o) ? EMPTY : verdicts(p, () => "PLAUSIBLE");
+  const crashedPair = await runScript(base("high", 1), (p, o) =>
+    isFinder(o) && /^угол [34] /.test(o.label) ? tooLong() : empty(p, o),
+  );
+  assert.equal(
+    crashedPair.result.mode,
+    "деградированный",
+    "два упавших в перезапуске — не лимит",
+  );
+  assert.deepEqual(
+    crashedPair.result.failedAngles.map((f) => f.n),
+    [3, 4],
+  );
+  assert.equal(crashedPair.result.agents.limitHits, 0);
+  checkSums(crashedPair.result.agents);
+
+  const w2 = base("high", 1);
+  w2.wave = 2;
+  const firstWave = await runScript(w2, (p, o) =>
+    isFinder(o) && /^угол [15] /.test(o.label) ? tooLong() : empty(p, o),
+  );
+  assert.equal(
+    firstWave.result.mode,
+    "деградированный",
+    "первая волна из двух упавших — не лимит",
+  );
+  assert.deepEqual(
+    firstWave.result.failedAngles.map((f) => f.n),
+    [1, 5],
+  );
+  checkSums(firstWave.result.agents);
+
+  const partial = await runScript(base("high", 1), (p, o) => {
+    if (
+      isFinder(o) &&
+      o.label.startsWith("угол 1 ") &&
+      !o.label.endsWith("перезапуск")
+    )
+      return null;
+    if (isFinder(o) && o.label.startsWith("угол 2 ")) return null;
+    return empty(p, o);
+  });
+  assert.equal(
+    partial.result.mode,
+    "деградированный",
+    "один ответ в волне перезапуска — не лимит",
+  );
+  assert.deepEqual(
+    partial.result.failedAngles.map((f) => f.n),
+    [2],
+  );
+  checkSums(partial.result.agents);
+
+  const explicit = await runScript(base("high", 1), (p, o) => {
+    if (o.label === "угол 1 · угол-1 · перезапуск")
+      throw new Error("usage limit reached; resets at 15:00");
+    if (isFinder(o) && /^угол [12] /.test(o.label)) return null;
+    return empty(p, o);
+  });
+  assert.match(
+    explicit.result.halted,
+    /resets at 15:00/,
+    "текст явного лимита не перезаписан",
+  );
+  assert.equal(explicit.result.agents.limitHits, 1);
+  assert.equal(explicit.result.agents.restarts.angles, 1);
+  checkSums(explicit.result.agents);
+
+  const mixed = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o) && o.label.startsWith("угол 5 ")) tooLong();
+    return isFinder(o) ? null : empty(p, o);
+  });
+  assert.equal(
+    mixed.result.mode,
+    "прерван",
+    "падение рядом с молчанием — лимит",
+  );
+  assert.match(mixed.result.halted, /не ответил ни один/);
+  console.log("ok 37 тихий лимит и упавшие агенты");
+}
