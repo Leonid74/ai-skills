@@ -907,6 +907,14 @@ function missingFields(c) {
  * @returns {Array<object>} принятые кандидаты.
  */
 function accept(reply, source, cap) {
+  // Ответ целиком не объект (массив, строка) или без обязательного candidates — не по форме: находки угла
+  // иначе пропали бы при «полном» прогоне. Отсутствующий suppressed — пустой список.
+  if (reply === null || typeof reply !== "object" || Array.isArray(reply)) {
+    degraded.push(`${source}: ответ не объект — отброшен целиком`);
+    return [];
+  }
+  if (reply.candidates === undefined)
+    degraded.push(`${source}: в ответе нет candidates — кандидатов не принято`);
   // Записи не по форме отбрасываются до среза по потолку: признаков у них нет, вытеснить кого-то они
   // не могут (ловушка «поля — после среза» — о признаках самого finder'а), а срез по ним упал бы сам.
   const ownRaw = objectsOf(reply, "candidates", source);
