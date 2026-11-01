@@ -2066,3 +2066,38 @@ console.log("ok 28 повтор без opus: все роли на sonnet, стр
   );
   console.log("ok 29 ответ не по форме");
 }
+
+// 30. Все поля схемы кандидата (№15 (4), (5)): на xhigh свой кандидат со всеми ключами схемы доходит до
+//     выживших без потерь, а верификатор видит failure_scenario и skip_note.
+{
+  let schemaKeys = null;
+  const full = {
+    ...cand("src/a.php", 40, "все поля схемы", false, "correctness"),
+    failure_scenario: "сценарий отказа F",
+    skip_note: "под skip-list: Q",
+  };
+  const { result, calls } = await runScript(base("xhigh", 1), (p, o) => {
+    if (isSweep(o)) return EMPTY;
+    if (isFinder(o)) {
+      schemaKeys ??= Object.keys(o.schema.properties.candidates.items.properties);
+      return o.label.startsWith("угол 1")
+        ? { candidates: [full], suppressed: [] }
+        : EMPTY;
+    }
+    return verdicts(p, () => "CONFIRMED");
+  });
+  assert.ok(schemaKeys && schemaKeys.length >= 10, "ключи схемы прочитаны");
+  assert.equal(result.survivors.length, 1);
+  for (const key of schemaKeys)
+    assert.deepEqual(
+      result.survivors[0][key],
+      full[key],
+      `поле схемы ${key} дошло до выжившего`,
+    );
+  const seen = candidatesOf(
+    calls.find((c) => c.opts.label.startsWith("верификатор")).prompt,
+  )[0];
+  assert.equal(seen.failure_scenario, "сценарий отказа F");
+  assert.equal(seen.skip_note, "под skip-list: Q");
+  console.log("ok 30 все поля схемы кандидата");
+}
