@@ -417,11 +417,13 @@ function countLaunch(task, restart) {
  *
  * @param {{prompt: string, label: string, phase: string, schema: object, model: (string|undefined), role: string, roleName: string}} task задание.
  * @param {boolean} restart true — это перезапуск отказавшего агента.
- * @returns {Promise<{reply: (object|null), limit: boolean, skipped: boolean}>} ответ агента; limit — запуск
- *   сгорел об лимит; skipped — агент не запускался, потому что прогон уже остановлен.
+ * @returns {Promise<{reply: (object|null), limit: boolean, skipped: boolean, crashed: boolean}>} ответ агента;
+ *   limit — запуск сгорел об лимит; skipped — агент не запускался, потому что прогон уже остановлен;
+ *   crashed — агент упал исключением не про лимит (это не молчание).
  */
 async function run(task, restart) {
-  if (halted) return { reply: null, limit: false, skipped: true };
+  if (halted)
+    return { reply: null, limit: false, skipped: true, crashed: false };
   const agentOpts = {
     label: restart ? `${task.label} · перезапуск` : task.label,
     phase: task.phase,
@@ -438,13 +440,39 @@ async function run(task, restart) {
     if (looksLikeLimit(e)) {
       halted = `запуск агентов остановлен: ${e && e.message ? e.message : e}`;
       log(halted);
-      return { reply: null, limit: true, skipped: false };
+      return { reply: null, limit: true, skipped: false, crashed: false };
     }
     log(`агент «${agentOpts.label}» упал: ${e && e.message ? e.message : e}`);
-    reply = null;
+    return { reply: null, limit: false, skipped: false, crashed: true };
   }
   if (reply) stats.replied[bucket] += 1;
-  return { reply: reply || null, limit: false, skipped: false };
+  return { reply: reply || null, limit: false, skipped: false, crashed: false };
+}
+
+// Пустой результат parallel (thunk не вернул значения) — как отказ без ответа.
+const NO_RESULT = { reply: null, limit: false, skipped: false, crashed: false };
+// Хвост остановки по молчанию: причину скрипт не видит — это примета для сессии и пользователя.
+const SILENT_TAIL =
+  "похоже на лимит использования (ошибки лимита не было: возможен и отказ агентов по формату)";
+
+/**
+ * Нарезка заданий на волны: подряд по wave, но без хвоста из одного агента — последний кусок из одного
+ * забирает задание у предыдущего, если тот не меньше трёх ([5,1] → [4,2]). Первые волны остаются
+ * полными (порядок по ценности, «Темп запуска» п. 3). Хвост из одного остаётся при wave = 2 и нечётном
+ * числе заданий и у единственного задания (sweep, одна группа верификации).
+ *
+ * @param {number} n число заданий.
+ * @returns {Array<[number, number]>} пары «начало, размер».
+ */
+function waveBounds(n) {
+  const b = [];
+  for (let i = 0; i < n; i += wave) b.push([i, Math.min(wave, n - i)]);
+  const last = b.length - 1;
+  if (last >= 1 && b[last][1] === 1 && b[last - 1][1] >= 3) {
+    b[last - 1][1] -= 1;
+    b[last] = [b[last][0] - 1, 2];
+  }
+  return b;
 }
 
 /**
@@ -457,24 +485,22 @@ async function run(task, restart) {
  */
 async function runWaves(tasks) {
   const out = new Array(tasks.length).fill(null);
-  for (let i = 0; i < tasks.length; i += wave) {
+  for (const [i, size] of waveBounds(tasks.length)) {
     if (halted) break;
-    const chunk = tasks.slice(i, i + wave);
+    const chunk = tasks.slice(i, i + size);
     const results = await parallel(chunk.map((t) => () => run(t, false)));
-    const launched = results.map(
-      (r) => r || { reply: null, limit: false, skipped: false },
-    );
+    const launched = results.map((r) => r || NO_RESULT);
     const failed = [];
     launched.forEach((r, j) => {
       out[i + j] = r.reply;
       if (!r.reply) failed.push(i + j);
     });
     // Волна из двух и более агентов без единого ответа — лимит, а не отказ агентов (SKILL.md,
-    // «Темп запуска», пункт 4). Размер волны не меньше двух гарантирует проверка args.wave.
+    // «Темп запуска», пункт 4). Волна из одного бывает (waveBounds) — на ней лимит не распознаётся.
     const silentLimit =
       !halted && chunk.length >= 2 && failed.length === chunk.length;
     if (silentLimit) {
-      halted = `запуск агентов остановлен: в волне из ${chunk.length} агентов не ответил ни один — похоже на лимит использования`;
+      halted = `запуск агентов остановлен: в волне из ${chunk.length} агентов не ответил ни один — ${SILENT_TAIL}`;
       log(halted);
     }
     launched.forEach((r, j) => {
@@ -487,15 +513,35 @@ async function runWaves(tasks) {
       log(
         `не дали структурного результата: ${failed.map((k) => tasks[k].label).join("; ")} — перезапуск`,
       );
-      const again = await parallel(
-        failed.map((k) => () => run(tasks[k], true)),
-      );
+      const again = (
+        await parallel(failed.map((k) => () => run(tasks[k], true)))
+      ).map((r) => r || NO_RESULT);
+      // Волна перезапуска — тоже волна: из двух и более без единого ответа — лимит, перезапуски в
+      // limitHits, а не в агенты (цена: два агента, дважды отказавшие по формату, тоже дают «прерван»).
+      const silentRestart =
+        !halted && failed.length >= 2 && again.every((r) => !r.reply);
+      if (silentRestart) {
+        halted = `запуск агентов остановлен: в волне перезапуска из ${failed.length} агентов не ответил ни один — ${SILENT_TAIL}`;
+        log(halted);
+      }
       failed.forEach((k, j) => {
-        const r = again[j] || { reply: null, limit: false, skipped: false };
+        const r = again[j];
         out[k] = r.reply;
         if (r.skipped) return;
-        if (r.limit) stats.limitHits += 1;
+        if (r.limit || silentRestart) stats.limitHits += 1;
         else countLaunch(tasks[k], true);
+        // Одиночная волна: молчание агента от лимита не отличить — отказ, но с приметой для resume.
+        if (
+          size === 1 &&
+          !r.reply &&
+          !r.limit &&
+          !r.crashed &&
+          !launched[0].crashed &&
+          !silentRestart
+        )
+          notes.push(
+            `${tasks[k].label}: агент молчал оба раза — возможен лимит использования; проверить и при необходимости продолжить через resume`,
+          );
       });
     }
   }
