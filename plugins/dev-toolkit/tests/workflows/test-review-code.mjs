@@ -1976,3 +1976,93 @@ for (const [level, pass, trig] of [
   assert.equal(weekly.result.opusSilent, true, "явный лимит opus — повтор");
 }
 console.log("ok 28 повтор без opus: все роли на sonnet, строка понижения");
+
+// 29. Ответ не по форме (№15 (6)): элемент списка не объект, список не массив — запись отброшена, прогон
+//     деградированный, скрипт не падает. Каждый прогон — с одним источником деградации.
+{
+  const good = cand("src/a.php", 20, "полный кандидат");
+  const onAngle1 = (reply) => (p, o) => {
+    if (isFinder(o)) return o.label.startsWith("угол 1") ? reply : EMPTY;
+    return verdicts(p, () => "CONFIRMED");
+  };
+  const elems = await runScript(
+    base("high", 1),
+    onAngle1({ candidates: ["s", 5, null, [1], good], suppressed: [] }),
+  );
+  assert.deepEqual(
+    elems.result.survivors.map((s) => s.summary),
+    ["полный кандидат"],
+    "полный кандидат рядом с мусором судится",
+  );
+  assert.equal(elems.result.mode, "деградированный");
+  assert.ok(
+    elems.result.degraded.some((d) =>
+      /угол1: 4 записей candidates не по формату/.test(d),
+    ),
+    "отброшенные элементы candidates названы",
+  );
+
+  const sups = await runScript(
+    base("high", 1),
+    onAngle1({ candidates: [good], suppressed: ["abc", null] }),
+  );
+  assert.deepEqual(
+    sups.result.suppressed,
+    [],
+    "строка в suppressed не стала подавленной локацией",
+  );
+  assert.equal(sups.result.mode, "деградированный");
+  assert.ok(
+    sups.result.degraded.some((d) =>
+      /угол1: 2 записей suppressed не по формату/.test(d),
+    ),
+  );
+
+  const notList = await runScript(
+    base("high", 1),
+    onAngle1({ candidates: {}, suppressed: [] }),
+  );
+  assert.equal(notList.result.mode, "деградированный");
+  assert.ok(
+    notList.result.degraded.some((d) => /угол1: candidates не список/.test(d)),
+    "не-массив назван",
+  );
+
+  const absent = await runScript(base("high", 1), onAngle1({ candidates: [] }));
+  assert.equal(absent.result.mode, "полный", "ключа нет — пусто, как раньше");
+
+  const badVerdicts = await runScript(base("high", 1), (p, o) => {
+    if (isFinder(o))
+      return o.label.startsWith("угол 1")
+        ? { candidates: [good], suppressed: [] }
+        : EMPTY;
+    const v = verdicts(p, () => "CONFIRMED");
+    return { verdicts: [null, "x", ...v.verdicts] };
+  });
+  assert.equal(
+    badVerdicts.result.survivors[0].verdict,
+    "CONFIRMED",
+    "вердикт рядом с мусором засчитан",
+  );
+  assert.equal(badVerdicts.result.mode, "деградированный");
+  assert.ok(
+    badVerdicts.result.degraded.some((d) =>
+      /верификатор · src\/a\.php:20: 2 записей verdicts не по формату/.test(d),
+    ),
+  );
+
+  // summary не строка у security-кандидата: не отбраковка — кандидат доходит до верификации.
+  const oddSummary = await runScript(
+    base("high", 1),
+    onAngle1({
+      candidates: [{ ...cand("src/a.php", 30, "x", true), summary: 42 }],
+      suppressed: [],
+    }),
+  );
+  assert.equal(
+    oddSummary.result.survivors.length,
+    1,
+    "security-кандидат с summary не строкой не потерян",
+  );
+  console.log("ok 29 ответ не по форме");
+}
