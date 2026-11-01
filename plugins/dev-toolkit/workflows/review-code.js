@@ -1027,13 +1027,16 @@ function accept(reply, source, cap) {
  * отработала) пороги снятия не смягчаются, а CONFIRMED требует не меньше двух голосов CONFIRMED.
  *
  * @param {object} c кандидат.
- * @param {Array<{lens: (string|null), verdict: string, evidence: string, security: boolean, duplicate_of: (string|undefined)}>} votes голоса.
+ * @param {Array<{lens: (string|null), verdict: string, evidence: string, security: boolean, quotes: Array<string>, duplicate_of: (string|undefined)}>} votes
+ *   голоса; quotes — различные цитаты всех согласных записей голоса.
  * @param {number} expected сколько голосов ожидалось (1 либо 3).
  * @param {Set<string>} groupIds id кандидатов этой же группы.
+ * @param {boolean} [securityHint] признак security из голоса, не засчитанного из-за противоречивых записей.
  * @returns {object} исход: outcome, verdict, rules (все цитаты голосов SUPPRESSED), security, partial, duplicateOf.
  */
-function tally(c, votes, expected, groupIds) {
-  const security = isSecurity(c) || votes.some((v) => v.security);
+function tally(c, votes, expected, groupIds, securityHint = false) {
+  const security =
+    isSecurity(c) || securityHint || votes.some((v) => v.security);
   const count = (name) => votes.filter((v) => v.verdict === name).length;
   const majority = expected > 1 ? 2 : 1;
   const partial = votes.length > 0 && votes.length < expected;
@@ -1121,6 +1124,9 @@ async function verifyAll(candidates, phaseTitle) {
     const allFailed = failedOwn.length === missedOwn.length;
     const judged = group.candidates.map((c) => {
       const votes = [];
+      // Признак security из противоречивых записей: голос не засчитан, но «да» хотя бы в одной записи —
+      // это голос security (пункт 4 skip-list), и SUPPRESSED других голосов его не снимает.
+      let securityHint = false;
       for (const { t, reply, list } of own) {
         if (!reply) continue;
         const who = t.lens ? `линза «${t.lens}»` : "верификатор";
@@ -1130,6 +1136,7 @@ async function verifyAll(candidates, phaseTitle) {
             `${who} не вернул вердикт по ${c.id} (${locKey(c)}) — учтён как отсутствующий голос`,
           );
         } else if (matches.some((m) => m.verdict !== matches[0].verdict)) {
+          if (matches.some((m) => m.security !== false)) securityHint = true;
           notes.push(
             `${who} вернул противоречивые вердикты по ${c.id} (${locKey(c)}) — голос не засчитан`,
           );
@@ -1153,7 +1160,7 @@ async function verifyAll(candidates, phaseTitle) {
         ...c,
         votes,
         unverified: votes.length === 0,
-        ...tally(c, votes, lenses.length, groupIds),
+        ...tally(c, votes, lenses.length, groupIds, securityHint),
       };
     });
     const unverified = judged.filter((c) => c.unverified).length;
