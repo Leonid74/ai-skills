@@ -314,6 +314,11 @@ p="$(new_project plain)"
 put_list "${_cfg}" "${p}" "${fm}$(task plain)"
 run_hook "${p}" session-start
 check 'не git: список каталога проекта' has '- `plain`'
+# Кириллица в пути: ключ — по символу (один «-» на букву), как у Claude Code.
+p="$(new_project проект)"
+put_list "${_cfg}" "${p}" "${fm}$(task cyrpath)"
+run_hook "${p}" session-start
+check 'кириллица в пути проекта: ключ по символу' has '- `cyrpath`'
 
 # --- 16. файл списка — симлинк: не читается ---
 p="$(new_project link)"
