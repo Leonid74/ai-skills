@@ -129,7 +129,7 @@ while IFS= read -r -d $'\001' rec; do
   # ранний выход grep дал бы SIGPIPE; код процесса < <(…) на if не влияет.
   if grep -qxF -- "${mark}" < <(head -c 65536 -- "${f}" 2>/dev/null || true) 2>/dev/null; then
     # shellcheck disable=SC2016  # обратные кавычки — разметка текста, не подстановка
-    printf 'Идёт автономный прогон этой сессии (отметка автопилота в `%s`): перечитай скилл `autopilot` (`/dev-toolkit:autopilot`), профиль `doc/AUTOPILOT.md` и цепочку состояния — указатель «СТАРТ» в памяти → верхний блок HANDOFF → PLAN, затем сверь её с `git status`/`gh pr view` и только потом продолжай.\n' "${path}"
+    printf 'Идёт автономный прогон этой сессии (отметка автопилота в `%s`): перечитай скилл `autopilot` (`/dev-toolkit:autopilot`), профиль `doc/AUTOPILOT.md` и цепочку состояния — строка этой задачи в списке «СТАРТ» → её HANDOFF → PLAN, затем сверь её с `git status`/`gh pr view` и только потом продолжай.\n' "${path}"
     break
   fi
 done <<<"${sorted}"
