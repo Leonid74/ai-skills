@@ -195,5 +195,186 @@ run_hook "${p}" $'\x01\xff{{{ мусор'
 check 'мусорный stdin: код 0' rc0
 check 'мусорный stdin: общий текст' has "${_general}"
 
+# --- отметка автопилота (скилл autopilot) ---
+# Отметка несёт id сессии: хук печатает строку, только если id совпадает с
+# session_id из JSON события на stdin.
+_sid='0f0e0d0c-1111-4222-8333-444455556666'
+_sid2='aaaabbbb-cccc-4ddd-8eee-ffff00001111'
+_in="{\"session_id\":\"${_sid}\",\"hook_event_name\":\"SessionStart\",\"source\":\"compact\"}"
+_mark="<!-- dev-toolkit:autopilot on ${_sid} -->"
+_mark2="<!-- dev-toolkit:autopilot on ${_sid2} -->"
+_auto='Идёт автономный прогон'
+# auto_names <путь>: строка автопилота называет этот файл PLAN.
+auto_names() { [[ "${_out}" == *"${_auto} этой сессии (отметка автопилота в \`$1\`)"* ]]; }
+one_auto_line() { [[ "$(grep -c "^${_auto}" <<<"${_out}" || true)" -eq 1 ]]; }
+
+p="$(new_project auto-on)"
+mkdir -p "${p}/.dev"
+printf '# План\n%s\nCANARY-PLAN-TEXT\n' "${_mark}" >"${p}/.dev/PLAN-auto.md"
+run_hook "${p}" "${_in}"
+check 'отметка: строка автопилота есть' has "${_auto}"
+check 'отметка: строка называет PLAN' auto_names '.dev/PLAN-auto.md'
+check 'отметка: строка одна' one_auto_line
+# shellcheck disable=SC2016  # обратные кавычки — разметка в тексте
+check 'отметка: строка называет скилл' has 'скилл `autopilot` (`/dev-toolkit:autopilot`)'
+# shellcheck disable=SC2016  # обратные кавычки — разметка в тексте
+check 'отметка: строка называет профиль' has '`doc/AUTOPILOT.md`'
+check 'отметка: общий текст остался' has "${_general}"
+check 'отметка: строка «Рабочие файлы» осталась' has 'Рабочие файлы'
+check 'отметка: текст PLAN в вывод не попадает' hasnt 'CANARY-PLAN-TEXT'
+check 'отметка: id сессии в вывод не попадает' hasnt "${_sid}"
+check 'отметка: код 0' rc0
+
+p="$(new_project auto-off)"
+mkdir -p "${p}/.dev"
+printf '# План\nавтопилот не включён\n' >"${p}/.dev/PLAN-plain.md"
+run_hook "${p}" "${_in}"
+check 'без отметки: строки автопилота нет' hasnt "${_auto}"
+check 'без отметки: список файлов как раньше' has '.dev/PLAN-plain.md'
+
+p="$(new_project auto-foreign)"
+mkdir -p "${p}/.dev"
+printf '%s\n' "${_mark2}" >"${p}/.dev/PLAN-other.md"
+printf '%s\n' '<!-- dev-toolkit:autopilot on -->' >"${p}/.dev/PLAN-noid.md"
+run_hook "${p}" "${_in}"
+check 'отметка чужой сессии и отметка без id: строки нет' hasnt "${_auto}"
+run_hook "${p}" "{\"session_id\":\"${_sid2}\"}"
+check 'отметка своей сессии (другой id на stdin): строка называет PLAN' auto_names '.dev/PLAN-other.md'
+
+p="$(new_project auto-nosid)"
+mkdir -p "${p}/.dev"
+# В PLAN — отметки и с теми «id», что придут на stdin ниже: ослабленный разбор
+# session_id (или без проверки пустого id) дал бы на них строку.
+{
+  printf '%s\n' "${_mark}" '<!-- dev-toolkit:autopilot on  -->'
+  printf '%s\n' '<!-- dev-toolkit:autopilot on не-uuid -->'
+  printf '<!-- dev-toolkit:autopilot on %sx -->\n' "${_sid}"
+  printf '<!-- dev-toolkit:autopilot on %s -->\n' "${_sid^^}"
+  printf '<!-- dev-toolkit:autopilot on %sa -->\n' "${_sid}"
+  printf '<!-- dev-toolkit:autopilot on %s -->\n' "${_sid2}"
+} >"${p}/.dev/PLAN-a.md"
+run_hook "${p}" ''
+check 'пустой stdin: строки нет' hasnt "${_auto}"
+run_hook "${p}" '{"session_id":"не-uuid"}'
+check 'session_id не UUID: строки нет' hasnt "${_auto}"
+run_hook "${p}" "{\"sessionid\":\"${_sid}\"}"
+check 'нет поля session_id: строки нет' hasnt "${_auto}"
+run_hook "${p}" "{\"session_id\":\"${_sid}x\"}"
+check 'session_id с хвостом: строки нет' hasnt "${_auto}"
+run_hook "${p}" "{\"session_id\":\"${_sid}a\"}"
+check 'session_id с hex-хвостом: строки нет' hasnt "${_auto}"
+run_hook "${p}" "{\"parent_session_id\":\"${_sid2}\",\"x\":1}"
+check 'чужой ключ с суффиксом session_id: строки нет' hasnt "${_auto}"
+run_hook "${p}" "{\"session_id\":\"${_sid^^}\"}"
+check 'session_id в верхнем регистре: строки нет' hasnt "${_auto}"
+run_hook "${p}" "{\"session_id\" : \"${_sid}\"}"
+check 'пробелы вокруг двоеточия: строка есть' auto_names '.dev/PLAN-a.md'
+check 'разбор stdin: код 0' rc0
+
+# Свой session_id и рядом чужой ключ с суффиксом: в PLAN — только своя отметка,
+# так что разбор, взявший id чужого ключа, строки не даст.
+p="$(new_project auto-twokeys)"
+mkdir -p "${p}/.dev"
+printf '%s\n' "${_mark}" >"${p}/.dev/PLAN-two.md"
+run_hook "${p}" "{\"session_id\":\"${_sid}\",\"parent_session_id\":\"${_sid2}\"}"
+check 'session_id и чужой ключ после него: строка своей отметки' auto_names '.dev/PLAN-two.md'
+
+p="$(new_project auto-tracked)"
+mkdir -p "${p}/.dev"
+printf '%s\n' "${_mark}" >"${p}/.dev/PLAN-committed.md"
+git -C "${p}" init -q
+git -C "${p}" add .dev/PLAN-committed.md
+run_hook "${p}" "${_in}"
+check 'отметка в файле под git: строки нет' hasnt "${_auto}"
+
+p="$(new_project auto-symlink)"
+mkdir -p "${p}/docs/x"
+printf '%s\n' "${_mark2}" >"${p}/docs/x/PLAN-a.md"
+ln -s docs/x "${p}/.dev"
+git -C "${p}" init -q
+git -C "${p}" add .dev docs/x/PLAN-a.md
+run_hook "${p}" "${_in}"
+check 'закоммиченный симлинк .dev с чужой отметкой: строки нет' hasnt "${_auto}"
+
+p="$(new_project auto-inline)"
+mkdir -p "${p}/.dev"
+# shellcheck disable=SC2016  # обратные кавычки — разметка в тексте
+printf 'форма отметки — `%s` (прозой)\n  %s\n' "${_mark}" "${_mark}" >"${p}/.dev/PLAN-prose.md"
+run_hook "${p}" "${_in}"
+check 'отметка внутри строки или с отступом: строки нет' hasnt "${_auto}"
+
+p="$(new_project auto-handoff)"
+mkdir -p "${p}/.dev/x"
+printf '%s\n' "${_mark}" >"${p}/.dev/HANDOFF-x.md"
+printf '%s\n' "${_mark}" >"${p}/.dev/x/PLAN-nested.md"
+printf '%s\n' "${_mark}" >"${p}/.dev/TODO.md"
+run_hook "${p}" "${_in}"
+check 'отметка в HANDOFF, во вложенном каталоге, не в PLAN: строки нет' hasnt "${_auto}"
+
+p="$(new_project auto-old)"
+mkdir -p "${p}/.dev"
+printf '%s\n' "${_mark}" >"${p}/.dev/PLAN-old.md"
+touch -d '20 days ago' "${p}/.dev/PLAN-old.md"
+run_hook "${p}" "${_in}"
+check 'отметка в PLAN старше 14 дней: строки нет' hasnt "${_auto}"
+
+p="$(new_project auto-unsafe)"
+mkdir -p "${p}/.dev"
+printf '%s\n' "${_mark}" >"${p}/.dev/PLAN-tick\`x.md"
+run_hook "${p}" "${_in}"
+check 'отметка в PLAN с недопустимым именем: строки нет' hasnt "${_auto}"
+
+p="$(new_project auto-far)"
+mkdir -p "${p}/.dev"
+{
+  head -c 70000 /dev/zero | tr '\0' 'a'
+  printf '\n%s\n' "${_mark}"
+} >"${p}/.dev/PLAN-far.md"
+run_hook "${p}" "${_in}"
+check 'отметка дальше 64 КБ: строки нет' hasnt "${_auto}"
+check 'отметка дальше 64 КБ: код 0' rc0
+
+p="$(new_project auto-deep)"
+mkdir -p "${p}/.dev"
+{
+  head -c 60000 /dev/zero | tr '\0' 'a'
+  printf '\n%s\n' "${_mark}"
+} >"${p}/.dev/PLAN-deep.md"
+run_hook "${p}" "${_in}"
+check 'отметка на ~60 КБ (внутри предела): строка есть' auto_names '.dev/PLAN-deep.md'
+
+p="$(new_project auto-nul)"
+mkdir -p "${p}/.dev"
+printf 'a\000b\n%s\n' "${_mark}" >"${p}/.dev/PLAN-nul.md"
+run_hook "${p}" "${_in}"
+check 'NUL в другой строке: строка есть' auto_names '.dev/PLAN-nul.md'
+check 'NUL в другой строке: предупреждений bash нет' hasnt 'null byte'
+p="$(new_project auto-nul-in)"
+mkdir -p "${p}/.dev"
+printf '<!-- dev-toolkit:auto\000pilot on %s -->\n' "${_sid}" >"${p}/.dev/PLAN-nulin.md"
+run_hook "${p}" "${_in}"
+check 'NUL внутри отметки: строки нет' hasnt "${_auto}"
+
+p="$(new_project auto-files)"
+mkdir -p "${p}/.dev_files"
+printf '%s\n' "${_mark}" >"${p}/.dev_files/PLAN-df.md"
+run_hook "${p}" "${_in}"
+check 'отметка в .dev_files: строка называет PLAN' auto_names '.dev_files/PLAN-df.md'
+
+p="$(new_project auto-pick)"
+mkdir -p "${p}/.dev"
+for i in 1 2 3; do
+  touch -d "${i} days ago" "${p}/.dev/PLAN-n${i}.md"
+done
+printf '%s\n' "${_mark2}" >"${p}/.dev/PLAN-m4.md"
+touch -d '4 days ago' "${p}/.dev/PLAN-m4.md"
+printf '%s\n' "${_mark}" >"${p}/.dev/PLAN-m5.md"
+touch -d '5 days ago' "${p}/.dev/PLAN-m5.md"
+printf '%s\n' "${_mark}" >"${p}/.dev/PLAN-m6.md"
+touch -d '6 days ago' "${p}/.dev/PLAN-m6.md"
+run_hook "${p}" "${_in}"
+check 'вне топ-3, рядом чужая отметка: строка называет самый свежий свой PLAN' auto_names '.dev/PLAN-m5.md'
+check 'вне топ-3: строка одна' one_auto_line
+
 printf 'pass=%s fail=%s\n' "${_pass}" "${_fail}"
 [[ "${_fail}" -eq 0 ]]
