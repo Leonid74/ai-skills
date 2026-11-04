@@ -40,6 +40,16 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/post-compact-reminder.sh\""
           }
         ]
+      },
+      {
+        "matcher": "startup|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/post-compact-reminder.sh\" session-start",
+            "timeout": 15
+          }
+        ]
       }
     ]
   }

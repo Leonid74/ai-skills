@@ -16,6 +16,13 @@ trap 'rm -rf "${_root}"' EXIT
 _out=""
 _rc=0
 
+# Изоляция от памяти Claude Code на машине: хук в режиме compact читает список
+# «СТАРТ» из каталога конфигурации, а векторы этого стенда проверяют конец
+# вывода. Пустой HOME и каталог конфигурации — строки задач нет. Опции -u у
+# env — до присваиваний (после них env принял бы -u за команду).
+_iso=(-u CLAUDE_CODE_REMOTE_MEMORY_DIR -u CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+  -u GIT_DIR -u GIT_WORK_TREE HOME="${_root}/home" CLAUDE_CONFIG_DIR="${_root}/cfg")
+
 # run_hook <каталог проекта|-> [stdin]: пишет вывод в _out, код — в _rc.
 # "-" — CLAUDE_PROJECT_DIR не задан (хук берёт $PWD = пустой каталог).
 run_hook() {
@@ -23,9 +30,9 @@ run_hook() {
   _empty="$(mktemp -d "${_root}/cwd.XXXXXX")"
   _rc=0
   if [[ "${_dir}" == "-" ]]; then
-    _out="$(cd "${_empty}" && env -u CLAUDE_PROJECT_DIR bash "${_hook}" <<<"${_in}" 2>&1)" || _rc=$?
+    _out="$(cd "${_empty}" && env -u CLAUDE_PROJECT_DIR "${_iso[@]}" bash "${_hook}" <<<"${_in}" 2>&1)" || _rc=$?
   else
-    _out="$(cd "${_empty}" && CLAUDE_PROJECT_DIR="${_dir}" bash "${_hook}" <<<"${_in}" 2>&1)" || _rc=$?
+    _out="$(cd "${_empty}" && env "${_iso[@]}" CLAUDE_PROJECT_DIR="${_dir}" bash "${_hook}" <<<"${_in}" 2>&1)" || _rc=$?
   fi
 }
 
