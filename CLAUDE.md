@@ -33,7 +33,8 @@ ai-skills/
             ├── hooks.json       ← регистрация PreToolUse/SessionStart/Notification/Stop
             ├── guard-bash.sh    ← PreToolUse: блокирует деструктивные Bash-команды + секреты
             ├── notify-sound.sh  ← Notification/Stop: звуковое уведомление
-            └── post-compact-reminder.sh ← SessionStart(compact): напоминание после компакции
+            └── post-compact-reminder.sh ← SessionStart(compact; startup|clear): напоминание после компакции,
+                                            активные задачи списка «СТАРТ» при старте сессии
 ```
 
 Плагин `andrej-karpathy-skills` подключён как внешний GitHub source
@@ -55,6 +56,7 @@ claude plugin validate ./plugins/dev-toolkit              # plugin.json + ком
 shellcheck -S style -o all plugins/dev-toolkit/hooks/guard-bash.sh plugins/dev-toolkit/hooks/post-compact-reminder.sh
 bash plugins/dev-toolkit/hooks/tests/test-guard-bash.sh
 bash plugins/dev-toolkit/hooks/tests/test-post-compact-reminder.sh
+bash plugins/dev-toolkit/hooks/tests/test-session-start-tasks.sh   # активные задачи; мутации — POST_COMPACT_HOOK=<копия>
 ```
 
 Для workflow-скрипта (`plugins/dev-toolkit/workflows/review-code.js`) — стенд-заглушка; `node --check`
