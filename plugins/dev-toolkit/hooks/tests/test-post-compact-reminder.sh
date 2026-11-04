@@ -195,5 +195,98 @@ run_hook "${p}" $'\x01\xff{{{ мусор'
 check 'мусорный stdin: код 0' rc0
 check 'мусорный stdin: общий текст' has "${_general}"
 
+# --- отметка автопилота (скилл autopilot) ---
+_mark='<!-- dev-toolkit:autopilot on -->'
+_auto='Идёт автономный прогон'
+# auto_names <путь>: строка автопилота называет этот файл PLAN.
+auto_names() { [[ "${_out}" == *"${_auto} (отметка автопилота в \`$1\`)"* ]]; }
+one_auto_line() { [[ "$(grep -c "^${_auto}" <<<"${_out}" || true)" -eq 1 ]]; }
+
+p="$(new_project auto-on)"
+mkdir -p "${p}/.dev"
+printf '# План\n%s\nCANARY-PLAN-TEXT\n' "${_mark}" >"${p}/.dev/PLAN-auto.md"
+run_hook "${p}"
+check 'отметка: строка автопилота есть' has "${_auto}"
+check 'отметка: строка называет PLAN' auto_names '.dev/PLAN-auto.md'
+check 'отметка: строка одна' one_auto_line
+# shellcheck disable=SC2016  # обратные кавычки — разметка в тексте
+check 'отметка: строка называет скилл и профиль' has '`doc/AUTOPILOT.md`'
+check 'отметка: общий текст остался' has "${_general}"
+check 'отметка: строка «Рабочие файлы» осталась' has 'Рабочие файлы'
+check 'отметка: текст PLAN в вывод не попадает' hasnt 'CANARY-PLAN-TEXT'
+check 'отметка: код 0' rc0
+
+p="$(new_project auto-off)"
+mkdir -p "${p}/.dev"
+printf '# План\nавтопилот не включён\n' >"${p}/.dev/PLAN-plain.md"
+run_hook "${p}"
+check 'без отметки: строки автопилота нет' hasnt "${_auto}"
+check 'без отметки: список файлов как раньше' has '.dev/PLAN-plain.md'
+
+p="$(new_project auto-tracked)"
+mkdir -p "${p}/.dev"
+printf '%s\n' "${_mark}" >"${p}/.dev/PLAN-committed.md"
+git -C "${p}" init -q
+git -C "${p}" add .dev/PLAN-committed.md
+run_hook "${p}"
+check 'отметка в файле под git: строки нет' hasnt "${_auto}"
+
+p="$(new_project auto-inline)"
+mkdir -p "${p}/.dev"
+# shellcheck disable=SC2016  # обратные кавычки — разметка в тексте
+printf 'форма отметки — `%s` (прозой)\n  %s\n' "${_mark}" "${_mark}" >"${p}/.dev/PLAN-prose.md"
+run_hook "${p}"
+check 'отметка внутри строки или с отступом: строки нет' hasnt "${_auto}"
+
+p="$(new_project auto-handoff)"
+mkdir -p "${p}/.dev/x"
+printf '%s\n' "${_mark}" >"${p}/.dev/HANDOFF-x.md"
+printf '%s\n' "${_mark}" >"${p}/.dev/x/PLAN-nested.md"
+printf '%s\n' "${_mark}" >"${p}/.dev/TODO.md"
+run_hook "${p}"
+check 'отметка в HANDOFF, во вложенном каталоге, не в PLAN: строки нет' hasnt "${_auto}"
+
+p="$(new_project auto-old)"
+mkdir -p "${p}/.dev"
+printf '%s\n' "${_mark}" >"${p}/.dev/PLAN-old.md"
+touch -d '20 days ago' "${p}/.dev/PLAN-old.md"
+run_hook "${p}"
+check 'отметка в PLAN старше 14 дней: строки нет' hasnt "${_auto}"
+
+p="$(new_project auto-unsafe)"
+mkdir -p "${p}/.dev"
+printf '%s\n' "${_mark}" >"${p}/.dev/PLAN-tick\`x.md"
+run_hook "${p}"
+check 'отметка в PLAN с недопустимым именем: строки нет' hasnt "${_auto}"
+
+p="$(new_project auto-far)"
+mkdir -p "${p}/.dev"
+{
+  head -c 70000 /dev/zero | tr '\0' 'a'
+  printf '\n%s\n' "${_mark}"
+} >"${p}/.dev/PLAN-far.md"
+run_hook "${p}"
+check 'отметка дальше 64 КБ: строки нет' hasnt "${_auto}"
+check 'отметка дальше 64 КБ: код 0' rc0
+
+p="$(new_project auto-files)"
+mkdir -p "${p}/.dev_files"
+printf '%s\n' "${_mark}" >"${p}/.dev_files/PLAN-df.md"
+run_hook "${p}"
+check 'отметка в .dev_files: строка называет PLAN' auto_names '.dev_files/PLAN-df.md'
+
+p="$(new_project auto-pick)"
+mkdir -p "${p}/.dev"
+for i in 1 2 3; do
+  touch -d "${i} days ago" "${p}/.dev/PLAN-n${i}.md"
+done
+printf '%s\n' "${_mark}" >"${p}/.dev/PLAN-m5.md"
+touch -d '5 days ago' "${p}/.dev/PLAN-m5.md"
+printf '%s\n' "${_mark}" >"${p}/.dev/PLAN-m6.md"
+touch -d '6 days ago' "${p}/.dev/PLAN-m6.md"
+run_hook "${p}"
+check 'отметка вне топ-3: строка называет самый свежий PLAN с отметкой' auto_names '.dev/PLAN-m5.md'
+check 'отметка вне топ-3: строка одна' one_auto_line
+
 printf 'pass=%s fail=%s\n' "${_pass}" "${_fail}"
 [[ "${_fail}" -eq 0 ]]

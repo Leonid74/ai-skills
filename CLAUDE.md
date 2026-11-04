@@ -22,7 +22,7 @@ ai-skills/
         ├── .claude-plugin/plugin.json
         ├── commands/      ← /dev-toolkit:pr, /dev-toolkit:cppr, /dev-toolkit:review-quick, /dev-toolkit:review-last
         ├── skills/        ← review-code, todo-ship, statusline-setup, optimize-project-docs,
-        │                     server-disk-cleanup, debug, deepen-prompt, todo
+        │                     server-disk-cleanup, debug, deepen-prompt, todo, autopilot
         ├── scripts/       ← todo.sh — список задач «### №N.» (скилл todo; вызов через ${CLAUDE_PLUGIN_ROOT})
         ├── workflows/     ← review-code.js — конвейер review-code (dev-toolkit:review-code-pipeline)
         ├── tests/workflows/ ← стенд-заглушка для workflow-скрипта (моки agent/parallel/pipeline)
