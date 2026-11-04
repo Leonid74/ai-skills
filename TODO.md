@@ -1269,7 +1269,7 @@
   текстовое правило в `CLAUDE.md`. Связано с пунктом о проектах без профиля `doc/AUTOPILOT.md` (выше). Источник: бриф
   `.dev/TASK-session-start-chain-hook-2026-11-04.md` (сессия `apps-b24-platform` 3ed83f78, 04.11.2026); ветка
   `feat/session-start-chain-hook`. Приоритет: высокий.~~
-  **Сделано 2026-11-05** (dev-toolkit 2.25.0, ветка `feat/session-start-chain-hook`): вторая запись `SessionStart`
+  **Сделано 2026-11-05** (dev-toolkit 2.25.0, ветка `feat/session-start-chain-hook`, PR #98): вторая запись `SessionStart`
   (`startup|clear`, аргумент `session-start`) того же скрипта `post-compact-reminder.sh`; список `autopilot-start.md` —
   в памяти проекта по корню git-репозитория (worktree и подкаталоги — общий), выводятся только темы, по одной на
   строку; при старте и после `/clear` — цепочка, сверка, доклад тремя полями и ожидание слова (первое сообщение о
