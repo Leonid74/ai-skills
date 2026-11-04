@@ -265,13 +265,19 @@ run_hook "${p}" "{\"session_id\":\"${_sid}a\"}"
 check 'session_id с hex-хвостом: строки нет' hasnt "${_auto}"
 run_hook "${p}" "{\"parent_session_id\":\"${_sid2}\",\"x\":1}"
 check 'чужой ключ с суффиксом session_id: строки нет' hasnt "${_auto}"
-run_hook "${p}" "{\"session_id\":\"${_sid}\",\"parent_session_id\":\"${_sid2}\"}"
-check 'первый session_id, не вложенный чужой: строка своей отметки' auto_names '.dev/PLAN-a.md'
 run_hook "${p}" "{\"session_id\":\"${_sid^^}\"}"
 check 'session_id в верхнем регистре: строки нет' hasnt "${_auto}"
 run_hook "${p}" "{\"session_id\" : \"${_sid}\"}"
 check 'пробелы вокруг двоеточия: строка есть' auto_names '.dev/PLAN-a.md'
 check 'разбор stdin: код 0' rc0
+
+# Свой session_id и рядом чужой ключ с суффиксом: в PLAN — только своя отметка,
+# так что разбор, взявший id чужого ключа, строки не даст.
+p="$(new_project auto-twokeys)"
+mkdir -p "${p}/.dev"
+printf '%s\n' "${_mark}" >"${p}/.dev/PLAN-two.md"
+run_hook "${p}" "{\"session_id\":\"${_sid}\",\"parent_session_id\":\"${_sid2}\"}"
+check 'session_id и чужой ключ после него: строка своей отметки' auto_names '.dev/PLAN-two.md'
 
 p="$(new_project auto-tracked)"
 mkdir -p "${p}/.dev"
