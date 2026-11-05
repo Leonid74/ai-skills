@@ -41,6 +41,10 @@ ai-skills/
 ([multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills)) и не
 хранится локально в этом репозитории — в `marketplace.json` у него `source.type: "url"`, а не путь.
 
+## Состояние задач
+
+Состояние задач — по `doc/AUTOPILOT.md` §«Состояние», в любом режиме.
+
 ## Валидация (нет автотестов — это и есть проверка перед коммитом)
 
 ```bash
