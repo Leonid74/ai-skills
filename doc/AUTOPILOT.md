@@ -57,7 +57,8 @@ MEMORY.md, когда сохранять, завершение задачи) —
   `--delete-branch` при любом раскладе (PR #96): не обходить — номер PR и команда
   `! gh pr merge <N> --squash --match-head-commit <SHA>` владельцу;
 - две сессии в одной папке делят ветку: перед `pull`/`commit`/`merge` — `git rev-parse --abbrev-ref HEAD`;
-  параллельной работе — отдельный worktree;
+  одна сессия на проект — задача в ветке основного чекаута, не в отдельном worktree (в сессии из каталога worktree нет
+  `.claude/settings.local.json` и `.dev/`; скилл `autopilot`, режим `init`);
 - хук `guard-bash` судит текст команд: файлы состояния — инструментами Write/Edit, сообщение коммита и тело PR —
   файлом (`git commit -F`, `gh pr create --body-file`);
 - удаление ветки после squash-мёржа: сначала `git branch -d` (пока жива удалённая), затем удалённая;
