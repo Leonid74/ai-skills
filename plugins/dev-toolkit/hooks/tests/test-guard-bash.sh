@@ -986,6 +986,38 @@ expect 2 'S=/tmp/x; S+=/../..; rm -rf $S'
 expect 2 'S=/tmp/x; S[0]=/home; rm -rf $S'
 expect 0 "S=/tmp/x; echo a; set -e; ls \$S; rm -rf \$S/a"  # команды положительного списка
 expect 2 "S=/tmp/x; printf '%s\n' a; rm -rf \$S/a"           # вне списка — сброс, и printf без -v
+# 2.29.0: внешние программы из корпуса перед уборкой в /tmp — вывод работает (по вектору на слово)
+expect 0 'S=/tmp/x; du -sh "$S"; rm -rf $S/a'
+expect 0 'S=/tmp/x; sed -n 1p f; rm -rf $S/a'
+expect 0 'S=/tmp/x; awk 1 f; rm -rf $S/a'
+expect 0 'S=/tmp/x; php -l f.php; rm -rf $S/a'
+expect 0 'S=/tmp/x; /usr/bin/php8.3 f.php; rm -rf $S/a'
+expect 0 'S=/tmp/x; cp f $S/; rm -rf $S/a'
+expect 0 'S=/tmp/x; chmod 700 $S; rm -rf $S/a'
+expect 0 'S=/tmp/x; touch $S/f; rm -rf $S/a'
+expect 0 'S=/tmp/x; git status --short; rm -rf $S/a'
+expect 0 'S=/tmp/x; npm -v; rm -rf $S/a'
+expect 0 'S=/tmp/x; node -v; rm -rf $S/a'
+expect 0 'S=/tmp/x; python3 -I f.py; rm -rf $S/a'
+expect 0 'S=/tmp/x; cut -c1-9 f; rm -rf $S/a'
+expect 0 'S=/tmp/x; shellcheck f.sh; rm -rf $S/a'
+expect 0 'S=/tmp/x; ssh -O exit host; rm -rf $S/a'
+expect 0 'S=/tmp/x; docker ps; rm -rf $S/a'
+expect 0 'S=/tmp/x; id -u; rm -rf $S/a'
+expect 0 'S=/tmp/x; whoami; rm -rf $S/a'
+expect 0 'S=/tmp/x; timeout 5 true; rm -rf $S/a'
+expect 0 'S=/tmp/x; command -v node; rm -rf $S/a'
+expect 0 'cd /tmp/x && git status && rm -rf a'
+# слово списка, а в сегменте триггер удаления: строку может исполнить другой процесс, там $S другая — сброс
+expect 2 "S=/tmp/x; ssh host 'sudo rm -rf \$S/*'"
+expect 2 "S=/tmp/x; timeout 60 ssh host 'sudo rm -rf \$S/a'"
+expect 2 "S=/tmp/x; docker exec c sh -c 'nice rm -rf \$S/a'"
+expect 2 'S=/tmp/x; ssh host rm -rf $S/a'                       # цена: $S раскроется здесь, хук не различает
+expect 2 'S=/tmp/x; git ls-files -z | timeout 9 xargs -0 rm -f; rm -rf $S/a'  # триггер в сегменте обёртки
+# command — только -v/-V; путь к программе списка — только перечисленный
+expect 2 'cd /tmp/x && command cd /home && rm -rf a'
+expect 2 'S=/tmp/x; command -p cp a b; rm -rf $S/a'
+expect 2 'S=/tmp/x; /tmp/git x; rm -rf $S/a'
 # спецпеременные bash не в счёт
 expect 2 '_=/tmp/x; ls /home/u; rm -rf $_'
 expect 2 'PWD=/tmp/x; cd /home/u; rm -rf $PWD'

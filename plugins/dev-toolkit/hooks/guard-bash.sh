@@ -1171,6 +1171,14 @@ _rm_cplx() {
 # или обёртка могут сменить каталог и переменные, хук этого не знает. find и
 # grep в оболочке Claude Code — функции, но только с local и подоболочкой.
 # Присваивание с индексом (X[…]=) — сброс: в индексе может стоять присваивание.
+# 2.29.0, по корпусу (команды перед уборкой в /tmp, которые сбрасывали учёт):
+# внешние программы du, sed, awk, php, /usr/bin/php8.3, cp, chmod, touch, git,
+# npm, node, python3, cut, shellcheck, ssh, docker, id, whoami, timeout — сами
+# каталог и переменные оболочки не меняют, но часть исполняет строку в другом
+# процессе (ssh host '…', docker exec … sh -c '…', timeout … bash -c '…'): там
+# $S другая. Поэтому слово из этого списка не сбрасывает учёт, только если в
+# сегменте нет триггера правил удаления (_rm_trig). command — только -v/-V
+# (command cd меняет каталог). printf не входит: printf -v присваивает.
 _rm_spoil() {
   local n w k=0
   # shellcheck disable=SC2206 # голый word-splitting при set -f
@@ -1197,6 +1205,12 @@ _rm_spoil() {
       done
       ;;
     rm | find | mkdir | ls | echo | which | head | grep | cat | tail) ;;
+    du | sed | awk | php | /usr/bin/php8.3 | cp | chmod | touch | git | npm | node | python3 | cut | shellcheck | \
+      ssh | docker | id | whoami | timeout)
+      # shellcheck disable=SC2310 # _rm_trig — условие
+      ! _rm_trig "$1" || _rm_reset
+      ;;
+    command) [[ "${w[k+1]-}" == -[vV] ]] || _rm_reset ;;
     *) _rm_reset ;;
   esac
 }
@@ -1272,6 +1286,16 @@ _rm_track() {
     fi
   fi
   _rm_spoil "${s}"
+}
+
+# _rm_trig <текст> — код 0, если в тексте есть триггер правил удаления: слово rm
+# (без учёта регистра, как правило rm) или find вместе с -delete, -exec, -ok.
+# Строку с триггером может исполнить другой процесс (ssh host '…', sh -c '…',
+# команда e у sed): там $S другая, и учёт по ней — пропуск.
+_rm_trig() {
+  local x="${1,,}"
+  [[ ! "${x}" =~ (^|[^a-z0-9_])rm([^a-z0-9_]|$) ]] || return 0
+  [[ "${x}" == *find* ]] && [[ "${x}" == *-delete* || "${x}" == *-exec* || "${x}" == *-ok* ]]
 }
 
 # _find_del <сегмент> — find с -delete или -exec/-execdir/-ok/-okdir, в команде
