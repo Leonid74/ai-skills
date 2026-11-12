@@ -1036,6 +1036,13 @@ expect 2 $'S=/tmp/x; echo \'a;\nb\'; rm -rf $S/a'           # цена: сост
 expect 2 "S=/tmp/x; echo 'a; b; rm -rf \$S/a"
 # склейка в конвейере: присваивание в конвейере не доходит до этой оболочки — x
 expect 2 "T='/tmp/a;b' | cat; rm -rf \$T/x"
+# W3 (2.29.0): {} и + после {} — только у rm внутри -exec, не у rm рядом с find через &
+expect 2 'rm -rf /tmp/y {} + /home/u & find /tmp/x -delete'
+expect 2 'rm -rf {} + /home/u & find /tmp/x -delete'
+expect 2 'find /tmp/x -exec rm -rf {} + & rm -rf {} + /home/u & find /tmp/z -delete'
+expect 2 'echo -exec & rm -rf {} + /home/u & find /tmp/z -delete'
+expect 2 'find /tmp/x -exec rm -f {} + rm -rf {} + /home/u'     # слова после конца -exec — пути find (судит и правило find)
+expect 0 'find /tmp/x -exec ls {} + -exec rm -rf {} +'
 # спецпеременные bash не в счёт
 expect 2 '_=/tmp/x; ls /home/u; rm -rf $_'
 expect 2 'PWD=/tmp/x; cd /home/u; rm -rf $PWD'

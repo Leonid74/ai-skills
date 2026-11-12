@@ -1485,6 +1485,12 @@ while IFS= read -r _seg; do
     _opts_ended=false
     _rm_rd=false
     _rm_pb=false
+    # _rm_ex — до rm в этой команде встречено -exec/-execdir/-ok/-okdir: только
+    # такой rm — команда find, и только у него {} — путь-заглушка, а + после {}
+    # — конец -exec (2.29.0, W3). Признак _fd стоит на весь сегмент: без _rm_ex
+    # rm рядом с find … -delete через одиночный & разбирался как команда -exec,
+    # и операнд после {} + не судился.
+    _rm_ex=false
     # Подкоманда git rm — не команда rm: git удаляет только отслеживаемые
     # файлы и без -f отказывает на изменённых (git rm -f судит правило git
     # ниже). Только если git (ровно, с учётом регистра) — первое слово
@@ -1518,8 +1524,13 @@ while IFS= read -r _seg; do
         if [[ "${_tok}" == *'&' && "${_tok}" != *[\<\>]'&' ]]; then
           _rm_git=0
           _rm_first=true
+          _rm_ex=false
           continue
         fi
+        case "${_tok_lc//[\"\'\\]/}" in
+          -exec | -execdir | -ok | -okdir) _rm_ex=true ;;
+          *) ;;
+        esac
         if ((_rm_git == 2)); then
           _rm_x="${_tok//[^\"\']/}"
           _rm_q=$((_rm_q + ${#_rm_x}))
@@ -1567,7 +1578,7 @@ while IFS= read -r _seg; do
         continue
       fi
       [[ ! "${_tok}" =~ ^[0-9]*\>\&[0-9]+-?$ ]] || continue
-      if ${_fd}; then
+      if ${_fd} && ${_rm_ex}; then
         # хвост \; ';' ";" после нарезки по ; — последнее слово сегмента; + —
         # конец -exec только сразу после {}
         if [[ "${_tok}" == [\\\'\"] ]] && ((_rm_ti < _rm_tn)); then _tok="''"; fi
@@ -1589,6 +1600,7 @@ while IFS= read -r _seg; do
             _has_non_tmp_operand=false
             _opts_ended=false
             _rm_first=false
+            _rm_ex=false
             continue
             ;;
           *) ;;
