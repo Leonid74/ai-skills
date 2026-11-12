@@ -946,7 +946,7 @@ expect 2 'S=/tmp/x; IFS=/; rm -rf $S'                    # IFS делит $S н�
 expect 2 'S=/tmp/x; if true; then rm -rf $S/a; fi'       # ключевое слово первым
 expect 2 'S=/tmp/x; for f in a; do rm -rf $S/$f; done'
 expect 2 'S=/tmp/x; echo "${S:-x}"; rm -rf $S/a'         # ${…} с операцией
-expect 2 'S=/tmp/x; echo "a\"b"; rm -rf $S/a'            # \ внутри "…"
+expect 0 'S=/tmp/x; echo "a\"b"; rm -rf $S/a'            # \ внутри "…" экранирует, граница как у bash (2.29.0; было 2)
 expect 2 'echo "a\"; S=/tmp/x; echo "x\"; rm -rf $S/*'     # \" не закрывает "…"
 expect 2 'S=/tmp/x; echo $"a"; rm -rf $S/a'              # $ перед кавычкой
 expect 2 "echo \$'a\\'; S=/tmp/x; 'x\\' y; rm -rf \$S/*"  # в $'…' \' не закрывает строку
@@ -1018,6 +1018,24 @@ expect 2 'S=/tmp/x; git ls-files -z | timeout 9 xargs -0 rm -f; rm -rf $S/a'  # 
 expect 2 'cd /tmp/x && command cd /home && rm -rf a'
 expect 2 'S=/tmp/x; command -p cp a b; rm -rf $S/a'
 expect 2 'S=/tmp/x; /tmp/git x; rm -rf $S/a'
+# 2.29.0: склейка кусков, разрезанных нарезкой внутри кавычек, — только для учёта состояния
+expect 0 "S=/tmp/x; sed 's|a|b|' f; rm -rf \$S/a"
+expect 0 "S=/tmp/x; grep -n 'a\\|b' f; rm -rf \$S/a"
+expect 0 "S=/tmp/x; awk '\$1 && \$2' f; rm -rf \$S/a"
+expect 0 'S=/tmp/x; grep -c "a;b" f; rm -rf $S/a'
+expect 0 "cd /tmp/x && sed -i 's/a/b/;s/c/d/' f && rm -rf a"
+# в склейке триггер удаления — не склеивать: команду e у sed исполняет другая оболочка
+expect 2 "S=/tmp/x; sed 's/a/b/; e rm -rf \$S/x; s/c/d/' f"
+expect 2 "S=/tmp/x; sed 's/a/b/; e find \$S -delete; s/c/d/' f"
+# потолок склейки — 16 кусков; кавычка через перевод строки не склеивается; не закрылась — сброс
+_q16="echo '$(printf 'a;%.0s' {1..15})b'"
+_q17="echo '$(printf 'a;%.0s' {1..16})b'"
+expect 0 "S=/tmp/x; ${_q16}; rm -rf \$S/a"
+expect 2 "S=/tmp/x; ${_q17}; rm -rf \$S/a"                   # цена: потолок (время разбора)
+expect 2 $'S=/tmp/x; echo \'a;\nb\'; rm -rf $S/a'           # цена: состояние кавычек между строками не переносится
+expect 2 "S=/tmp/x; echo 'a; b; rm -rf \$S/a"
+# склейка в конвейере: присваивание в конвейере не доходит до этой оболочки — x
+expect 2 "T='/tmp/a;b' | cat; rm -rf \$T/x"
 # спецпеременные bash не в счёт
 expect 2 '_=/tmp/x; ls /home/u; rm -rf $_'
 expect 2 'PWD=/tmp/x; cd /home/u; rm -rf $PWD'
