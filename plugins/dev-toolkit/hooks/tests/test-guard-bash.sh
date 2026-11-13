@@ -946,7 +946,7 @@ expect 2 'S=/tmp/x; IFS=/; rm -rf $S'                    # IFS делит $S н�
 expect 2 'S=/tmp/x; if true; then rm -rf $S/a; fi'       # ключевое слово первым
 expect 2 'S=/tmp/x; for f in a; do rm -rf $S/$f; done'
 expect 2 'S=/tmp/x; echo "${S:-x}"; rm -rf $S/a'         # ${…} с операцией
-expect 2 'S=/tmp/x; echo "a\"b"; rm -rf $S/a'            # \ внутри "…"
+expect 0 'S=/tmp/x; echo "a\"b"; rm -rf $S/a'            # \ внутри "…" экранирует, граница как у bash (2.29.0; было 2)
 expect 2 'echo "a\"; S=/tmp/x; echo "x\"; rm -rf $S/*'     # \" не закрывает "…"
 expect 2 'S=/tmp/x; echo $"a"; rm -rf $S/a'              # $ перед кавычкой
 expect 2 "echo \$'a\\'; S=/tmp/x; 'x\\' y; rm -rf \$S/*"  # в $'…' \' не закрывает строку
@@ -986,6 +986,112 @@ expect 2 'S=/tmp/x; S+=/../..; rm -rf $S'
 expect 2 'S=/tmp/x; S[0]=/home; rm -rf $S'
 expect 0 "S=/tmp/x; echo a; set -e; ls \$S; rm -rf \$S/a"  # команды положительного списка
 expect 2 "S=/tmp/x; printf '%s\n' a; rm -rf \$S/a"           # вне списка — сброс, и printf без -v
+# 2.29.0: внешние программы из корпуса перед уборкой в /tmp — вывод работает (по вектору на слово)
+expect 0 'S=/tmp/x; du -sh "$S"; rm -rf $S/a'
+expect 0 'S=/tmp/x; sed -n 1p f; rm -rf $S/a'
+expect 0 'S=/tmp/x; awk 1 f; rm -rf $S/a'
+expect 0 'S=/tmp/x; php -l f.php; rm -rf $S/a'
+expect 0 'S=/tmp/x; /usr/bin/php8.3 f.php; rm -rf $S/a'
+expect 0 'S=/tmp/x; cp f $S/; rm -rf $S/a'
+expect 0 'S=/tmp/x; chmod 700 $S; rm -rf $S/a'
+expect 0 'S=/tmp/x; touch $S/f; rm -rf $S/a'
+expect 0 'S=/tmp/x; git status --short; rm -rf $S/a'
+expect 0 'S=/tmp/x; npm -v; rm -rf $S/a'
+expect 0 'S=/tmp/x; node -v; rm -rf $S/a'
+expect 0 'S=/tmp/x; python3 -I f.py; rm -rf $S/a'
+expect 0 'S=/tmp/x; cut -c1-9 f; rm -rf $S/a'
+expect 0 'S=/tmp/x; shellcheck f.sh; rm -rf $S/a'
+expect 0 'S=/tmp/x; ssh -O exit host; rm -rf $S/a'
+expect 0 'S=/tmp/x; docker ps; rm -rf $S/a'
+expect 0 'S=/tmp/x; id -u; rm -rf $S/a'
+expect 0 'S=/tmp/x; whoami; rm -rf $S/a'
+expect 0 'S=/tmp/x; timeout 5 true; rm -rf $S/a'
+expect 0 'S=/tmp/x; command -v node; rm -rf $S/a'
+expect 0 'S=/tmp/x; command -V node; rm -rf $S/a'
+expect 0 'cd /tmp/x && git status && rm -rf a'
+# слово списка, а в сегменте триггер удаления: строку может исполнить другой процесс, там $S другая — сброс
+expect 2 "S=/tmp/x; ssh host 'sudo rm -rf \$S/*'"
+expect 2 "S=/tmp/x; timeout 60 ssh host 'sudo rm -rf \$S/a'"
+expect 2 "S=/tmp/x; docker exec c sh -c 'nice rm -rf \$S/a'"
+expect 2 'S=/tmp/x; ssh host rm -rf $S/a'                       # цена: $S раскроется здесь, хук не различает
+expect 2 'S=/tmp/x; git ls-files -z | timeout 9 xargs -0 rm -f; rm -rf $S/a'  # триггер в сегменте обёртки
+# command — только -v/-V; путь к программе списка — только перечисленный
+expect 2 'cd /tmp/x && command cd /home && rm -rf a'
+expect 2 'S=/tmp/x; command -p cp a b; rm -rf $S/a'
+expect 2 'S=/tmp/x; /tmp/git x; rm -rf $S/a'
+# 2.29.0: склейка кусков, разрезанных нарезкой внутри кавычек, — только для учёта состояния
+expect 0 "S=/tmp/x; sed 's|a|b|' f; rm -rf \$S/a"
+expect 0 "S=/tmp/x; grep -n 'a\\|b' f; rm -rf \$S/a"
+expect 0 "S=/tmp/x; awk '\$1 && \$2' f; rm -rf \$S/a"
+expect 0 'S=/tmp/x; grep -c "a;b" f; rm -rf $S/a'
+expect 0 "cd /tmp/x && sed -i 's/a/b/;s/c/d/' f && rm -rf a"
+# в склейке триггер удаления — не склеивать: команду e у sed исполняет другая оболочка
+expect 2 "S=/tmp/x; sed 's/a/b/; e rm -rf \$S/x; s/c/d/' f"
+expect 2 "S=/tmp/x; sed 's/a/b/; e find \$S -delete; s/c/d/' f"
+expect 2 "S=/tmp/x; echo 'a; rm -rf \$S/x; b'"                # цена: текст, хук не различает (держит условие «без триггера»)
+expect 2 "S=/tmp/x; cat 'a; find . -delete'; rm -rf \$S/a"      # цена: то же
+# потолок склейки — 16 кусков; кавычка через перевод строки не склеивается; не закрылась — сброс
+_q16="echo '$(printf 'a;%.0s' {1..15})b'"
+_q17="echo '$(printf 'a;%.0s' {1..16})b'"
+expect 0 "S=/tmp/x; ${_q16}; rm -rf \$S/a"
+expect 2 "S=/tmp/x; ${_q17}; rm -rf \$S/a"                   # цена: потолок (время разбора)
+expect 2 $'S=/tmp/x; echo \'a;\nb\'; rm -rf $S/a'           # цена: состояние кавычек между строками не переносится
+expect 2 "S=/tmp/x; echo 'a; b; rm -rf \$S/a"
+# склейка в конвейере: присваивание в конвейере не доходит до этой оболочки — x
+expect 2 "T='/tmp/a;b' | cat; rm -rf \$T/x"
+# 2.29.0, ревью L1: слово присваивания с незакрытой кавычкой (значение в кавычках разрезано по пробелу) — сброс
+expect 2 "X='a; S=/tmp/x'; rm -rf \$S/a"
+expect 2 'X="a\" S=/tmp/x"; rm -rf $S/a'
+expect 2 "X='a S=/tmp/x'; rm -rf \$S/a"
+expect 2 "X='a; HOME=/tmp/x'; rm -rf \$HOME/*"
+expect 2 "export X='a S=/tmp/x'; rm -rf \$S/a"
+expect 2 $'X=\'"\'"a S=/tmp/x"\'"\'; rm -rf $S/a'                # автомат, а не чётность: слова чётны по обоим видам кавычек
+expect 2 'cd /tmp/x && X="a git b" cd /home && rm -rf a'
+expect 2 'cd /tmp/x && X="a echo b" cd /home && rm -rf a'
+expect 2 'S=/tmp/x; X="a git b" . ./f; rm -rf $S/a'
+expect 2 'cd /tmp/x && X="a command -v b" cd /home && rm -rf a'
+expect 2 $'S=/tmp/x; X=\'"\'"a git b"\'"\' cd /home; rm -rf $S/a'  # цена: $S/a под /tmp, но значение разрезано — сброс
+expect 2 'cd /tmp/x && X+="a git b" cd /home && rm -rf a'        # X+= видит только пропуск присваиваний _rm_spoil
+expect 2 $'cd /tmp/x && X+=\'"\'"a git b"\'"\' cd /home && rm -rf a'  # то же: автомат, а не чётность (в _rm_spoil)
+# цена (решение владельца 13.11, в истории 0): значение в кавычках с пробелом, все куски которого — ИМЯ=…, тоже сброс
+expect 2 'S=/tmp/x; OPTS="a=1 b=2"; rm -rf $S/a'
+# закрытые значения и аргументы в кавычках после команды — не сброс
+expect 0 "S=/tmp/x; X=\"a\" Y='b' git status; rm -rf \$S/a"
+expect 0 'S=/tmp/x; T="/tmp/y"; rm -rf $T/a'
+expect 0 'S=/tmp/x; LC_ALL=C grep -c "a b" f; rm -rf $S/a'
+expect 0 'S=/tmp/x; git commit -m "a b"; rm -rf $S/a'
+# 2.29.0, ревью L2: триггер find в склейке — и без кавычек и \ (их снимает правило find)
+expect 2 "S=/tmp/x; sed 's/a/b/; e fi''nd \$S -delete; s/c/d/' f"
+expect 2 "S=/tmp/x; sed 's/a/b/; e find \$S -de''lete; s/c/d/' f"
+expect 2 "S=/tmp/x; sed 's/a/b/; e fi\\nd \$S -delete; s/c/d/' f"
+expect 2 "S=/tmp/x; sed 's/a/b/; e find \$S -ex''ec r''m -rf {} +; s/c/d/' f"
+expect 2 "S=/tmp/x; sed 's/a/b/; e find \$S -o''k r''m -rf {} \\;; s/c/d/' f"
+# 2.29.0, ревью L4: склейка только закрывшейся кавычки — "$(mktemp -d)" сохраняет вид присваивания
+_e16="$(printf 'echo %s; ' {1..16})"
+expect 0 $'D="$(mktemp -d)"; echo ok\nrm -rf "$D"'
+expect 0 $'D="$(mktemp -d)" && ls\nrm -rf "$D"'
+expect 0 "D=\"\$(mktemp -d)\"; ${_e16}rm -rf \"\$D\""
+expect 0 "D=\"\$(mktemp -d)\"; ${_e16}rm -rf \$D"
+# длина «склейка + кусок» — до приклейки: иначе код 1 _rm_open «длиннее 4 КБ» читался бы как «кавычка закрылась»
+_e3a="echo $(printf 'a%.0s' {1..3000})"
+_e3b="echo $(printf 'b%.0s' {1..3000})"
+expect 0 "D=\"\$(mktemp -d)\"; ${_e3a}; ${_e3b}; rm -rf \"\$D\""
+# W3 (2.29.0): {} и + после {} — только у rm внутри -exec, не у rm рядом с find через &
+expect 2 'rm -rf /tmp/y {} + /home/u & find /tmp/x -delete'
+expect 2 'rm -rf {} + /home/u & find /tmp/x -delete'
+expect 2 'find /tmp/x -exec rm -rf {} + & rm -rf {} + /home/u & find /tmp/z -delete'
+expect 2 'echo -exec & rm -rf {} + /home/u & find /tmp/z -delete'
+expect 2 'find /tmp/x -exec rm -f {} + rm -rf {} + /home/u'     # слова после конца -exec — пути find (судит и правило find)
+expect 0 'find /tmp/x -exec ls {} + -exec rm -rf {} +'
+expect 0 'find /tmp/x -execdir rm -rf {} +'                     # _rm_ex — и -execdir, -ok, -okdir, и в кавычках
+expect 0 'find /tmp/x -ok rm -rf {} \;'
+expect 0 'find /tmp/x -okdir rm -rf {} \;'
+expect 0 "find /tmp/x '-exec' rm -rf {} +"
+expect 0 'find /tmp/x "-execdir" rm -rf {} \;'
+# цена: после конца -exec (+) признак _rm_ex снят — {} у rm из аргумента -name судится как путь
+expect 2 'find /tmp/x -exec rm -f {} + -name rm -rf -name {}'
+expect 2 'find /tmp/x -exec rm -f {} + -name rm -rf -path {}'
+expect 2 "find /tmp/x -exec rm -f {} + -name rm -rf -name '{}'"
 # спецпеременные bash не в счёт
 expect 2 '_=/tmp/x; ls /home/u; rm -rf $_'
 expect 2 'PWD=/tmp/x; cd /home/u; rm -rf $PWD'
