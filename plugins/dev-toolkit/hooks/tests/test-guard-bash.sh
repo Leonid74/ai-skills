@@ -1007,6 +1007,7 @@ expect 0 'S=/tmp/x; id -u; rm -rf $S/a'
 expect 0 'S=/tmp/x; whoami; rm -rf $S/a'
 expect 0 'S=/tmp/x; timeout 5 true; rm -rf $S/a'
 expect 0 'S=/tmp/x; command -v node; rm -rf $S/a'
+expect 0 'S=/tmp/x; command -V node; rm -rf $S/a'
 expect 0 'cd /tmp/x && git status && rm -rf a'
 # слово списка, а в сегменте триггер удаления: строку может исполнить другой процесс, там $S другая — сброс
 expect 2 "S=/tmp/x; ssh host 'sudo rm -rf \$S/*'"
@@ -1027,6 +1028,8 @@ expect 0 "cd /tmp/x && sed -i 's/a/b/;s/c/d/' f && rm -rf a"
 # в склейке триггер удаления — не склеивать: команду e у sed исполняет другая оболочка
 expect 2 "S=/tmp/x; sed 's/a/b/; e rm -rf \$S/x; s/c/d/' f"
 expect 2 "S=/tmp/x; sed 's/a/b/; e find \$S -delete; s/c/d/' f"
+expect 2 "S=/tmp/x; echo 'a; rm -rf \$S/x; b'"                # цена: текст, хук не различает (держит условие «без триггера»)
+expect 2 "S=/tmp/x; cat 'a; find . -delete'; rm -rf \$S/a"      # цена: то же
 # потолок склейки — 16 кусков; кавычка через перевод строки не склеивается; не закрылась — сброс
 _q16="echo '$(printf 'a;%.0s' {1..15})b'"
 _q17="echo '$(printf 'a;%.0s' {1..16})b'"
@@ -1070,6 +1073,15 @@ expect 2 'find /tmp/x -exec rm -rf {} + & rm -rf {} + /home/u & find /tmp/z -del
 expect 2 'echo -exec & rm -rf {} + /home/u & find /tmp/z -delete'
 expect 2 'find /tmp/x -exec rm -f {} + rm -rf {} + /home/u'     # слова после конца -exec — пути find (судит и правило find)
 expect 0 'find /tmp/x -exec ls {} + -exec rm -rf {} +'
+expect 0 'find /tmp/x -execdir rm -rf {} +'                     # _rm_ex — и -execdir, -ok, -okdir, и в кавычках
+expect 0 'find /tmp/x -ok rm -rf {} \;'
+expect 0 'find /tmp/x -okdir rm -rf {} \;'
+expect 0 "find /tmp/x '-exec' rm -rf {} +"
+expect 0 'find /tmp/x "-execdir" rm -rf {} \;'
+# цена: после конца -exec (+) признак _rm_ex снят — {} у rm из аргумента -name судится как путь
+expect 2 'find /tmp/x -exec rm -f {} + -name rm -rf -name {}'
+expect 2 'find /tmp/x -exec rm -f {} + -name rm -rf -path {}'
+expect 2 "find /tmp/x -exec rm -f {} + -name rm -rf -name '{}'"
 # спецпеременные bash не в счёт
 expect 2 '_=/tmp/x; ls /home/u; rm -rf $_'
 expect 2 'PWD=/tmp/x; cd /home/u; rm -rf $PWD'
