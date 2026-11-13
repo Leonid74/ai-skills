@@ -1050,8 +1050,11 @@ expect 2 'cd /tmp/x && X="a git b" cd /home && rm -rf a'
 expect 2 'cd /tmp/x && X="a echo b" cd /home && rm -rf a'
 expect 2 'S=/tmp/x; X="a git b" . ./f; rm -rf $S/a'
 expect 2 'cd /tmp/x && X="a command -v b" cd /home && rm -rf a'
-expect 2 $'S=/tmp/x; X=\'"\'"a git b"\'"\' cd /home; rm -rf $S/a'  # автомат, а не чётность (пропуск присваиваний)
+expect 2 $'S=/tmp/x; X=\'"\'"a git b"\'"\' cd /home; rm -rf $S/a'  # цена: $S/a под /tmp, но значение разрезано — сброс
 expect 2 'cd /tmp/x && X+="a git b" cd /home && rm -rf a'        # X+= видит только пропуск присваиваний _rm_spoil
+expect 2 $'cd /tmp/x && X+=\'"\'"a git b"\'"\' cd /home && rm -rf a'  # то же: автомат, а не чётность (в _rm_spoil)
+# цена (решение владельца 13.11, в истории 0): значение в кавычках с пробелом, все куски которого — ИМЯ=…, тоже сброс
+expect 2 'S=/tmp/x; OPTS="a=1 b=2"; rm -rf $S/a'
 # закрытые значения и аргументы в кавычках после команды — не сброс
 expect 0 "S=/tmp/x; X=\"a\" Y='b' git status; rm -rf \$S/a"
 expect 0 'S=/tmp/x; T="/tmp/y"; rm -rf $T/a'
@@ -1061,12 +1064,18 @@ expect 0 'S=/tmp/x; git commit -m "a b"; rm -rf $S/a'
 expect 2 "S=/tmp/x; sed 's/a/b/; e fi''nd \$S -delete; s/c/d/' f"
 expect 2 "S=/tmp/x; sed 's/a/b/; e find \$S -de''lete; s/c/d/' f"
 expect 2 "S=/tmp/x; sed 's/a/b/; e fi\\nd \$S -delete; s/c/d/' f"
+expect 2 "S=/tmp/x; sed 's/a/b/; e find \$S -ex''ec r''m -rf {} +; s/c/d/' f"
+expect 2 "S=/tmp/x; sed 's/a/b/; e find \$S -o''k r''m -rf {} \\;; s/c/d/' f"
 # 2.29.0, ревью L4: склейка только закрывшейся кавычки — "$(mktemp -d)" сохраняет вид присваивания
 _e16="$(printf 'echo %s; ' {1..16})"
 expect 0 $'D="$(mktemp -d)"; echo ok\nrm -rf "$D"'
 expect 0 $'D="$(mktemp -d)" && ls\nrm -rf "$D"'
 expect 0 "D=\"\$(mktemp -d)\"; ${_e16}rm -rf \"\$D\""
 expect 0 "D=\"\$(mktemp -d)\"; ${_e16}rm -rf \$D"
+# длина «склейка + кусок» — до приклейки: иначе код 1 _rm_open «длиннее 4 КБ» читался бы как «кавычка закрылась»
+_e3a="echo $(printf 'a%.0s' {1..3000})"
+_e3b="echo $(printf 'b%.0s' {1..3000})"
+expect 0 "D=\"\$(mktemp -d)\"; ${_e3a}; ${_e3b}; rm -rf \"\$D\""
 # W3 (2.29.0): {} и + после {} — только у rm внутри -exec, не у rm рядом с find через &
 expect 2 'rm -rf /tmp/y {} + /home/u & find /tmp/x -delete'
 expect 2 'rm -rf {} + /home/u & find /tmp/x -delete'
