@@ -1053,6 +1053,16 @@ expect 0 "S=/tmp/x; X=\"a\" Y='b' git status; rm -rf \$S/a"
 expect 0 'S=/tmp/x; T="/tmp/y"; rm -rf $T/a'
 expect 0 'S=/tmp/x; LC_ALL=C grep -c "a b" f; rm -rf $S/a'
 expect 0 'S=/tmp/x; git commit -m "a b"; rm -rf $S/a'
+# 2.29.0, ревью L2: триггер find в склейке — и без кавычек и \ (их снимает правило find)
+expect 2 "S=/tmp/x; sed 's/a/b/; e fi''nd \$S -delete; s/c/d/' f"
+expect 2 "S=/tmp/x; sed 's/a/b/; e find \$S -de''lete; s/c/d/' f"
+expect 2 "S=/tmp/x; sed 's/a/b/; e fi\\nd \$S -delete; s/c/d/' f"
+# 2.29.0, ревью L4: склейка только закрывшейся кавычки — "$(mktemp -d)" сохраняет вид присваивания
+_e16="$(printf 'echo %s; ' {1..16})"
+expect 0 $'D="$(mktemp -d)"; echo ok\nrm -rf "$D"'
+expect 0 $'D="$(mktemp -d)" && ls\nrm -rf "$D"'
+expect 0 "D=\"\$(mktemp -d)\"; ${_e16}rm -rf \"\$D\""
+expect 0 "D=\"\$(mktemp -d)\"; ${_e16}rm -rf \$D"
 # W3 (2.29.0): {} и + после {} — только у rm внутри -exec, не у rm рядом с find через &
 expect 2 'rm -rf /tmp/y {} + /home/u & find /tmp/x -delete'
 expect 2 'rm -rf {} + /home/u & find /tmp/x -delete'
