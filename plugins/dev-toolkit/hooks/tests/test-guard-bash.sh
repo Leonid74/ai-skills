@@ -1036,6 +1036,23 @@ expect 2 $'S=/tmp/x; echo \'a;\nb\'; rm -rf $S/a'           # цена: сост
 expect 2 "S=/tmp/x; echo 'a; b; rm -rf \$S/a"
 # склейка в конвейере: присваивание в конвейере не доходит до этой оболочки — x
 expect 2 "T='/tmp/a;b' | cat; rm -rf \$T/x"
+# 2.29.0, ревью L1: слово присваивания с незакрытой кавычкой (значение в кавычках разрезано по пробелу) — сброс
+expect 2 "X='a; S=/tmp/x'; rm -rf \$S/a"
+expect 2 'X="a\" S=/tmp/x"; rm -rf $S/a'
+expect 2 "X='a S=/tmp/x'; rm -rf \$S/a"
+expect 2 "X='a; HOME=/tmp/x'; rm -rf \$HOME/*"
+expect 2 "export X='a S=/tmp/x'; rm -rf \$S/a"
+expect 2 $'X=\'"\'"a S=/tmp/x"\'"\'; rm -rf $S/a'                # автомат, а не чётность: слова чётны по обоим видам кавычек
+expect 2 'cd /tmp/x && X="a git b" cd /home && rm -rf a'
+expect 2 'cd /tmp/x && X="a echo b" cd /home && rm -rf a'
+expect 2 'S=/tmp/x; X="a git b" . ./f; rm -rf $S/a'
+expect 2 'cd /tmp/x && X="a command -v b" cd /home && rm -rf a'
+expect 2 $'S=/tmp/x; X=\'"\'"a git b"\'"\' cd /home; rm -rf $S/a'  # автомат, а не чётность (пропуск присваиваний)
+# закрытые значения и аргументы в кавычках после команды — не сброс
+expect 0 "S=/tmp/x; X=\"a\" Y='b' git status; rm -rf \$S/a"
+expect 0 'S=/tmp/x; T="/tmp/y"; rm -rf $T/a'
+expect 0 'S=/tmp/x; LC_ALL=C grep -c "a b" f; rm -rf $S/a'
+expect 0 'S=/tmp/x; git commit -m "a b"; rm -rf $S/a'
 # W3 (2.29.0): {} и + после {} — только у rm внутри -exec, не у rm рядом с find через &
 expect 2 'rm -rf /tmp/y {} + /home/u & find /tmp/x -delete'
 expect 2 'rm -rf {} + /home/u & find /tmp/x -delete'
