@@ -1051,6 +1051,7 @@ expect 2 'cd /tmp/x && X="a echo b" cd /home && rm -rf a'
 expect 2 'S=/tmp/x; X="a git b" . ./f; rm -rf $S/a'
 expect 2 'cd /tmp/x && X="a command -v b" cd /home && rm -rf a'
 expect 2 $'S=/tmp/x; X=\'"\'"a git b"\'"\' cd /home; rm -rf $S/a'  # автомат, а не чётность (пропуск присваиваний)
+expect 2 'cd /tmp/x && X+="a git b" cd /home && rm -rf a'        # X+= видит только пропуск присваиваний _rm_spoil
 # закрытые значения и аргументы в кавычках после команды — не сброс
 expect 0 "S=/tmp/x; X=\"a\" Y='b' git status; rm -rf \$S/a"
 expect 0 'S=/tmp/x; T="/tmp/y"; rm -rf $T/a'
