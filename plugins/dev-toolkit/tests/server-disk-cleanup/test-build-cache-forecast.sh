@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Тест блока «прогноз для кеша сборки» из skills/server-disk-cleanup/SKILL.md:
 # блок извлекается из Markdown и исполняется как есть на фикстурах. Настоящий
-# Docker не нужен и не вызывается: в PATH стоит заглушка docker, которая сверяет
-# аргументы `docker system df -v --format <шаблон>` и отдаёт фикстуру. Каждый
-# вектор гоняется под всеми найденными реализациями awk (gawk, mawk, busybox
-# awk); какие нашлись — печатается в итоговой строке.
+# Docker не нужен и не вызывается: в PATH стоят заглушки docker (`buildx
+# version`/`inspect`, `system df -v --format <шаблон>` — отдаёт фикстуру,
+# `version`, `context show`), pgrep и ps (время запуска dockerd) и «часы» блока
+# (`date +%s`). Каждый вектор гоняется под всеми найденными реализациями awk
+# (gawk, mawk, busybox awk); какие нашлись — печатается в итоговой строке.
 # Запуск из корня репозитория:
 #   bash plugins/dev-toolkit/tests/server-disk-cleanup/test-build-cache-forecast.sh
 set -uo pipefail
@@ -168,7 +169,12 @@ mkdir -p "${_root}/awk-fail" "${_root}/date-empty" "${_root}/date-junk" "${_root
 # разошлись бы с ожиданием вектора на смене секунды.
 # shellcheck disable=SC2016  # `$1`, `$@`, `${…}` — текст заглушки
 printf '#!/bin/sh\ncase "$1" in +%%s) echo "${CLOCK_NOW}"; exit 0 ;; esac\nexec "${REAL_DATE}" "$@"\n' >"${_root}/clock/date"
-chmod +x "${_root}/clock/date"
+# date-st-empty (через PRE): на эпоху EMPTY_AT (время запуска dockerd) печатает
+# пусто с кодом 0; «сейчас» отдаёт сама — PRE стоит в PATH раньше clock.
+mkdir -p "${_root}/date-st-empty"
+# shellcheck disable=SC2016  # `$1`, `$3`, `$@`, `${…}` — текст заглушки
+printf '#!/bin/sh\ncase "$1" in +%%s) echo "${CLOCK_NOW}"; exit 0 ;; esac\n[ "$1" = -u ] && [ "$3" = "@${EMPTY_AT}" ] && exit 0\nexec "${REAL_DATE}" "$@"\n' >"${_root}/date-st-empty/date"
+chmod +x "${_root}/clock/date" "${_root}/date-st-empty/date"
 # shellcheck disable=SC2016  # `$1`, `$@`, `${REAL_…}` — текст заглушек, раскрываются при их запуске
 {
   printf '#!/bin/sh\ncase "$*" in *Driver:*) exec "${REAL_AWK}" "$@" ;; esac\n' >"${_root}/awk-fail/awk"
@@ -219,7 +225,7 @@ run_block() {
   _out="$(cd "${CWD:-${_cwd}}" && TZ=XXX-3 STUB_DRIVER="${DRIVER-docker}" STUB_BUILDX="${BUILDX:-yes}" \
     STUB_FIXTURE="${_fx}" STUB_DF_RC="${DF_RC:-0}" LC_ALL="${LOC:-C}" LOCPATH="${LOCDIR:-}" \
     STUB_VERSION="${VER-29.9.3}" DOCKER_HOST="${DHOST-}" STUB_CONTEXT="${CTX-default}" \
-    STUB_PIDS="${PIDS-4242}" STUB_PS="${PSOUT-    0     3600}" \
+    STUB_PIDS="${PIDS-4242}" STUB_PS="${PSOUT-    0     3600}" EMPTY_AT="${EMPTY_AT:-}" \
     PATH="${_path}" bash "${_blk}" 2>&1)"
 }
 ok() { _pass=$((_pass + 1)); }
@@ -346,7 +352,7 @@ check "пустая строка в конце вывода пропускает
 # --- Время запуска dockerd: каскад BuildKit ----------------------------------
 
 # Снятие записи, созданной до запуска dockerd, освежает её родителей (ошибка
-# parentsOf в BuildKit 0.10+, Docker 23+): цепочка в этом запуске на них
+# parentsOf в BuildKit 0.10+, Docker 22.06+): цепочка в этом запуске на них
 # останавливается. Записи текущей жизни dockerd уходят цепочкой. По умолчанию
 # dockerd запущен час назад, записи созданы 40 суток назад — загружены с диска.
 new_fixture
@@ -363,28 +369,82 @@ DHOST=unix:///run/docker.sock check "V1, DOCKER_HOST — /run/docker.sock: вр�
   "прогноз: 50 МБ (записей: 1 из 3; всего в кеше 180 МБ)"
 VER=23.0.0 check "V1, Docker 23.0 — родителей освежает" \
   "прогноз: 50 МБ (записей: 1 из 3; всего в кеше 180 МБ)"
+VER=22.06.0-beta.0 check "V1, Docker 22.06 (BuildKit 0.10.3) — родителей освежает" \
+  "прогноз: 50 МБ (записей: 1 из 3; всего в кеше 180 МБ)"
+VER=30.0.0 check "V1, Docker 30 — родителей освежает" \
+  "прогноз: 50 МБ (записей: 1 из 3; всего в кеше 180 МБ)"
+# Диапазон: в третьей строке — причина, фиксированной фразой (значения окружения
+# не печатаются); у каждого вектора своя.
 _r1="прогноз: от 50 до 180 МБ (записей: от 1 до 3 из 3; всего в кеше 180 МБ)"
 _r2="остаются: свежие 0 МБ; общие с образами 0 МБ; занятые и служебные 0 МБ; предки остающихся 0 МБ; старые под снимаемыми 130 МБ"
-_r3="незанятые записи: необщие 180 МБ, все 180 МБ; в прогнозе записи без времени использования: 0 МБ; запуск dockerd: не определён"
-DHOST=tcp://h:2375 check "V6 удалённый DOCKER_HOST — диапазон" "${_r1}" "${_r2}" "${_r3}"
-DHOST=unix:///run/user/1000/docker.sock check "V6 rootless-сокет — диапазон" "${_r1}" "${_r2}" "${_r3}"
-CTX=rootless check "V6 контекст не default — диапазон" "${_r1}" "" "${_r3}"
-CTX=none check "V6 нет docker context — диапазон" "${_r1}" "" "${_r3}"
-PIDS="" check "V6 процесса dockerd не видно — диапазон" "${_r1}" "" "${_r3}"
-PIDS=$'4242\n4243' check "V6 два процесса dockerd — диапазон" "${_r1}" "" "${_r3}"
-PSOUT=" 1000     3600" check "V6 dockerd не под root — диапазон" "${_r1}" "" "${_r3}"
-PSOUT=fail check "V6 ps без etimes (busybox) — диапазон" "${_r1}" "" "${_r3}"
-PSOUT="    0      abc" check "V6 etimes не число — диапазон" "${_r1}" "" "${_r3}"
-PSOUT="    0" check "V6 ps вернул одно слово — диапазон" "${_r1}" "" "${_r3}"
-VER="" check "V6 версия Docker не получена — диапазон" "${_r1}" "" "${_r3}"
-VER=17.06.0-ce check "V6 версия Docker вне известных — диапазон" "${_r1}" "" "${_r3}"
-_o3="незанятые записи: необщие 180 МБ, все 180 МБ; в прогнозе записи без времени использования: 0 МБ; запуск dockerd: не нужен (Docker до 23)"
+r3() { printf 'незанятые записи: необщие 180 МБ, все 180 МБ; в прогнозе записи без времени использования: 0 МБ; запуск dockerd: не определён (%s)' "$1"; }
+_why_host="Docker не на стандартном локальном сокете (DOCKER_HOST)"
+_why_ctx="контекст Docker не default"
+_why_pid="процесс dockerd не найден или их несколько"
+_why_ps="ps не дал uid и время работы dockerd"
+_why_root="dockerd не под root (rootless)"
+_why_date="date не посчитал время запуска"
+_why_ver="версия Docker не получена или не из известных"
+DHOST=tcp://h:2375 check "V6 удалённый DOCKER_HOST — диапазон" "${_r1}" "${_r2}" "$(r3 "${_why_host}")"
+DHOST=unix:///run/user/1000/docker.sock check "V6 rootless-сокет — диапазон" "${_r1}" "${_r2}" "$(r3 "${_why_host}")"
+CTX=rootless check "V6 контекст не default — диапазон" "${_r1}" "" "$(r3 "${_why_ctx}")"
+CTX=none check "V6 нет docker context — диапазон" "${_r1}" "" "$(r3 "${_why_ctx}")"
+PIDS="" check "V6 процесса dockerd не видно — диапазон" "${_r1}" "" "$(r3 "${_why_pid}")"
+PIDS=$'4242\n4243' check "V6 два процесса dockerd — диапазон" "${_r1}" "" "$(r3 "${_why_pid}")"
+PSOUT=" 1000     3600" check "V6 dockerd не под root — диапазон" "${_r1}" "" "$(r3 "${_why_root}")"
+PSOUT=fail check "V6 ps без etimes (busybox) — диапазон" "${_r1}" "" "$(r3 "${_why_ps}")"
+PSOUT="    0      abc" check "V6 etimes не число — диапазон" "${_r1}" "" "$(r3 "${_why_ps}")"
+PSOUT="    0" check "V6 ps вернул одно слово — диапазон" "${_r1}" "" "$(r3 "${_why_ps}")"
+PSOUT="    0     3600 x" check "V6 ps вернул три слова — диапазон" "${_r1}" "" "$(r3 "${_why_ps}")"
+VER="" check "V6 версия Docker не получена — диапазон" "${_r1}" "" "$(r3 "${_why_ver}")"
+VER=17.06.0-ce check "V6 версия Docker вне известных — диапазон" "${_r1}" "" "$(r3 "${_why_ver}")"
+VER=21.0.0 check "V6 версия 21 (не выпускалась) — диапазон" "${_r1}" "" "$(r3 "${_why_ver}")"
+# date, который на эпоху времени запуска dockerd печатает пусто с кодом 0 (граница
+# возраста считается другой эпохой и не задета): «сейчас» отдаёт сама заглушка.
+EMPTY_AT=$((_now - 3600)) PRE="${_root}/date-st-empty" check "V6 date не посчитал время запуска — диапазон" \
+  "${_r1}" "" "$(r3 "${_why_date}")"
+_o3="незанятые записи: необщие 180 МБ, все 180 МБ; в прогнозе записи без времени использования: 0 МБ; запуск dockerd: не нужен (Docker до 22.06)"
 VER=20.10.24 check "Docker 20.10 (BuildKit до 0.10) — цепочка целиком" \
   "прогноз: 180 МБ (записей: 3 из 3; всего в кеше 180 МБ)" \
   "остаются: свежие 0 МБ; общие с образами 0 МБ; занятые и служебные 0 МБ; предки остающихся 0 МБ; старые под снимаемыми 0 МБ" \
   "${_o3}"
-VER=22.06.0 PIDS="" check "Docker 22 — цепочка целиком, время запуска не нужно" \
+VER=20.10.24 PIDS="" check "Docker 20.10 — время запуска не нужно" \
   "прогноз: 180 МБ (записей: 3 из 3; всего в кеше 180 МБ)" "" "${_o3}"
+# Docker 18/19 — по прежнему правилу, вслед за прежней версией блока: ошибки
+# parentsOf в их BuildKit нет по коду, на живом dockerd не проверялось.
+VER=19.03.12 check "Docker 19.03 — цепочка целиком" \
+  "прогноз: 180 МБ (записей: 3 из 3; всего в кеше 180 МБ)" "" "${_o3}"
+VER=18.09.7 check "Docker 18.09 — цепочка целиком" \
+  "прогноз: 180 МБ (записей: 3 из 3; всего в кеше 180 МБ)" "" "${_o3}"
+
+# L = U в округлённых МБ (освежённый родитель — 0B): одно число, не «от 10 до 10».
+new_fixture
+rec base "" false false regular 0B "${OLD}"
+rec top base false false regular 10MB "${OLD}"
+CTX=none check "время запуска не определено, L = U в МБ — одно число" \
+  "прогноз: 10 МБ (записей: 1 из 2; всего в кеше 10 МБ)"
+
+# Каскад в режимах «Docker до 22.06» и «записи текущей жизни»: снятая запись
+# освобождает каждого родителя, в том числе запись без времени использования.
+new_fixture
+rec a "" false false regular 10MB "${OLD}"
+rec b "" false false regular 20MB "${OLD}"
+rec merge "a, b" false false regular 1MB "${OLD}"
+VER=20.10.24 check "Docker 20.10: запись с двумя родителями — сняты все три" \
+  "прогноз: 31 МБ (записей: 3 из 3; всего в кеше 31 МБ)"
+new_fixture
+rec a "" false false regular 10MB "$(ts 777600)" "$(ts 864000)"
+rec b "" false false regular 20MB "$(ts 777600)" "$(ts 864000)"
+rec merge "a, b" false false regular 1MB "$(ts 777600)" "$(ts 864000)"
+PSOUT="    0  2592000" check "записи текущей жизни: запись с двумя родителями — сняты все три" \
+  "прогноз: 31 МБ (записей: 3 из 3; всего в кеше 31 МБ)"
+new_fixture
+rec base "" false false regular 100MB "${OLD}"
+rec nodate base false false regular 30MB ""
+VER=20.10.24 check "Docker 20.10: запись без времени использования снимается вместе с предком" \
+  "прогноз: 130 МБ (записей: 2 из 2; всего в кеше 130 МБ)" \
+  "остаются: свежие 0 МБ; общие с образами 0 МБ; занятые и служебные 0 МБ; предки остающихся 0 МБ; старые под снимаемыми 0 МБ" \
+  "незанятые записи: необщие 130 МБ, все 130 МБ; в прогнозе записи без времени использования: 30 МБ; запуск dockerd: не нужен (Docker до 22.06)"
 
 _st30="$(date -u -d "@$((_now - 2592000))" '+%Y-%m-%d %H:%M:%S')"
 new_fixture
@@ -423,7 +483,7 @@ rec old2 "" false false regular 20MB "${OLD}"
 CTX=none check "V7 время запуска не определено, цепочек нет — одно число" \
   "прогноз: 120 МБ (записей: 2 из 2; всего в кеше 120 МБ)" \
   "остаются: свежие 0 МБ; общие с образами 0 МБ; занятые и служебные 0 МБ; предки остающихся 0 МБ; старые под снимаемыми 0 МБ" \
-  "незанятые записи: необщие 120 МБ, все 120 МБ; в прогнозе записи без времени использования: 0 МБ; запуск dockerd: не определён"
+  "незанятые записи: необщие 120 МБ, все 120 МБ; в прогнозе записи без времени использования: 0 МБ; запуск dockerd: не определён (контекст Docker не default)"
 
 new_fixture
 rec base "" false false regular 100MB "${OLD}"
@@ -625,7 +685,7 @@ BUILDX=no DRIVER="" check "buildx нет (unknown command) — считаетс�
 BUILDX=old DRIVER="" check "buildx нет (is not a docker command) — считается по кешу демона" \
   "прогноз: 100 МБ (записей: 1 из 1; всего в кеше 100 МБ)"
 
-# timeout у каждого из трёх вызовов Docker: заглушка timeout возвращает 124 для
+# timeout у каждого из пяти вызовов Docker: заглушка timeout возвращает 124 для
 # одного названного вызова, не запуская его, остальные исполняет как есть. Блок
 # без timeout у этого вызова заглушку не заденет и напечатает число.
 # timeout_only <имя каталога> <подстрока командной строки>
@@ -650,8 +710,8 @@ new_fixture
 rec base "" false false regular 100MB "${OLD}"
 rec mid base false false regular 30MB "${OLD}"
 rec top mid false false regular 50MB "${OLD}"
-PRE="${_root}/tmo-ver" check "docker version не уложился в таймаут — диапазон" "${_r1}" "" "${_r3}"
-PRE="${_root}/tmo-ctx" check "docker context show не уложился в таймаут — диапазон" "${_r1}" "" "${_r3}"
+PRE="${_root}/tmo-ver" check "docker version не уложился в таймаут — диапазон" "${_r1}" "" "$(r3 "${_why_ver}")"
+PRE="${_root}/tmo-ctx" check "docker context show не уложился в таймаут — диапазон" "${_r1}" "" "$(r3 "${_why_ctx}")"
 
 new_fixture
 rec old1 "" false false regular 100MB "${OLD/+0000 UTC/+0300 MSK}"

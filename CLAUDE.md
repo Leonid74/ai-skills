@@ -87,8 +87,13 @@ bash plugins/dev-toolkit/tests/statusline/test-statusline-template.sh
 Мутационная проверка — `BUILD_CACHE_FORECAST=<копия блока>`. Время запуска dockerd стенд подменяет заглушками
 (`docker version`, `docker context show`, `pgrep`, `ps`) и своими «часами» (`date +%s`); путь «время известно» на живом
 dockerd проверяется только блоком внутри контейнера dind. Проверки на живом кеше сборки — только
-в одноразовом dockerd (`docker:dind`), не на кеше хоста: он общий с деплоем; порт демона наружу не публиковать
-(tcp без пароля — почти root на машине), команды — через `docker exec`, контейнер и образ удалить сразу после опыта.
+в одноразовом dockerd (`docker:dind`), не на кеше хоста: он общий с деплоем. dockerd в контейнере — **только
+unix-сокет**: команда контейнера начинается со слова `dockerd` (`docker run -d --privileged --name <имя>
+docker:<версия>-dind dockerd --host=unix:///var/run/docker.sock`) — если первый аргумент начинается с `-`, entrypoint
+образа сам добавляет `--host=tcp://0.0.0.0:2375` без TLS (`DOCKER_TLS_CERTDIR=`) или 2376: API привилегированного
+dockerd по адресу bridge-сети — почти root на машине (так шли оба опыта 14.11.2026). Сразу после старта — проверка
+внутри контейнера, что портов 2375/2376 нет (`netstat -ltn` или `/proc/net/tcp`), есть — опыт остановить и контейнер
+удалить; порт не публиковать, команды — через `docker exec`, контейнер и образ удалить сразу после опыта.
 
 ```bash
 bash plugins/dev-toolkit/tests/server-disk-cleanup/test-build-cache-forecast.sh
