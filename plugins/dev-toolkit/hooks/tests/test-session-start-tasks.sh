@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Тест-векторы строки «Активные задачи проекта» хука post-compact-reminder.sh:
-# режим session-start (события startup и clear) и добавка к режиму compact.
+# режим session-start (события startup и clear) и добавка к режиму compact,
+# проверка формата файлов состояния (список «СТАРТ» и счётчик вопросов) на
+# старте, после правки инструментом (post-edit) и после Bash-вызова (post-bash).
 # Каждый вектор строит временные проект и каталог конфигурации Claude Code,
 # кладёт список «СТАРТ» (autopilot-start.md) в память проекта и проверяет
-# вывод и код хука. Запуск из корня репозитория:
+# вывод и код хука. Векторы post-bash судят время изменения файла (ctime),
+# подделать его нельзя — стенд один раз ждёт 4 секунды. Запуск из корня
+# репозитория:
 #   bash plugins/dev-toolkit/hooks/tests/test-session-start-tasks.sh
 # Обратные кавычки в одинарных — разметка ожидаемого текста (SC2016); код
 # возврата подстановок в фикстурах не важен — сбой виден по проверке (SC2312).
@@ -34,16 +38,21 @@ _cfg="${_root}/cfg"
 mkdir -p "${_home}" "${_cfg}"
 
 _out=""
+_so=""
+_err=""
 _rc=0
 # Дополнительные ИМЯ=значение для следующего run_hook (по умолчанию пусто).
 _extra_env=()
+# Файл хука для следующих run_hook (вектор локали подставляет изменённую копию).
+_hook_use="${_hook}"
 
 # Git без глобальных настроек машины: фикстуры не зависят от ~/.gitconfig.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
-# run_hook <проект> <аргумент|-> [stdin] [cfg|-]: вывод — в _out, код — в _rc.
-# Аргумент "-" — хук без аргумента (как запись compact в hooks.json). Каталог
-# конфигурации "-" — CLAUDE_CONFIG_DIR не задан (хук берёт $HOME/.claude).
+# run_hook <проект> <аргумент|-> [stdin] [cfg|-]: stdout — в _so, stderr — в
+# _err, оба подряд — в _out, код — в _rc. Аргумент "-" — хук без аргумента (как
+# запись compact в hooks.json). Каталог конфигурации "-" — CLAUDE_CONFIG_DIR не
+# задан (хук берёт $HOME/.claude).
 run_hook() {
   local _dir="$1" _arg="$2" _in="${3-}" _c="${4-${_cfg}}" _args=() _envs=()
   [[ "${_arg}" == "-" ]] || _args=("${_arg}")
@@ -56,7 +65,9 @@ run_hook() {
   # Переменные окружения сверх изоляции (вектор переопределения памяти).
   _envs+=("${_extra_env[@]}")
   _rc=0
-  _out="$(cd "${_root}" && env "${_envs[@]}" bash "${_hook}" "${_args[@]}" <<<"${_in}" 2>&1)" || _rc=$?
+  _so="$(cd "${_root}" && env "${_envs[@]}" bash "${_hook_use}" "${_args[@]}" <<<"${_in}" 2>"${_root}/stderr")" || _rc=$?
+  _err="$(<"${_root}/stderr")"
+  _out="${_so}${_err}"
 }
 
 # slug <путь>: каталог проекта в памяти Claude Code — каждый символ не из
@@ -73,6 +84,15 @@ put_list() {
   _d="$1/projects/$(slug "$2")/memory"
   mkdir -p "${_d}"
   printf '%s' "$3" >"${_d}/autopilot-start.md"
+}
+
+# put_counter <каталог конфигурации> <база ключа> <содержимое>: кладёт счётчик
+# вопросов (question-counter.md) в память проекта.
+put_counter() {
+  local _d
+  _d="$1/projects/$(slug "$2")/memory"
+  mkdir -p "${_d}"
+  printf '%s' "$3" >"${_d}/question-counter.md"
 }
 
 # new_project <имя>: пустой каталог проекта (не git), печатает путь.
@@ -105,9 +125,15 @@ check() {
 # has / hasnt <подстрока>: есть ли подстрока в выводе.
 has() { [[ "${_out}" == *"$1"* ]]; }
 hasnt() { [[ "${_out}" != *"$1"* ]]; }
-# rc0: код выхода хука равен 0. empty: вывод пуст.
+# rc0 / rc2: код выхода хука равен 0 / 2. empty: вывод (stdout и stderr) пуст.
 rc0() { [[ "${_rc}" -eq 0 ]]; }
+rc2() { [[ "${_rc}" -eq 2 ]]; }
 empty() { [[ -z "${_out}" ]]; }
+# so_empty: stdout пуст. err_has <подстрока>: подстрока есть в stderr.
+# err_exact <текст>: stderr совпадает с текстом целиком.
+so_empty() { [[ -z "${_so}" ]]; }
+err_has() { [[ "${_err}" == *"$1"* ]]; }
+err_exact() { [[ "${_err}" == "$1" ]]; }
 # in_order <подстрока...>: все подстроки идут в выводе по порядку (каждая
 # следующая — после предыдущей); число аргументов любое.
 in_order() {
@@ -129,11 +155,11 @@ json_cmd() {
     "${_hooks_json}" >/dev/null
 }
 
-# json_post <команда>: у записи PostToolUse с matcher Edit|Write|MultiEdit ровно
-# эта команда.
-json_post() {
-  jq -e --arg c "$1" \
-    '[.hooks.PostToolUse[] | select(.matcher == "Edit|Write|MultiEdit") | .hooks[].command] == [$c]' \
+# json_tool <событие> <matcher> <команда>: у записи события (PostToolUse,
+# PostToolUseFailure) с этим matcher ровно эта команда.
+json_tool() {
+  jq -e --arg e "$1" --arg m "$2" --arg c "$3" \
+    '[.hooks[$e][] | select(.matcher == $m) | .hooks[].command] == [$c]' \
     "${_hooks_json}" >/dev/null
 }
 
@@ -147,10 +173,28 @@ _head='Активные задачи проекта:'
 _general='Контекст только что сжат'
 # Предупреждения о формате и размере списка (без числа в конце).
 _warn='Список «СТАРТ» (`autopilot-start.md` в памяти проекта) не по формату: строк не по формату (проза, журнал, тема не по правилу) — '
-_rule='В списке — только строки задач «- <тема> — ветка …» (тема — буквы, цифры, `. _ + -`, до 64 символов), ровно «активных задач нет» или однострочный `<!-- … -->`; история и итоги — в HANDOFF/PLAN задачи, строка закрытой задачи удаляется (шаги 4 и 6 скилла `autopilot`).'
-_tail_start='Назови это пользователю; перенос или удаление этих строк — по его слову.'
-_tail_compact='Назови это в итоге; без слова пользователя эти строки не переноси и не удаляй.'
+_warn_fm='Список «СТАРТ» (`autopilot-start.md` в памяти проекта) не по формату: frontmatter не закрыт — строки после первой `---` хук не читает.'
+_rule='В списке — только строки задач «- <тема> — ветка …» (тема — буквы, цифры, `. _ + -`, до 64 символов), ровно `активных задач нет` или однострочный `<!-- … -->`; история и итоги — в HANDOFF/PLAN задачи, строка закрытой задачи удаляется (шаги 4 и 6 скилла `autopilot`).'
+_tail_start='Назови это пользователю; свою строку не по формату исправь, прочие переноси или удаляй только по его слову.'
+_tail_compact='Назови это в итоге; свою строку не по формату исправь, прочие без слова пользователя не трогай.'
+# Хвосты предупреждения только о размере (строк не по формату нет).
+_tail_start_size='Назови это пользователю.'
+_tail_compact_size='Назови это в итоге.'
 _size='Список «СТАРТ» (`autopilot-start.md` в памяти проекта) — '
+_size_mid=' байт, больше порога 8192: список растёт как журнал (хук читает только первые 65 536 байт).'
+_size_big=' байт, больше порога 8192: хук читает только первые 65 536 байт, задачи дальше не видны.'
+# Счётчик вопросов: предупреждение (без числа и хвоста), правило, хвосты.
+_cwarn='Счётчик вопросов (`question-counter.md` в памяти проекта) не по формату: шапок «Последний выданный номер» — '
+_crule='Шапка счётчика одна: число в ней заменяют, прежнюю шапку не копируют и не вкладывают в новую; упоминание шапки в тексте берут в кавычки (шаг 4 скилла `autopilot`).'
+_ctail_start='Назови это пользователю; лишние шапки убирай по его слову.'
+_ctail_compact='Назови это в итоге; без слова пользователя счётчик не правь.'
+# Сигналы после вызова инструмента (stderr, код 2).
+_post_head='Вызов выполнен, повторять его не нужно. '
+_post_list='Список «СТАРТ» (`autopilot-start.md` в памяти проекта) после него не по формату: строк не по формату — '
+_post_fm='Список «СТАРТ» (`autopilot-start.md` в памяти проекта) после него не по формату: frontmatter не закрыт — строки после первой `---` хук не читает.'
+_post_counter='Счётчик вопросов (`question-counter.md` в памяти проекта) после него не по формату: шапок «Последний выданный номер» — '
+_post_bash='Файлы состояния правят инструментами Edit и Write, не Bash.'
+_post_tail='Внесённое этим вызовом убери тем же шагом инструментом Edit (итог и история — в HANDOFF/PLAN задачи); что было до него или внесено не им — не трогай, назови пользователю.'
 
 # --- 1. start, одна задача: полный текст ---
 p="$(new_project one)"
@@ -246,7 +290,7 @@ run_hook "${p}" bogus "{\"session_id\":\"${_sid}\"}"
 check 'неизвестный аргумент: пусто' empty
 check 'неизвестный аргумент: код 0' rc0
 
-# --- 10. frontmatter: строка задачи внутри не считается; незакрытый — молчание ---
+# --- 10. frontmatter: строка задачи внутри не считается; незакрытый — нарушение ---
 p="$(new_project fm)"
 put_list "${_cfg}" "${p}" $'---\nname: x\n'"$(task fake)"$'\n---\n'"$(task real)"
 run_hook "${p}" session-start
@@ -254,11 +298,18 @@ check 'frontmatter: строка внутри не выводится' hasnt 'fa
 check 'frontmatter: строка после — выводится' has '- `real`'
 put_list "${_cfg}" "${p}" $'---\nname: x\n'"$(task fake)"
 run_hook "${p}" session-start
-check 'незакрытый frontmatter: пусто' empty
+check 'незакрытый frontmatter: ровно предупреждение, без блока задач' \
+  is_exact "${_warn_fm}"$'\n'"${_rule} ${_tail_start}"
+check 'незакрытый frontmatter: строка внутри не выводится' hasnt 'fake'
+check 'незакрытый frontmatter: код 0' rc0
+run_hook "${p}" -
+check 'незакрытый frontmatter, compact: предупреждение с хвостом compact' \
+  in_order "${_general}" "${_warn_fm}" "${_rule} ${_tail_compact}"
 put_list "${_cfg}" "${p}" "${fm}$(task first)"$'\n---\n'"$(task second)"
 run_hook "${p}" session-start
 check '«---» в теле списка: не открывает frontmatter, задачи после него выводятся' \
   has "${_head}"$'\n- `first`\n- `second`\n'
+check '«---» в теле списка: одна строка не по формату' has "${_warn}1."
 
 # --- 11. строка не по формату: пропускается ---
 p="$(new_project form)"
@@ -291,7 +342,7 @@ $(task 'v2.1_c++')
 run_hook "${p}" session-start
 check 'allowlist: кириллица, «. _ +» и 64 символа выводятся, скрытые — числом' \
   has "${_head}"$'\n- `миграция`\n- `'"${_ok64}"$'`\n- `v2.1_c++`\n- ещё 6 — название не показано\nПеред работой'
-check 'allowlist: скрытые темы — и строки не по формату (паритет с №142 apps-b24-platform)' has "${_warn}6."
+check 'allowlist: скрытые темы — и строки не по формату' has "${_warn}6."
 for _bad in 'tick' 'two words' '$(x)' 'width' "${_long}"; do
   check "allowlist: не выводит «${_bad}»" hasnt "${_bad}"
 done
@@ -350,7 +401,7 @@ run_hook "${p}" session-start
 check 'журнал после задачи: блок задач, затем предупреждение' \
   is_exact "${_head}"$'\n- `roave`\n'"${_start_text}"$'\n'"${_warn}2."$'\n'"${_rule} ${_tail_start}"
 check 'журнал: текст строк не выводится' hasnt "${_mk}"
-check 'журнал: без «название не показано» (паритет apps-b24)' hasnt 'название не показано'
+check 'журнал: без «название не показано»' hasnt 'название не показано'
 check 'журнал: код 0' rc0
 run_hook "${p}" -
 check 'журнал, compact: задачи → текст compact → предупреждение с хвостом compact' \
@@ -363,10 +414,20 @@ put_list "${_cfg}" "${p}" "${fm}(активных задач нет — ${_mk} �
 run_hook "${p}" session-start
 check 'только проза: ровно предупреждение' is_exact "${_warn}1."$'\n'"${_rule} ${_tail_start}"
 
-# «активных задач нет» с хвостом и с CRLF — не по формату (как у №142)
+# «активных задач нет» с хвостом — не по формату; та же строка с CRLF — по
+# формату (один «\r» в конце строки снимается до разбора)
 put_list "${_cfg}" "${p}" "${fm}активных задач нет — x"$'\n'"активных задач нет"$'\r\n'
 run_hook "${p}" session-start
-check '«активных задач нет» с хвостом и CRLF: 2 строки' has "${_warn}2."
+check '«активных задач нет» с хвостом и та же строка с CRLF: 1 строка' has "${_warn}1."
+# файл целиком с CRLF (frontmatter, комментарий, задача) — без предупреждений
+put_list "${_cfg}" "${p}" $'---\r\nname: autopilot-start\r\n---\r\n\r\n<!-- формат -->\r\n'"$(task roave)"$'\r\n'
+run_hook "${p}" session-start
+check 'файл с CRLF: без предупреждения о формате' hasnt 'не по формату'
+check 'файл с CRLF: задача выводится' has '- `roave`'
+# два «\r» в конце — снимается только один
+put_list "${_cfg}" "${p}" "${fm}активных задач нет"$'\r\r\n'
+run_hook "${p}" session-start
+check '«активных задач нет» с двумя «\r»: не по формату' has "${_warn}1."
 
 # пустые и пробельные строки, однострочный комментарий — допустимы
 put_list "${_cfg}" "${p}" "${fm}<!-- Формат — шаг 4 скилла autopilot -->"$'\n\n   \n\t\n'"$(task roave)"$'\n\n'
@@ -384,9 +445,22 @@ put_list "${_cfg}" "${p}" "${fm}$(for _i in $(seq 1 60); do task "t${_i}"; done)
 _bytes="$(wc -c <"${_cfg}/projects/$(slug "${p}")/memory/autopilot-start.md")"
 run_hook "${p}" session-start
 check 'размер > 8192: задачи выводятся' has $'- `t5`\n- и ещё 55'
-check 'размер > 8192: предупреждение с размером' \
-  has "${_size}${_bytes} байт, больше порога 8192: хук читает только первые 65 536 байт, задачи дальше не видны."$'\n'"${_rule} ${_tail_start}"
+check 'размер > 8192: предупреждение с размером, хвост без слов о строках' \
+  is_exact "${_out%%"${_size}"*}${_size}${_bytes}${_size_mid}"$'\n'"${_rule} ${_tail_start_size}"
+check 'размер > 8192: без слов «задачи дальше не видны» (файл читается целиком)' hasnt 'дальше не видны'
 check 'размер > 8192: без предупреждения о формате' hasnt 'не по формату:'
+run_hook "${p}" -
+check 'размер > 8192, compact: хвост compact без слов о строках' \
+  is_exact "${_out%%"${_size}"*}${_size}${_bytes}${_size_mid}"$'\n'"${_rule} ${_tail_compact_size}"
+# 8193–65 536 байт со строками не по формату: точное число, без «не меньше»
+put_list "${_cfg}" "${p}" "${fm}$(task roave)
+$(for _i in $(seq 1 100); do printf 'journal entry %s: %s\n' "${_i}" "$(printf 'y%.0s' $(seq 1 110))"; done)"
+_bytes="$(wc -c <"${_cfg}/projects/$(slug "${p}")/memory/autopilot-start.md")"
+check 'фикстура 8193–65 536 байт' test "${_bytes}" -gt 8192 -a "${_bytes}" -le 65536
+run_hook "${p}" session-start
+check '8193–65 536 байт, журнал: точное число строк, оба предупреждения, хвост о строках' \
+  is_exact "${_head}"$'\n- `roave`\n'"${_start_text}"$'\n'"${_warn}100."$'\n'"${_size}${_bytes}${_size_mid}"$'\n'"${_rule} ${_tail_start}"
+check '8193–65 536 байт: без «не меньше»' hasnt 'не меньше'
 # ровно 8192 байт — без предупреждения (однострочный комментарий добивает размер)
 _f8="${_cfg}/projects/$(slug "${p}")/memory/autopilot-start.md"
 put_list "${_cfg}" "${p}" "${fm}$(task t1)"$'\n<!--  -->\n'
@@ -400,14 +474,20 @@ printf '\n' >>"${_f8}"
 run_hook "${p}" session-start
 check '8193 байт: предупреждение о размере' has "${_size}8193 байт"
 
-# --- 15в. файл больше 64 КБ: число строк — «не меньше» ---
+# --- 15в. файл больше 64 КБ: число строк — «не меньше N», N — по первым 64 КБ ---
 p="$(new_project huge)"
 put_list "${_cfg}" "${p}" "${fm}$(task roave)
-$(for _i in $(seq 1 600); do printf 'запись журнала %s: %s\n' "${_i}" "$(printf 'y%.0s' $(seq 1 120))"; done)"
+$(for _i in $(seq 1 600); do printf 'journal entry %s: %s\n' "${_i}" "$(printf 'y%.0s' $(seq 1 120))"; done)"
+_fh="${_cfg}/projects/$(slug "${p}")/memory/autopilot-start.md"
+_bytes="$(wc -c <"${_fh}")"
+# Ожидаемое число считается независимо от хука: строки журнала (в том числе
+# оборванная последняя) в первых 65 536 байтах.
+_n64="$(head -c 65536 "${_fh}" | grep -c '^j')"
+check 'фикстура > 64 КБ: в первых 64 КБ не все 600 строк' test "${_n64}" -gt 0 -a "${_n64}" -lt 600
 run_hook "${p}" session-start
-check '> 64 КБ: «не меньше» в числе строк' has "${_warn}не меньше "
-check '> 64 КБ: предупреждение о размере' has 'больше порога 8192'
-check '> 64 КБ: текст строк не выводится' hasnt 'запись журнала'
+check '> 64 КБ: «не меньше N» по первым 64 КБ и размер «задачи дальше не видны»' \
+  is_exact "${_head}"$'\n- `roave`\n'"${_start_text}"$'\n'"${_warn}не меньше ${_n64}."$'\n'"${_size}${_bytes}${_size_big}"$'\n'"${_rule} ${_tail_start}"
+check '> 64 КБ: текст строк не выводится' hasnt 'journal entry'
 check '> 64 КБ: код 0' rc0
 
 # --- 15г. режим post-edit (PostToolUse): только список этого проекта, код 2 при строках не по формату ---
@@ -418,14 +498,28 @@ _mem="${_cfg}/projects/$(slug "${p}")/memory/autopilot-start.md"
 ev() { printf '{"session_id":"%s","cwd":"%s","hook_event_name":"PostToolUse","tool_name":"%s","tool_input":{"file_path":"%s","old_string":"a","new_string":"b"},"tool_response":{"filePath":"%s"}}' "${_sid}" "${p}" "${2:-Edit}" "$1" "$1"; }
 put_list "${_cfg}" "${p}" "${fm}$(task roave)"$'\n'"проза ${_mk}"$'\n'
 run_hook "${p}" post-edit "$(ev "${_mem}")"
-check 'post-edit, список не по формату: код 2' test "${_rc}" -eq 2
-check 'post-edit: причина с числом и правилом' has 'после этой правки не по формату: строк не по формату — 1. '"${_rule}"
+check 'post-edit, список не по формату: код 2' rc2
+check 'post-edit: причина — ровно один сигнал в stderr: «вызов выполнен», число, правило, хвост' \
+  err_exact "${_post_head}${_post_list}1. ${_rule} ${_post_tail}"
+check 'post-edit: stdout пуст (причина только в stderr)' so_empty
 check 'post-edit: текст строк не выводится' hasnt "${_mk}"
 check 'post-edit: без блока задач' hasnt "${_head}"
+check 'post-edit: без слов о Bash' hasnt "${_post_bash}"
 run_hook "${p}" post-edit "$(ev "${_mem}" Write)"
-check 'post-edit, Write: код 2' test "${_rc}" -eq 2
+check 'post-edit, Write: код 2' rc2
 run_hook "${p}" post-edit "$(ev "${_mem}" MultiEdit)"
-check 'post-edit, MultiEdit: код 2' test "${_rc}" -eq 2
+check 'post-edit, MultiEdit: код 2' rc2
+# список только из строки задачи со скрытой темой — тоже не по формату
+put_list "${_cfg}" "${p}" "${fm}$(task 'two words')"$'\n'
+run_hook "${p}" post-edit "$(ev "${_mem}")"
+check 'post-edit, только строка со скрытой темой: код 2' rc2
+check 'post-edit, скрытая тема: число 1' err_has "${_post_list}1. "
+# незакрытый frontmatter — нарушение и после правки
+put_list "${_cfg}" "${p}" $'---\nname: x\n'"$(task roave)"$'\n'
+run_hook "${p}" post-edit "$(ev "${_mem}")"
+check 'post-edit, незакрытый frontmatter: код 2' rc2
+check 'post-edit, незакрытый frontmatter: причина' err_exact "${_post_head}${_post_fm} ${_rule} ${_post_tail}"
+put_list "${_cfg}" "${p}" "${fm}$(task roave)"$'\n'"проза ${_mk}"$'\n'
 # чужой файл с тем же именем, другое имя, путь с «\» или кавычкой — молчание
 mkdir -p "${p}/other"
 printf 'проза\n' >"${p}/other/autopilot-start.md"
@@ -445,15 +539,21 @@ check 'post-edit, чужой файл: git не вызывается' test ! -e 
 run_hook "${p}" post-edit "$(ev "${_mem}")"
 check 'post-edit, список: заглушка git вызвана (контроль вектора)' test -e "${_root}/git-called"
 _extra_env=()
-run_hook "${p}" post-edit '{"tool_input":{"file_path":"'"${_mem%/*}"'/a\"b/autopilot-start.md"}}'
-check 'post-edit, путь с экранированной кавычкой: пусто, код 0' empty
+# путь с кавычкой в JSON экранирован («\"»): такой путь хук не проверяет. Каталог
+# с буквальным именем «a"b» — симлинк на память: хук, который раскрыл бы
+# экранирование, дошёл бы до списка и вернул 2.
+ln -s "${_mem%/*}" "${_root}/a\"b"
+check 'фикстура: путь через каталог с кавычкой ведёт к списку' test "${_root}/a\"b/autopilot-start.md" -ef "${_mem}"
+run_hook "${p}" post-edit '{"tool_input":{"file_path":"'"${_root}"'/a\"b/autopilot-start.md"}}'
+check 'post-edit, путь с экранированной кавычкой: пусто' empty
+check 'post-edit, путь с экранированной кавычкой: код 0' rc0
 run_hook "${p}" post-edit '{}'
 check 'post-edit, без file_path: пусто' empty
 check 'post-edit, без file_path: код 0' rc0
 # путь через симлинк на каталог памяти — тот же файл (-ef)
 ln -s "${_mem%/*}" "${_root}/memlink"
 run_hook "${p}" post-edit "$(ev "${_root}/memlink/autopilot-start.md")"
-check 'post-edit, путь через симлинк каталога: код 2' test "${_rc}" -eq 2
+check 'post-edit, путь через симлинк каталога: код 2' rc2
 # список по формату (и больше порога размера) — код 0, пусто
 put_list "${_cfg}" "${p}" "${fm}$(for _i in $(seq 1 60); do task "t${_i}"; done)"
 run_hook "${p}" post-edit "$(ev "${_mem}")"
@@ -468,6 +568,210 @@ _extra_env=("CLAUDE_CODE_REMOTE_MEMORY_DIR=${_root}/elsewhere")
 run_hook "${p}" post-edit "$(ev "${_mem}")"
 check 'post-edit, перенос памяти: код 0, пусто' empty
 _extra_env=()
+
+# --- 15д. локаль без UTF-8: тема с кириллицей не считается «не по формату» ---
+# Недоступную локаль C.UTF-8 изображает копия хука с LC_ALL=C: bash остаётся в
+# C, и [[:alnum:]] кириллицу не покрывает.
+p="$(new_project loc)"
+_mem_loc="${_cfg}/projects/$(slug "${p}")/memory/autopilot-start.md"
+sed 's/^export LC_ALL=C\.UTF-8$/export LC_ALL=C/' "${_hook}" >"${_root}/hook-c.sh"
+check 'фикстура локали: в копии хука LC_ALL=C' grep -qx 'export LC_ALL=C' "${_root}/hook-c.sh"
+put_list "${_cfg}" "${p}" "${fm}$(task миграция)"$'\n'
+_hook_use="${_root}/hook-c.sh"
+run_hook "${p}" session-start
+check 'локаль C: кириллическая тема скрыта числом' has '- ещё 1 — название не показано'
+check 'локаль C: скрытая тема не считается строкой не по формату' hasnt 'не по формату'
+run_hook "${p}" post-edit "$(ev "${_mem_loc}")"
+check 'локаль C, post-edit: код 0, пусто' empty
+check 'локаль C, post-edit: код 0' rc0
+# проза и в локали C остаётся строкой не по формату
+put_list "${_cfg}" "${p}" "${fm}$(task миграция)"$'\n'"проза"$'\n'
+run_hook "${p}" session-start
+check 'локаль C: проза — 1 строка не по формату' has "${_warn}1."
+_hook_use="${_hook}"
+run_hook "${p}" session-start
+check 'локаль UTF-8 (контроль): кириллическая тема выводится' has '- `миграция`'
+
+# --- 15е. счётчик вопросов (question-counter.md): шапка одна ---
+p="$(new_project counter)"
+_memc="${_cfg}/projects/$(slug "${p}")/memory/question-counter.md"
+cfm=$'---\nname: question-counter\ndescription: счётчик вопросов\n---\n\n'
+_h1='**Последний выданный номер:** В-8 (2026-11-23).'
+_h2='Последний выданный номер вопроса: **В-87**'
+# одна шапка (обе формы), списка «СТАРТ» в проекте нет — молчание
+put_counter "${_cfg}" "${p}" "${cfm}${_h1}"$'\n\nОткрытых нет.\n'
+run_hook "${p}" session-start
+check 'счётчик, одна шапка: пусто' empty
+check 'счётчик, одна шапка: код 0' rc0
+put_counter "${_cfg}" "${p}" "${cfm}${_h2}"$'\n'
+run_hook "${p}" session-start
+check 'счётчик, шапка второй формы: пусто' empty
+# шапки нет — формат неизвестен, молчание
+put_counter "${_cfg}" "${p}" "${cfm}Вопросы: В-1 закрыт ${_mk}."$'\n'
+run_hook "${p}" session-start
+check 'счётчик без шапки: пусто' empty
+# упоминание шапки в обратных кавычках и «ёлочках» шапкой не считается
+put_counter "${_cfg}" "${p}" "${cfm}Как обновлять: число в строке «Последний выданный номер» заменить; шапку \`**Последний выданный номер:**\`, \`*Последний выданный номер*\`, \`Последний выданный номер\`, «*Последний выданный номер» и «**Последний выданный номер:» не копировать."$'\n\n'"${_h1}"$'\n'
+run_hook "${p}" session-start
+check 'счётчик, шапка и шесть упоминаний в кавычках (без «*», с одной и двумя): пусто' empty
+# вложение: новая шапка + «Прежнее: (» + старая — две шапки; списка нет — блока задач нет
+put_counter "${_cfg}" "${p}" "${cfm}**Последний выданный номер: В-142.** Открыт: В-142 ${_mk}. Прежнее: (**Последний выданный номер: В-141.** Открыт: В-141)"$'\n'
+run_hook "${p}" session-start
+check 'счётчик, вложенная шапка: ровно предупреждение (списка нет)' \
+  is_exact "${_cwarn}2, нужна одна."$'\n'"${_crule} ${_ctail_start}"
+check 'счётчик: текст файла не выводится' hasnt "${_mk}"
+check 'счётчик, вложенная шапка: код 0' rc0
+run_hook "${p}" -
+check 'счётчик, compact: общий текст → предупреждение с хвостом compact' \
+  in_order "${_general}" "${_cwarn}2, нужна одна." "${_crule} ${_ctail_compact}"
+check 'счётчик, compact: без хвоста start' hasnt "${_ctail_start}"
+# NUL-байт и CRLF между шапками счёт не ломают
+printf '%s\r\n\0\r\n%s\r\n%s\r\n' "${_h1}" "${_h1}" "${_h2}" >"${_memc}"
+run_hook "${p}" session-start
+check 'счётчик, NUL и CRLF: три шапки' has "${_cwarn}3, нужна одна."
+# после правки инструментом: две шапки — код 2, одна — тишина
+put_counter "${_cfg}" "${p}" "${cfm}${_h1}"$'\n'"Прежнее: (${_h1})"$'\n'
+run_hook "${p}" post-edit "$(ev "${_memc}")"
+check 'post-edit, счётчик с двумя шапками: код 2' rc2
+check 'post-edit, счётчик: причина — один сигнал в stderr' \
+  err_exact "${_post_head}${_post_counter}2, нужна одна. ${_crule} ${_post_tail}"
+check 'post-edit, счётчик: stdout пуст' so_empty
+put_counter "${_cfg}" "${p}" "${cfm}${_h1}"$'\n'
+run_hook "${p}" post-edit "$(ev "${_memc}")"
+check 'post-edit, счётчик с одной шапкой: пусто' empty
+check 'post-edit, счётчик с одной шапкой: код 0' rc0
+# одноимённый файл вне памяти проекта — не судится
+printf '%s\n%s\n' "${_h1}" "${_h1}" >"${p}/question-counter.md"
+run_hook "${p}" post-edit "$(ev "${p}/question-counter.md")"
+check 'post-edit, question-counter.md вне памяти: пусто' empty
+# счётчик-симлинк не читается
+put_counter "${_cfg}" "${_root}/ctarget" "${_h1}"$'\n'"${_h1}"$'\n'
+rm -f "${_memc}"
+ln -s "${_cfg}/projects/$(slug "${_root}/ctarget")/memory/question-counter.md" "${_memc}"
+run_hook "${p}" session-start
+check 'счётчик-симлинк: пусто' empty
+rm -f "${_memc}"
+# список и счётчик оба не по формату: задачи → список → счётчик
+put_list "${_cfg}" "${p}" "${fm}$(task roave)"$'\n'"проза"$'\n'
+put_counter "${_cfg}" "${p}" "${_h1}"$'\n'"${_h1}"$'\n'
+run_hook "${p}" session-start
+check 'список и счётчик не по формату: порядок' \
+  is_exact "${_head}"$'\n- `roave`\n'"${_start_text}"$'\n'"${_warn}1."$'\n'"${_rule} ${_tail_start}"$'\n'"${_cwarn}2, нужна одна."$'\n'"${_crule} ${_ctail_start}"
+# память перенесена переменной — молчание и о счётчике
+_extra_env=("CLAUDE_CODE_REMOTE_MEMORY_DIR=${_root}/elsewhere")
+run_hook "${p}" session-start
+check 'счётчик, перенос памяти: пусто' empty
+_extra_env=()
+
+# --- 15ж. режим post-bash (PostToolUse и PostToolUseFailure на Bash): файл
+# состояния изменён за время вызова (ctime против duration_ms) и не по формату ---
+p="$(new_project pbash)"
+_memd="${_cfg}/projects/$(slug "${p}")/memory"
+_memb="${_memd}/autopilot-start.md"
+_memq="${_memd}/question-counter.md"
+# evb <duration_ms|-> [stdout]: событие PostToolUse для Bash в форме Claude Code
+# 2.1.331 (tool_input, tool_response, tool_use_id, duration_ms последним); «-» —
+# события без поля duration_ms. stdout вставляется как есть (уже в виде JSON).
+evb() {
+  local _d=''
+  [[ "$1" == "-" ]] || _d=",\"duration_ms\":$1"
+  printf '{"session_id":"%s","cwd":"%s","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"echo x","description":"d"},"tool_response":{"stdout":"%s","stderr":"","interrupted":false},"tool_use_id":"toolu_01"%s}' "${_sid}" "${p}" "${2-}" "${_d}"
+}
+# evf <duration_ms>: событие PostToolUseFailure для Bash (команда с ненулевым кодом).
+evf() { printf '{"session_id":"%s","cwd":"%s","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"false","description":"d"},"tool_use_id":"toolu_01","error":"Exit code 1","is_interrupt":false,"duration_ms":%s}' "${_sid}" "${p}" "$1"; }
+# нет каталога памяти — молчание
+run_hook "${p}" post-bash "$(evb 10)"
+check 'post-bash, нет памяти: пусто' empty
+check 'post-bash, нет памяти: код 0' rc0
+# свежая запись прозы настоящей командой — код 2 (успешная и неуспешная команда)
+put_list "${_cfg}" "${p}" "${fm}$(task roave)"$'\n'
+bash -c 'printf "%s\n" "$2" >>"$1"' _ "${_memb}" "СОСТОЯНИЕ ДЛЯ НОВОЙ СЕССИИ ${_mk}"
+run_hook "${p}" post-bash "$(evb 10)"
+check 'post-bash, свежее дописывание: код 2' rc2
+check 'post-bash: причина — один сигнал в stderr, со словами о Bash' \
+  err_exact "${_post_head}${_post_list}1. ${_rule} ${_post_bash} ${_post_tail}"
+check 'post-bash: stdout пуст' so_empty
+check 'post-bash: текст строк не выводится' hasnt "${_mk}"
+run_hook "${p}" post-bash "$(evf 10)"
+check 'post-bash, событие PostToolUseFailure: код 2' rc2
+# свежая запись, оставившая файл по формату, — тишина
+put_list "${_cfg}" "${p}" "${fm}$(task roave)"$'\n'"$(task second)"$'\n'
+run_hook "${p}" post-bash "$(evb 10)"
+check 'post-bash, свежая запись по формату: пусто' empty
+check 'post-bash, свежая запись по формату: код 0' rc0
+# старый mtime при свежей записи (копия с атрибутами, перенос файла): судится ctime
+put_list "${_cfg}" "${p}" "${fm}$(task roave)"$'\n'"проза ${_mk}"$'\n'
+touch -d '2001-01-01 00:00:00' "${_memb}"
+run_hook "${p}" post-bash "$(evb 10)"
+check 'post-bash, запись с сохранённым старым mtime: код 2' rc2
+# файл не по формату, но менялся давно: чтение и посторонние команды молчат.
+# Ожидание 4 с: окно малой команды — ⌈10 мс⌉ + 2 с запаса = 3 с.
+put_counter "${_cfg}" "${p}" "${_h1}"$'\n'"${_h1}"$'\n'
+sleep 4
+run_hook "${p}" post-bash "$(evb 10)"
+check 'post-bash, грязные файлы менялись 4 с назад, команда 10 мс: пусто' empty
+check 'post-bash, грязные файлы менялись давно: код 0' rc0
+run_hook "${p}" post-bash "$(evf 10)"
+check 'post-bash, PostToolUseFailure, файлы менялись давно: код 0' rc0
+# долгая команда: окно растёт на её длительность
+run_hook "${p}" post-bash "$(evb 6000)"
+check 'post-bash, команда 6 с покрывает запись 4 с назад: код 2' rc2
+check 'post-bash, оба файла не по формату: обе причины' \
+  err_exact "${_post_head}${_post_list}1. ${_rule} ${_post_bash} ${_post_tail}"$'\n'"${_post_head}${_post_counter}2, нужна одна. ${_crule} ${_post_bash} ${_post_tail}"
+# поля duration_ms нет — фильтр времени не применяется
+run_hook "${p}" post-bash "$(evb -)"
+check 'post-bash, событие без duration_ms: код 2' rc2
+# экранированная подделка поля в выводе команды не берётся
+run_hook "${p}" post-bash "$(evb 6000 'x,\"duration_ms\":1')"
+check 'post-bash, подделка меньшей длительности в stdout: код 2' rc2
+run_hook "${p}" post-bash "$(evb 10 'x,\"duration_ms\":600000')"
+check 'post-bash, подделка большей длительности в stdout: код 0' rc0
+check 'post-bash, подделка большей длительности: пусто' empty
+run_hook "${p}" post-bash "$(evb - 'x,\"duration_ms\":1')"
+check 'post-bash, настоящего поля нет, в stdout подделка: код 2 (фильтра нет)' rc2
+# событие больше 64 КБ: поле берётся из хвоста потока
+_big="$(printf 'x%.0s' $(seq 1 70000))"
+run_hook "${p}" post-bash "$(evb 10 "${_big}")"
+check 'post-bash, событие > 64 КБ, команда 10 мс: код 0 (поле найдено в хвосте)' rc0
+run_hook "${p}" post-bash "$(evb 6000 "${_big}")"
+check 'post-bash, событие > 64 КБ, команда 6 с: код 2' rc2
+# свежий только счётчик: список (менялся давно) в причину не попадает
+put_counter "${_cfg}" "${p}" "${_h1}"$'\n'"${_h1}"$'\n'"${_h1}"$'\n'
+run_hook "${p}" post-bash "$(evb 10)"
+check 'post-bash, свежий счётчик с тремя шапками: только его причина' \
+  err_exact "${_post_head}${_post_counter}3, нужна одна. ${_crule} ${_post_bash} ${_post_tail}"
+# stat ответил не по каждому файлу (заглушка печатает одну строку на два файла):
+# время не к чему привязать — молчание, а не суд по чужому времени
+mkdir -p "${_root}/stub2"
+printf '#!/bin/sh\necho 9999999999\n' >"${_root}/stub2/stat"
+chmod +x "${_root}/stub2/stat"
+_extra_env=("PATH=${_root}/stub2:${PATH}")
+run_hook "${p}" post-bash "$(evb 10)"
+check 'post-bash, stat ответил одной строкой на два файла: пусто' empty
+check 'post-bash, stat ответил одной строкой на два файла: код 0' rc0
+_extra_env=()
+# список-симлинк не читается; память перенесена переменной — молчание
+put_counter "${_cfg}" "${p}" "${_h1}"$'\n'
+rm -f "${_memb}"
+put_list "${_cfg}" "${_root}/btarget" "проза"$'\n'
+ln -s "${_cfg}/projects/$(slug "${_root}/btarget")/memory/autopilot-start.md" "${_memb}"
+run_hook "${p}" post-bash "$(evb -)"
+check 'post-bash, список-симлинк: пусто' empty
+rm -f "${_memb}"
+put_list "${_cfg}" "${p}" "проза"$'\n'
+_extra_env=("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE=${_root}/elsewhere")
+run_hook "${p}" post-bash "$(evb -)"
+check 'post-bash, перенос памяти: пусто' empty
+_extra_env=()
+run_hook "${p}" post-bash "$(evb -)"
+check 'post-bash, тот же список без переноса памяти (контроль): код 2' rc2
+# мусор и пустой stdin — код 0 или 2, не иной
+run_hook "${p}" post-bash ''
+check 'post-bash, пустой stdin: код 2 (поля нет — фильтра нет)' rc2
+put_list "${_cfg}" "${p}" "${fm}$(task roave)"$'\n'
+run_hook "${p}" post-bash 'не json'
+check 'post-bash, мусор на stdin, файлы по формату: пусто' empty
+check 'post-bash, мусор на stdin: код 0' rc0
 
 # --- 16. файл списка — симлинк: не читается ---
 p="$(new_project link)"
@@ -497,7 +801,11 @@ check 'hooks.json: startup|clear — команда с аргументом sess
   json_cmd 'startup|clear' 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/post-compact-reminder.sh" session-start'
 check 'hooks.json: нет resume и fork' json_hasnt 'resume|fork'
 check 'hooks.json: PostToolUse Edit|Write|MultiEdit — команда с аргументом post-edit' \
-  json_post 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/post-compact-reminder.sh" post-edit'
+  json_tool PostToolUse 'Edit|Write|MultiEdit' 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/post-compact-reminder.sh" post-edit'
+check 'hooks.json: PostToolUse Bash — команда с аргументом post-bash' \
+  json_tool PostToolUse 'Bash' 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/post-compact-reminder.sh" post-bash'
+check 'hooks.json: PostToolUseFailure Bash — команда с аргументом post-bash' \
+  json_tool PostToolUseFailure 'Bash' 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/post-compact-reminder.sh" post-bash'
 
 printf 'pass=%s fail=%s\n' "${_pass}" "${_fail}"
 [[ "${_fail}" -eq 0 ]]

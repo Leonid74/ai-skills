@@ -30,13 +30,15 @@ ai-skills/
         ├── tests/server-disk-cleanup/ ← тест блока «прогноз для кеша сборки» из SKILL.md скилла server-disk-cleanup
         ├── tests/todo/    ← стенд scripts/todo.sh (перенос TodoScriptTest apps-b24-platform) и тест compat/version
         └── hooks/
-            ├── hooks.json       ← регистрация PreToolUse/PostToolUse/SessionStart/Notification/Stop
+            ├── hooks.json       ← регистрация PreToolUse/PostToolUse/PostToolUseFailure/SessionStart/Notification/Stop
             ├── guard-bash.sh    ← PreToolUse: блокирует деструктивные Bash-команды + секреты
             ├── notify-sound.sh  ← Notification/Stop: звуковое уведомление
             └── post-compact-reminder.sh ← SessionStart(compact; startup|clear): напоминание после компакции,
                                             активные задачи списка «СТАРТ» при старте сессии, предупреждение
-                                            о строках не по формату и размере; PostToolUse(Edit|Write|MultiEdit,
-                                            post-edit): код 2 при строках не по формату после правки списка
+                                            о формате файлов состояния (список «СТАРТ», счётчик вопросов);
+                                            PostToolUse(Edit|Write|MultiEdit — post-edit; Bash — post-bash) и
+                                            PostToolUseFailure(Bash): код 2, если файл состояния изменён вызовом
+                                            и не по формату (Bash-команды не разбираются — судится результат)
 ```
 
 Плагин `andrej-karpathy-skills` подключён как внешний GitHub source
