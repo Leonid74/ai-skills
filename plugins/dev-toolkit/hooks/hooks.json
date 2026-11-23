@@ -11,6 +11,18 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/post-compact-reminder.sh\" post-edit",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "hooks": [
