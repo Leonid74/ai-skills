@@ -64,7 +64,7 @@ claude plugin validate ./plugins/dev-toolkit              # plugin.json + ком
 shellcheck -S style -o all plugins/dev-toolkit/hooks/guard-bash.sh plugins/dev-toolkit/hooks/post-compact-reminder.sh
 bash plugins/dev-toolkit/hooks/tests/test-guard-bash.sh
 bash plugins/dev-toolkit/hooks/tests/test-post-compact-reminder.sh
-bash plugins/dev-toolkit/hooks/tests/test-session-start-tasks.sh   # активные задачи; мутации — POST_COMPACT_HOOK=<копия>
+bash plugins/dev-toolkit/hooks/tests/test-session-start-tasks.sh   # активные задачи и формат файлов состояния; мутации — POST_COMPACT_HOOK=<копия>
 ```
 
 Для workflow-скрипта (`plugins/dev-toolkit/workflows/review-code.js`) — стенд-заглушка; `node --check`
