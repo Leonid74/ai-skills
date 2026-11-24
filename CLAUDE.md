@@ -30,11 +30,15 @@ ai-skills/
         ├── tests/server-disk-cleanup/ ← тест блока «прогноз для кеша сборки» из SKILL.md скилла server-disk-cleanup
         ├── tests/todo/    ← стенд scripts/todo.sh (перенос TodoScriptTest apps-b24-platform) и тест compat/version
         └── hooks/
-            ├── hooks.json       ← регистрация PreToolUse/SessionStart/Notification/Stop
+            ├── hooks.json       ← регистрация PreToolUse/PostToolUse/PostToolUseFailure/SessionStart/Notification/Stop
             ├── guard-bash.sh    ← PreToolUse: блокирует деструктивные Bash-команды + секреты
             ├── notify-sound.sh  ← Notification/Stop: звуковое уведомление
             └── post-compact-reminder.sh ← SessionStart(compact; startup|clear): напоминание после компакции,
-                                            активные задачи списка «СТАРТ» при старте сессии
+                                            активные задачи списка «СТАРТ» при старте сессии, предупреждение
+                                            о формате файлов состояния (список «СТАРТ», счётчик вопросов);
+                                            PostToolUse(Edit|Write|MultiEdit — post-edit; Bash — post-bash) и
+                                            PostToolUseFailure(Bash): код 2, если файл состояния изменён за время вызова
+                                            и не по формату (Bash-команды не разбираются — судится результат)
 ```
 
 Плагин `andrej-karpathy-skills` подключён как внешний GitHub source
@@ -60,7 +64,7 @@ claude plugin validate ./plugins/dev-toolkit              # plugin.json + ком
 shellcheck -S style -o all plugins/dev-toolkit/hooks/guard-bash.sh plugins/dev-toolkit/hooks/post-compact-reminder.sh
 bash plugins/dev-toolkit/hooks/tests/test-guard-bash.sh
 bash plugins/dev-toolkit/hooks/tests/test-post-compact-reminder.sh
-bash plugins/dev-toolkit/hooks/tests/test-session-start-tasks.sh   # активные задачи; мутации — POST_COMPACT_HOOK=<копия>
+bash plugins/dev-toolkit/hooks/tests/test-session-start-tasks.sh   # активные задачи и формат файлов состояния; мутации — POST_COMPACT_HOOK=<копия>
 ```
 
 Для workflow-скрипта (`plugins/dev-toolkit/workflows/review-code.js`) — стенд-заглушка; `node --check`
